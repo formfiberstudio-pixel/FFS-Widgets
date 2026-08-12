@@ -1,0 +1,154 @@
+[
+  {
+    "id": "3ae8d5a5-94f9-802b-9f5d-dd9cc81764f2",
+    "title": "2023 12-Dec | Ottawa-Montreal",
+    "start": "2023-12-16T07:45:00.000-05:00",
+    "end": "2023-12-18T21:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-8057-929d-d934012df749",
+    "title": "DAY 1 | OTTAWA",
+    "start": "2023-12-16T08:00:00.000-05:00",
+    "end": "2023-12-17T09:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-8082-93a2-d6058cb6ac5d",
+    "title": "Drive to Ottawa",
+    "start": "2023-12-16T08:00:00.000-05:00",
+    "end": "2023-12-16T12:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": "3ae8d5a5-94f9-802a-bd2f-c0c0f2b5baf1"
+  },
+  {
+    "id": "3ae8d5a5-94f9-801e-b6d5-e5e2f9580de7",
+    "title": "breakfast on the road",
+    "start": "2023-12-16T08:45:00.000-05:00",
+    "end": "2023-12-16T09:15:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-80c3-8b3c-fe771843d170",
+    "title": "sight seeing",
+    "start": "2023-12-16T12:00:00.000-05:00",
+    "end": "2023-12-16T21:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-800f-9fb6-e462f2a7a35a",
+    "title": "hotel check-in",
+    "start": "2023-12-16T14:00:00.000-05:00",
+    "end": null,
+    "type": "default",
+    "place_relation_id": "3ac8d5a5-94f9-8081-a3db-d21a1bc8f32c"
+  },
+  {
+    "id": "3ae8d5a5-94f9-8080-b126-c39b97be6fd4",
+    "title": "dinner with Calvin",
+    "start": "2023-12-16T17:45:00.000-05:00",
+    "end": null,
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-8080-9e48-eda7aaa8a15d",
+    "title": "rest",
+    "start": "2023-12-16T21:00:00.000-05:00",
+    "end": "2023-12-17T09:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": "3ac8d5a5-94f9-8081-a3db-d21a1bc8f32c"
+  },
+  {
+    "id": "3ae8d5a5-94f9-8093-9883-e99223df2100",
+    "title": "DAY 2 | MONTREAL",
+    "start": "2023-12-17T09:00:00.000-05:00",
+    "end": "2023-12-18T09:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-807d-98f0-d64c4792ed6e",
+    "title": "drive to Montreal",
+    "start": "2023-12-17T10:00:00.000-05:00",
+    "end": "2023-12-17T12:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-805f-b0e4-c99ae3b3bf36",
+    "title": "sight seeing",
+    "start": "2023-12-17T12:00:00.000-05:00",
+    "end": "2023-12-17T21:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-80f5-b00e-d81fef9e2015",
+    "title": "market",
+    "start": "2023-12-17T12:00:00.000-05:00",
+    "end": "2023-12-17T13:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-80fc-94ac-eae9f13a53be",
+    "title": "Day 2 | Lunch",
+    "start": "2023-12-17T13:00:00.000-05:00",
+    "end": null,
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-80eb-b5d6-e5d10a964b98",
+    "title": "Hotel Check-in",
+    "start": "2023-12-17T13:45:00.000-05:00",
+    "end": null,
+    "type": "default",
+    "place_relation_id": "3ae8d5a5-94f9-801e-b791-ef3d552f448b"
+  },
+  {
+    "id": "3ae8d5a5-94f9-806d-8693-f580e769b7f7",
+    "title": "rest",
+    "start": "2023-12-17T21:00:00.000-05:00",
+    "end": "2023-12-18T09:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-80b7-8ac2-e040d14ba781",
+    "title": "DAY 3 | DRIVE HOME",
+    "start": "2023-12-18T09:00:00.000-05:00",
+    "end": "2023-12-18T21:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-8081-bf5f-e8186ab1bca9",
+    "title": "breakfast",
+    "start": "2023-12-18T10:00:00.000-05:00",
+    "end": "2023-12-18T11:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-8060-8108-c62b9f72c9de",
+    "title": "sight seeing",
+    "start": "2023-12-18T11:00:00.000-05:00",
+    "end": "2023-12-18T14:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  },
+  {
+    "id": "3ae8d5a5-94f9-80ab-95d2-f7d0c55048e0",
+    "title": "drive home",
+    "start": "2023-12-18T14:00:00.000-05:00",
+    "end": "2023-12-18T20:00:00.000-05:00",
+    "type": "default",
+    "place_relation_id": null
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "name": "@ffs/shared-ui",
+  "version": "1.0.0",
+  "private": true,
+  "main": "utils/themeStorage.js"
+}

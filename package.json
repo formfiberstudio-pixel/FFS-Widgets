@@ -1,0 +1,16 @@
+{
+  "name": "00_ffs_widgets",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:travel": "npm run dev --workspace=apps/travel-log",
+    "dev:calendar": "npm run dev --workspace=apps/creator-calendar",
+    "build:all": "npm run build --workspaces"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}
