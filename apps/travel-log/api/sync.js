@@ -1,5 +1,4 @@
-module.exports = async function handler(req, res) {
-  // CORS Headers for SaaS flexibility
+export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -10,8 +9,6 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  // STRICT AUTHENTICATION: 
-  // Credentials must come from headers, never from URL query parameters.
   const apiKey = req.headers['x-notion-api-key'];
   const tripsDbId = req.headers['x-trips-db-id'];
   const photosDbId = req.headers['x-photos-db-id'];
@@ -26,14 +23,13 @@ module.exports = async function handler(req, res) {
     'Content-Type': 'application/json'
   };
 
-  // Helper function to find properties regardless of exact capitalization or trailing spaces
   const getProp = (props, name) => {
     const key = Object.keys(props).find(k => k.toLowerCase().trim() === name.toLowerCase());
     return key ? props[key] : null;
   };
 
   try {
-    // 1. Fetch Trips Database
+    // 1. Fetch Trips Database (Database A)
     const tripsReq = await fetch(`https://api.notion.com/v1/databases/${tripsDbId}/query`, {
       method: 'POST',
       headers: headers,
@@ -54,7 +50,7 @@ module.exports = async function handler(req, res) {
       place_relation_id: getProp(page.properties, 'travel - places')?.relation[0]?.id || null
     }));
 
-    // 2. Fetch Photos/Clusters Database Properties
+    // 2. Fetch Photos Database (Database B)
     const photosReq = await fetch(`https://api.notion.com/v1/databases/${photosDbId}/query`, {
       method: 'POST',
       headers: headers,
@@ -68,7 +64,6 @@ module.exports = async function handler(req, res) {
 
     const formattedPhotos = [];
 
-    // 3. Sequential Fetch to prevent Notion API Rate Limits (429 Error)
     for (const page of photosResponse.results) {
       const props = page.properties;
 
@@ -87,13 +82,11 @@ module.exports = async function handler(req, res) {
       const webPhotos = [];
       const webVideos = [];
 
-      // Check for Page Cover image as a fallback
       if (page.cover) {
         const coverUrl = page.cover.file?.url || page.cover.external?.url;
         if (coverUrl) webPhotos.push(coverUrl);
       }
 
-      // Check standard Files & Media column just in case
       let mediaProp = getProp(props, 'media') || getProp(props, 'photos') || getProp(props, 'files') || getProp(props, 'files & media');
       let rawMedia = mediaProp?.files || [];
       rawMedia.forEach(file => {
@@ -101,7 +94,6 @@ module.exports = async function handler(req, res) {
         if (url) url.match(/\.(mp4|mov)(\?|$)/i) ? webVideos.push(url) : webPhotos.push(url);
       });
 
-      // Fetch the embedded page blocks sequentially
       try {
         const blocksReq = await fetch(`https://api.notion.com/v1/blocks/${page.id}/children`, {
           method: 'GET',
@@ -109,7 +101,6 @@ module.exports = async function handler(req, res) {
         });
         const blocksRes = await blocksReq.json();
 
-        // If blocks exist, extract images and videos
         if (blocksRes.results) {
           blocksRes.results.forEach(block => {
             if (block.type === 'image') {

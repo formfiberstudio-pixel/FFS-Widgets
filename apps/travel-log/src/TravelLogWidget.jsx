@@ -245,7 +245,7 @@ export default function TravelLogWidget() {
   const galleryRef = useRef(null);
   const firstCardRef = useRef(null);
 
-  const fetchData = async () => {
+const fetchData = async () => {
     const token = getNotionToken();
     const tripsId = getDatabaseId('notion_trips_db');
     const photosId = getDatabaseId('notion_photos_db');
@@ -267,7 +267,14 @@ export default function TravelLogWidget() {
           'x-photos-db-id': photosId
         }
       });
-      const data = await res.json();
+
+      const textResponse = await res.text();
+      let data;
+      try {
+        data = JSON.parse(textResponse);
+      } catch (e) {
+        throw new Error(`Server Error (${res.status}): ${textResponse.slice(0, 100)}`);
+      }
 
       if (!res.ok) throw new Error(data.error || 'Failed to fetch Notion data');
 
@@ -295,7 +302,7 @@ export default function TravelLogWidget() {
       setIsLoading(false);
     }
   };
-
+  
   useEffect(() => {
     fetchData();
   }, []);
