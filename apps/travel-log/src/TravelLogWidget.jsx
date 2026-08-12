@@ -7,8 +7,8 @@ import imageCompression from 'browser-image-compression';
 import { useDropzone } from 'react-dropzone';
 
 // --- IMPORT SHARED UI & AUTH ---
-import NotionSetupModal from '../../packages/shared-ui/components/NotionSetupModal';
-import { getNotionToken, getDatabaseId } from '../../packages/shared-ui/utils/authStorage';
+import NotionSetupModal from '../../../packages/shared-ui/components/NotionSetupModal.jsx';
+import { getNotionToken, getDatabaseId } from '../../../packages/shared-ui/utils/authStorage.js';
 
 // --- DATABASE A FALLBACK / DEFAULT DATA ---
 const CALENDAR_DATES = [
