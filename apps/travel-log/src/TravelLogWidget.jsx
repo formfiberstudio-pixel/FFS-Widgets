@@ -1121,11 +1121,14 @@ export default function TravelLogWidget() {
         )}
 
         {/* UNIVERSAL SHARED SETTINGS MODAL */}
-        <NotionSetupModal 
-          widgetId="notion" 
+        <NotionSetupModal  
           isOpen={isSettingsOpen} 
           onClose={() => setIsSettingsOpen(false)} 
           onSave={fetchData} 
+          databases={[
+            { id: 'notion_trips_db', label: 'Database A: Trip Planning (Timeline)' },
+            { id: 'notion_photos_db', label: 'Database B: Photo Dump (Map/Gallery)' }
+          ]}
         />
         
       </div>
