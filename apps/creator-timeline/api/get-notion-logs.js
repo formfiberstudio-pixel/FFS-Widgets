@@ -21,22 +21,39 @@ export default async function handler(req, res) {
 
   try {
     console.log(`[Diagnostic] Attempting to fetch Database ID: ${databaseId}`);
-    
-    const response = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
-      method: 'POST',
-      headers: headers
-    });
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('[Diagnostic] Notion API Error Response:', errorData);
-      throw new Error(errorData.message || 'Failed to fetch from Notion database');
+    // Notion caps a single query at 100 rows — without following has_more/
+    // next_cursor, anything past the first page silently never comes back.
+    let allResults = [];
+    let hasMore = true;
+    let startCursor = undefined;
+
+    while (hasMore) {
+      const response = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({
+          page_size: 100,
+          sorts: [{ timestamp: 'created_time', direction: 'ascending' }],
+          ...(startCursor ? { start_cursor: startCursor } : {}),
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('[Diagnostic] Notion API Error Response:', errorData);
+        throw new Error(errorData.message || 'Failed to fetch from Notion database');
+      }
+
+      const pageData = await response.json();
+      allResults = allResults.concat(pageData.results);
+      hasMore = pageData.has_more;
+      startCursor = pageData.next_cursor;
     }
 
-    const rawData = await response.json();
-    console.log(`[Diagnostic] Successfully fetched ${rawData.results.length} rows.`);
+    console.log(`[Diagnostic] Successfully fetched ${allResults.length} rows across ${hasMore === false ? 'all pages' : 'partial pages'}.`);
 
-    const formattedLogs = await Promise.all(rawData.results.map(async (page) => {
+    const formattedLogs = await Promise.all(allResults.map(async (page) => {
       try {
         const props = page.properties;
         const propValues = Object.values(props);
