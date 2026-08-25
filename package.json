@@ -7,7 +7,7 @@
   ],
   "scripts": {
     "dev:travel": "npm run dev --workspace=apps/travel-log",
-    "dev:calendar": "npm run dev --workspace=apps/creator-calendar",
+    "dev:creator": "npm run dev --workspace=apps/creator-timeline",
     "build:all": "npm run build --workspaces"
   },
   "devDependencies": {
