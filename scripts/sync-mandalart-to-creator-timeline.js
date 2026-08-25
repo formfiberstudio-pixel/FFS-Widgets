@@ -184,40 +184,39 @@ async function appendImageToPage({ notionToken, pageId, fileId }) {
   if (data.object === 'error') throw new Error(`append image failed: ${data.message}`);
 }
 
-/** For one day's real photos, work out which route(s) each photo belongs to
- *  (by subGoalId membership), and group into one sync job per route that has
- *  at least one matching photo. A photo whose sub-goal is listed in two
- *  routes ends up in both jobs. Photos with no sub-goal, or a sub-goal not
- *  listed in any route, come back separately as "unmapped". */
+/** For one day's real photos, group by sub-goal FIRST — never let two
+ *  photos from different sub-goals share a page, even if both would route
+ *  to the same database. Each sub-goal's group then becomes one sync job
+ *  per route that lists it (a sub-goal listed in two routes produces two
+ *  jobs, one per database). Photos with no sub-goal, or a sub-goal not
+ *  listed in any route, come back as "unmapped". */
 function planDay(date, entry, realPhotos, routes, pillarLookup, photosDir) {
-  const jobsByRoute = new Map();
+  const photosBySubGoal = new Map();
   const unmapped = [];
 
   for (const photo of realPhotos) {
-    const matchingRoutes = photo.subGoalId
-      ? routes.filter((r) => r.subGoalIds.includes(photo.subGoalId))
-      : [];
-
-    if (matchingRoutes.length === 0) {
+    if (!photo.subGoalId) {
       unmapped.push(photo);
       continue;
     }
-
-    for (const route of matchingRoutes) {
-      if (!jobsByRoute.has(route)) {
-        jobsByRoute.set(route, { route, photos: [] });
-      }
-      jobsByRoute.get(route).photos.push(photo);
-    }
+    if (!photosBySubGoal.has(photo.subGoalId)) photosBySubGoal.set(photo.subGoalId, []);
+    photosBySubGoal.get(photo.subGoalId).push(photo);
   }
 
-  const jobs = [...jobsByRoute.values()].map(({ route, photos }) => {
-    const first = photos[0];
-    const title = titleFor(pillarLookup, first.subGoalId);
+  const jobs = [];
+  for (const [subGoalId, photos] of photosBySubGoal) {
+    const matchingRoutes = routes.filter((r) => r.subGoalIds.includes(subGoalId));
+    if (matchingRoutes.length === 0) {
+      unmapped.push(...photos);
+      continue;
+    }
+    const title = titleFor(pillarLookup, subGoalId);
     const noteText = [entry.text, ...photos.map((p) => p.note)].filter(Boolean).join(' — ');
     const localFiles = photos.map((p) => path.join(photosDir, path.basename(p.photoPath)));
-    return { date, route, title, noteText, photoCount: photos.length, localFiles };
-  });
+    for (const route of matchingRoutes) {
+      jobs.push({ date, route, title, noteText, photoCount: photos.length, localFiles });
+    }
+  }
 
   return { jobs, unmapped };
 }
@@ -258,8 +257,10 @@ async function main() {
 
   for (const s of skippedNoPhoto) console.log(`  SKIP  ${s.date} — ${s.reason}`);
   for (const u of allUnmapped) console.log(`  SKIP  ${u.date} — ${u.count} photo(s) tagged to a sub-goal with no matching route`);
+  const routeLabel = (route) => (route.icon ? `${route.icon} ${route.label}` : route.label);
+
   for (const j of allJobs) {
-    console.log(`  SYNC  ${j.date} — "${j.title}" → ${j.route.label} (${j.photoCount} photo${j.photoCount > 1 ? 's' : ''})`);
+    console.log(`  SYNC  ${j.date} — "${j.title}" → ${routeLabel(j.route)} (${j.photoCount} photo${j.photoCount > 1 ? 's' : ''})`);
     console.log(`          note: ${j.noteText || '(none)'}`);
     console.log(`          files: ${j.localFiles.join(', ')}`);
   }
@@ -292,9 +293,9 @@ async function main() {
         const fileId = await uploadImageToNotion(extra, notionToken);
         await appendImageToPage({ notionToken, pageId, fileId });
       }
-      console.log(`  OK    ${j.date} → ${j.route.label} — page ${pageId}`);
+      console.log(`  OK    ${j.date} → ${routeLabel(j.route)} — page ${pageId}`);
     } catch (err) {
-      console.error(`  FAIL  ${j.date} → ${j.route.label} — ${err.message}`);
+      console.error(`  FAIL  ${j.date} → ${routeLabel(j.route)} — ${err.message}`);
     }
   }
 }

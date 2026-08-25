@@ -2,6 +2,7 @@
   "routes": [
     {
       "label": "Creator Timeline — Craft",
+      "icon": "🛠️",
       "databaseId": "REPLACE_WITH_A_NOTION_DATABASE_ID",
       "subGoalIds": [
         "REPLACE_WITH_A_SUBGOAL_ID",
@@ -10,6 +11,7 @@
     },
     {
       "label": "Plant Care Log",
+      "icon": "🌱",
       "databaseId": "REPLACE_WITH_A_DIFFERENT_DATABASE_ID",
       "subGoalIds": [
         "REPLACE_WITH_A_SUBGOAL_ID"
