@@ -1,0 +1,19 @@
+{
+  "routes": [
+    {
+      "label": "Creator Timeline — Craft",
+      "databaseId": "REPLACE_WITH_A_NOTION_DATABASE_ID",
+      "subGoalIds": [
+        "REPLACE_WITH_A_SUBGOAL_ID",
+        "REPLACE_WITH_ANOTHER_SUBGOAL_ID"
+      ]
+    },
+    {
+      "label": "Plant Care Log",
+      "databaseId": "REPLACE_WITH_A_DIFFERENT_DATABASE_ID",
+      "subGoalIds": [
+        "REPLACE_WITH_A_SUBGOAL_ID"
+      ]
+    }
+  ]
+}
