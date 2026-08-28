@@ -53,6 +53,36 @@ export default async function handler(req, res) {
 
     console.log(`[Diagnostic] Successfully fetched ${allResults.length} rows across ${hasMore === false ? 'all pages' : 'partial pages'}.`);
 
+    // Many rows share the same related project page, so without this we'd
+    // re-fetch that same relation (and hit Notion's rate limit) once per
+    // row. Memoize by related-page id, storing the in-flight promise (not
+    // just the resolved value) so concurrent rows awaiting the same id
+    // share one request instead of each kicking off their own.
+    const relationTitleCache = new Map();
+    function getRelationTitle(relatedPageId) {
+      if (!relationTitleCache.has(relatedPageId)) {
+        const promise = (async () => {
+          try {
+            const relRes = await fetch(`https://api.notion.com/v1/pages/${relatedPageId}`, { method: 'GET', headers });
+            if (relRes.ok) {
+              const relData = await relRes.json();
+              const relTitleProp = Object.values(relData.properties).find(p => p.type === 'title');
+              if (relTitleProp && relTitleProp.title.length > 0) {
+                return relTitleProp.title[0].plain_text;
+              }
+            } else {
+              console.warn(`[Diagnostic] Relation fetch failed. Missing integration access to related DB.`);
+            }
+          } catch (err) {
+            console.warn(`[Diagnostic] Network error fetching relation ${relatedPageId}`);
+          }
+          return 'General';
+        })();
+        relationTitleCache.set(relatedPageId, promise);
+      }
+      return relationTitleCache.get(relatedPageId);
+    }
+
     const formattedLogs = await Promise.all(allResults.map(async (page) => {
       try {
         const props = page.properties;
@@ -90,23 +120,10 @@ export default async function handler(req, res) {
         // --- RELATION SAFEGUARD ---
         let projectName = 'General';
         const validRelations = propValues.filter(p => p.type === 'relation' && p.relation?.length > 0);
-        
+
         if (validRelations.length > 0) {
           const relatedPageId = validRelations[0].relation[0].id;
-          try {
-            const relRes = await fetch(`https://api.notion.com/v1/pages/${relatedPageId}`, { method: 'GET', headers });
-            if (relRes.ok) {
-              const relData = await relRes.json();
-              const relTitleProp = Object.values(relData.properties).find(p => p.type === 'title');
-              if (relTitleProp && relTitleProp.title.length > 0) {
-                projectName = relTitleProp.title[0].plain_text;
-              }
-            } else {
-               console.warn(`[Diagnostic] Relation fetch failed. Missing integration access to related DB.`);
-            }
-          } catch (err) {
-            console.warn(`[Diagnostic] Network error fetching relation for page ${page.id}`);
-          }
+          projectName = await getRelationTitle(relatedPageId);
         }
 
         // --- ROLLUP SAFEGUARD ---

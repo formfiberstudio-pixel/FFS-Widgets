@@ -20,6 +20,14 @@ const NOTION_COLOR_MAP = {
 const MONTH_NAMES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const TIMELINE_WEEKDAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
+// How long a cached Notion sync is considered fresh before we bother
+// re-fetching in the background. A full sync now walks your entire log
+// history (not just the most recent 100 rows), so re-running it on every
+// single open is expensive -- this lets a normal open just paint the last
+// snapshot instantly instead.
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const NOTION_CACHE_KEY = 'notionWidgetCache';
+
 // -------------------------------------------------------------
 // VECTOR LINE ICONS (NO COLOR, NO FILL)
 // -------------------------------------------------------------
@@ -803,7 +811,33 @@ function App() {
       setNotionToken(savedToken);
       setDatabaseId(savedDbId);
       setSpecialDaysDatabaseId(savedSpecialDbId);
-      fetchLogsFromNotion(savedToken, savedDbId, savedSpecialDbId);
+
+      // Cache-first: paint instantly from the last synced snapshot (if any),
+      // then only hit Notion for a real sync if that snapshot is missing or
+      // older than CACHE_TTL_MS. If we already have something on screen,
+      // that refresh runs silently in the background instead of showing the
+      // "Syncing..." indicator every single time the widget is opened.
+      let paintedFromCache = false;
+      let hasFreshCache = false;
+      try {
+        const cachedRaw = localStorage.getItem(NOTION_CACHE_KEY);
+        if (cachedRaw) {
+          const cached = JSON.parse(cachedRaw);
+          if (cached && Array.isArray(cached.data)) {
+            setTimelineLogs(cached.data);
+            setSpecialDays(cached.specialDays || []);
+            generateProjectColorMap(cached.data);
+            paintedFromCache = true;
+            hasFreshCache = typeof cached.cachedAt === 'number' && (Date.now() - cached.cachedAt) < CACHE_TTL_MS;
+          }
+        }
+      } catch (err) {
+        // Corrupt/unreadable cache entry -- ignore and fall through to a normal fetch.
+      }
+
+      if (!hasFreshCache) {
+        fetchLogsFromNotion(savedToken, savedDbId, savedSpecialDbId, { silent: paintedFromCache });
+      }
     } else {
       setShowSettings(true);
     }
@@ -815,8 +849,9 @@ function App() {
     }
   }, [customCategoryColors, customProjectColors, activeThemeId, isDarkMode]);
 
-  const fetchLogsFromNotion = async (token, dbId, specDbId = specialDaysDatabaseId) => {
-    setIsLoading(true);
+  const fetchLogsFromNotion = async (token, dbId, specDbId = specialDaysDatabaseId, options = {}) => {
+    const { silent = false } = options;
+    if (!silent) setIsLoading(true);
     setFetchError(null);
     try {
       const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -824,19 +859,28 @@ function App() {
       const response = await fetch('/api/get-notion-logs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          notionToken: token, 
+        body: JSON.stringify({
+          notionToken: token,
           databaseId: dbId,
           specialDaysDatabaseId: specDbId ? specDbId.trim() : '',
           timeZone: userTimeZone
         }),
       });
-      
+
       const result = await response.json();
       if (result.success) {
         setTimelineLogs(result.data || []);
         setSpecialDays(result.specialDays || []);
         generateProjectColorMap(result.data || []);
+        try {
+          localStorage.setItem(NOTION_CACHE_KEY, JSON.stringify({
+            data: result.data || [],
+            specialDays: result.specialDays || [],
+            cachedAt: Date.now(),
+          }));
+        } catch (err) {
+          // Cache write can fail (e.g. storage quota) -- non-fatal, just skip caching.
+        }
       } else {
         setFetchError(result.error || 'Failed to sync with Notion.');
       }
