@@ -60,6 +60,7 @@ export default async function handler(req, res) {
     // photos, not arbitrary internet input. MAX_SOURCE_BYTES above remains
     // the actual resource-exhaustion guard.
     const thumbnail = await sharp(Buffer.from(arrayBuffer), { limitInputPixels: false })
+      .rotate() // reads the source's EXIF orientation and physically rotates pixels upright, since we strip metadata below and a portrait phone photo is otherwise stored as landscape pixels + an orientation tag
       .resize({ width, withoutEnlargement: true })
       .jpeg({ quality: 78 })
       .toBuffer();
