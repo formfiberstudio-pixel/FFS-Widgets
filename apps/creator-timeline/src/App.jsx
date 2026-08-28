@@ -451,8 +451,8 @@ function WeekDayColumn({
                 )}
 
                 <div className="relative z-10 flex items-center gap-1.5 pointer-events-none">
-                  <span 
-                    className="inline-flex items-center font-bold text-white px-2 py-0.5 rounded-full backdrop-blur-sm truncate max-w-full leading-none shadow-xs"
+                  <span
+                    className="inline-flex items-center font-bold text-white px-2 py-0.5 rounded-full truncate max-w-full leading-none shadow-xs"
                     style={{ backgroundColor: logDotHex, fontSize: `${Math.round(10 * scaleFactor)}px` }}
                   >
                     {log.Projects}
@@ -1425,10 +1425,11 @@ function App() {
                             }`}
                           >
                             {hasLog && primaryLog?.imageUrl && (
-                              <img 
-                                src={primaryLog.imageUrl} 
-                                className={`absolute inset-0 w-full h-full object-cover z-0 transition-opacity duration-200 ${isHalftoned ? 'opacity-40 grayscale-[20%]' : ''}`} 
-                                alt="" 
+                              <img
+                                src={primaryLog.imageUrl}
+                                className={`absolute inset-0 w-full h-full object-cover z-0 transition-opacity duration-200 ${isHalftoned ? 'opacity-40' : ''}`}
+                                alt=""
+                                decoding="async"
                               />
                             )}
 
@@ -1454,8 +1455,8 @@ function App() {
                                 )}
                               </div>
                               {hasLog && primaryLog && (
-                                <span 
-                                  className={`inline-flex items-center font-bold text-white px-2.5 py-0.5 rounded-full backdrop-blur-sm truncate max-w-[calc(100%-2rem)] leading-none shadow-xs transition-opacity duration-200 pointer-events-auto ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
+                                <span
+                                  className={`inline-flex items-center font-bold text-white px-2.5 py-0.5 rounded-full truncate max-w-[calc(100%-2rem)] leading-none shadow-xs transition-opacity duration-200 pointer-events-auto ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
                                   style={{ backgroundColor: displayDotHex, fontSize: `${projectTagFontPx}px` }}
                                 >
                                   {primaryLog.Projects}
