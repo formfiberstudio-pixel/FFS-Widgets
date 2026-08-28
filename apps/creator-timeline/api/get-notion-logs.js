@@ -1,4 +1,7 @@
 import { isThumbnailableUrl } from './_lib/notionImageHosts.js';
+import { decryptSecret } from './_lib/tokenCrypto.js';
+import { getTenant, saveTenant, LICENSE_REVERIFY_MS } from './_lib/tenantStore.js';
+import { verifyGumroadLicense } from './_lib/gumroad.js';
 
 // Route Notion's images (often multi-MB originals straight from a phone)
 // through our own resize proxy so the calendar grid decodes/paints small
@@ -199,24 +202,62 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { notionToken, timeZone } = req.body;
+  const { tenantId, sources: sourceFilter, timeZone } = req.body || {};
 
-  // sources replaces the old single databaseId -- accept a list of
-  // { label, databaseId } so entries from more than one Notion database
-  // (e.g. a project tracker and a separate plant care journal) can be
-  // merged into one timeline. Older callers sending a lone databaseId are
-  // still handled as a single-item source list.
-  let sources = Array.isArray(req.body.sources) ? req.body.sources : [];
-  if (sources.length === 0 && req.body.databaseId) {
-    sources = [{ label: 'Activity Log', databaseId: req.body.databaseId }];
-  }
-  sources = sources.filter(s => s && s.databaseId);
-
-  if (!notionToken || sources.length === 0) {
-    return res.status(400).json({ error: 'Missing credentials in request' });
+  if (!tenantId || typeof tenantId !== 'string') {
+    return res.status(400).json({ error: 'Missing tenantId' });
   }
 
-  // Set the dynamic timezone, falling back to UTC if not provided
+  let tenant;
+  try {
+    tenant = await getTenant(tenantId);
+  } catch (err) {
+    console.error('[get-notion-logs] Failed to load tenant record:', err.message);
+    return res.status(500).json({ error: 'Could not load your setup right now.' });
+  }
+
+  if (!tenant) {
+    return res.status(404).json({ error: 'This widget has not been set up yet. Visit the setup page to connect your Notion workspace.' });
+  }
+
+  // Refunds/chargebacks should cut off access reasonably promptly, but
+  // re-checking Gumroad on every single calendar load would add latency
+  // and hammer their API for no benefit -- only re-verify once the cached
+  // result goes stale.
+  if (Date.now() - (tenant.lastVerifiedAt || 0) > LICENSE_REVERIFY_MS) {
+    try {
+      const licenseKey = decryptSecret(tenant.encryptedLicenseKey);
+      const verification = await verifyGumroadLicense(licenseKey);
+      if (!verification.valid) {
+        return res.status(403).json({ error: `Access no longer valid: ${verification.reason}` });
+      }
+      tenant.lastVerifiedAt = Date.now();
+      await saveTenant(tenantId, tenant);
+    } catch (err) {
+      console.error('[get-notion-logs] Re-verification failed, serving from last-known-good:', err.message);
+    }
+  }
+
+  let notionToken;
+  try {
+    notionToken = decryptSecret(tenant.encryptedNotionToken);
+  } catch (err) {
+    console.error('[get-notion-logs] Failed to decrypt stored token:', err.message);
+    return res.status(500).json({ error: 'Could not load your Notion connection.' });
+  }
+
+  // A single embed can restrict to a subset of the tenant's configured
+  // databases (e.g. a client-facing page showing only that client's own
+  // database) by passing which database ids to include; omitting it shows
+  // everything the tenant has configured.
+  let sources = tenant.sources || [];
+  if (Array.isArray(sourceFilter) && sourceFilter.length > 0) {
+    sources = sources.filter(s => sourceFilter.includes(s.databaseId));
+  }
+  if (sources.length === 0) {
+    return res.status(400).json({ error: 'No matching databases configured for this view' });
+  }
+
   const targetTimeZone = timeZone || "UTC";
 
   const headers = {
@@ -230,7 +271,7 @@ export default async function handler(req, res) {
       sources.map(s => fetchDatabaseLogs(s.databaseId, s.label || 'Activity Log', headers, targetTimeZone))
     );
     const validLogs = perSourceLogs.flat();
-    console.log(`[Diagnostic] Successfully returning ${validLogs.length} valid logs to frontend across ${sources.length} database(s).`);
+    console.log(`[Diagnostic] Successfully returning ${validLogs.length} valid logs to frontend across ${sources.length} database(s) for tenant ${tenantId}.`);
 
     return res.status(200).json({ success: true, data: validLogs });
 

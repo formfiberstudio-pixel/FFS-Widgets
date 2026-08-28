@@ -701,9 +701,16 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [notionToken, setNotionToken] = useState('');
-  const [notionSources, setNotionSources] = useState([{ id: 'default', label: 'Activity Log', databaseId: '' }]);
-  const [specialDaysDatabaseId, setSpecialDaysDatabaseId] = useState('');
+  // The Notion token and database list are now configured server-side per
+  // tenant (via the setup page + Gumroad license), not entered here -- this
+  // widget is embedded by buyers of the Notion template, so anything
+  // client-side would be visible to (or missing for) whoever's browser
+  // loads their embed. The URL just says which already-activated tenant
+  // (and optionally which subset of their databases) this particular
+  // embed shows.
+  const [tenantId, setTenantId] = useState(null);
+  const [sourceFilter, setSourceFilter] = useState(null); // null = show all of the tenant's configured databases
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   // --- PROJECT GRADIENT SHADE MAP ---
   const [projectColorMap, setProjectColorMap] = useState({});
@@ -821,60 +828,50 @@ function App() {
   // API FETCHING & DYNAMIC DOT COLOR MAPPING LOGIC
   // -------------------------------------------------------------
   useEffect(() => {
-    const savedToken = localStorage.getItem('notionToken');
-    const savedSpecialDbId = localStorage.getItem('specialDaysDatabaseId') || '';
+    const params = new URLSearchParams(window.location.search);
+    const urlTenantId = params.get('tenant');
 
-    // notionSources replaces the old single databaseId setting. Existing
-    // users won't have notionSources saved yet, so fall back to wrapping
-    // their old databaseId as a single-item list rather than losing it.
-    let savedSources = null;
+    if (!urlTenantId) {
+      setNeedsSetup(true);
+      return;
+    }
+
+    const sourcesParam = params.get('sources');
+    const parsedSourceFilter = sourcesParam
+      ? sourcesParam.split(',').map(s => s.trim()).filter(Boolean)
+      : null;
+
+    setTenantId(urlTenantId);
+    setSourceFilter(parsedSourceFilter);
+
+    // Cache-first: paint instantly from the last synced snapshot (if any),
+    // then only hit Notion for a real sync if that snapshot is missing or
+    // older than CACHE_TTL_MS. If we already have something on screen,
+    // that refresh runs silently in the background instead of showing the
+    // "Syncing..." indicator every single time the widget is opened. Keyed
+    // by tenant+filter so different embeds viewed in the same browser (e.g.
+    // while testing a personal vs. a client-filtered link) don't collide.
+    const cacheKey = `${NOTION_CACHE_KEY}:${urlTenantId}:${parsedSourceFilter ? parsedSourceFilter.join(',') : 'all'}`;
+    let paintedFromCache = false;
+    let hasFreshCache = false;
     try {
-      const rawSources = localStorage.getItem('notionSources');
-      if (rawSources) savedSources = JSON.parse(rawSources);
-    } catch (err) {
-      savedSources = null;
-    }
-    if (!Array.isArray(savedSources) || savedSources.length === 0) {
-      const legacyDbId = localStorage.getItem('databaseId');
-      savedSources = legacyDbId
-        ? [{ id: 'default', label: 'Activity Log', databaseId: legacyDbId }]
-        : [{ id: 'default', label: 'Activity Log', databaseId: '' }];
-    }
-    setNotionSources(savedSources);
-
-    const hasConfiguredSource = savedSources.some(s => s.databaseId && s.databaseId.trim());
-    if (savedToken && hasConfiguredSource) {
-      setNotionToken(savedToken);
-      setSpecialDaysDatabaseId(savedSpecialDbId);
-
-      // Cache-first: paint instantly from the last synced snapshot (if any),
-      // then only hit Notion for a real sync if that snapshot is missing or
-      // older than CACHE_TTL_MS. If we already have something on screen,
-      // that refresh runs silently in the background instead of showing the
-      // "Syncing..." indicator every single time the widget is opened.
-      let paintedFromCache = false;
-      let hasFreshCache = false;
-      try {
-        const cachedRaw = localStorage.getItem(NOTION_CACHE_KEY);
-        if (cachedRaw) {
-          const cached = JSON.parse(cachedRaw);
-          if (cached && Array.isArray(cached.data)) {
-            setTimelineLogs(cached.data);
-            setSpecialDays(cached.specialDays || []);
-            generateProjectColorMap(cached.data);
-            paintedFromCache = true;
-            hasFreshCache = typeof cached.cachedAt === 'number' && (Date.now() - cached.cachedAt) < CACHE_TTL_MS;
-          }
+      const cachedRaw = localStorage.getItem(cacheKey);
+      if (cachedRaw) {
+        const cached = JSON.parse(cachedRaw);
+        if (cached && Array.isArray(cached.data)) {
+          setTimelineLogs(cached.data);
+          setSpecialDays(cached.specialDays || []);
+          generateProjectColorMap(cached.data);
+          paintedFromCache = true;
+          hasFreshCache = typeof cached.cachedAt === 'number' && (Date.now() - cached.cachedAt) < CACHE_TTL_MS;
         }
-      } catch (err) {
-        // Corrupt/unreadable cache entry -- ignore and fall through to a normal fetch.
       }
+    } catch (err) {
+      // Corrupt/unreadable cache entry -- ignore and fall through to a normal fetch.
+    }
 
-      if (!hasFreshCache) {
-        fetchLogsFromNotion(savedToken, savedSources, savedSpecialDbId, { silent: paintedFromCache });
-      }
-    } else {
-      setShowSettings(true);
+    if (!hasFreshCache) {
+      fetchLogsFromNotion(urlTenantId, parsedSourceFilter, { silent: paintedFromCache });
     }
   }, []);
 
@@ -884,23 +881,19 @@ function App() {
     }
   }, [customCategoryColors, customProjectColors, activeThemeId, isDarkMode]);
 
-  const fetchLogsFromNotion = async (token, sources, specDbId = specialDaysDatabaseId, options = {}) => {
+  const fetchLogsFromNotion = async (tenant, sourcesFilterArg, options = {}) => {
     const { silent = false } = options;
     if (!silent) setIsLoading(true);
     setFetchError(null);
     try {
       const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const validSources = (sources || [])
-        .filter(s => s.databaseId && s.databaseId.trim())
-        .map(s => ({ label: (s.label || '').trim() || 'Activity Log', databaseId: s.databaseId.trim() }));
 
       const response = await fetch('/api/get-notion-logs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          notionToken: token,
-          sources: validSources,
-          specialDaysDatabaseId: specDbId ? specDbId.trim() : '',
+          tenantId: tenant,
+          sources: sourcesFilterArg || undefined,
           timeZone: userTimeZone
         }),
       });
@@ -911,7 +904,8 @@ function App() {
         setSpecialDays(result.specialDays || []);
         generateProjectColorMap(result.data || []);
         try {
-          localStorage.setItem(NOTION_CACHE_KEY, JSON.stringify({
+          const cacheKey = `${NOTION_CACHE_KEY}:${tenant}:${sourcesFilterArg ? sourcesFilterArg.join(',') : 'all'}`;
+          localStorage.setItem(cacheKey, JSON.stringify({
             data: result.data || [],
             specialDays: result.specialDays || [],
             cachedAt: Date.now(),
@@ -970,26 +964,6 @@ function App() {
     setProjectColorMap(newColorMap);
   };
 
-  const handleSaveSettings = () => {
-    localStorage.setItem('notionToken', notionToken);
-    localStorage.setItem('notionSources', JSON.stringify(notionSources));
-    localStorage.setItem('specialDaysDatabaseId', specialDaysDatabaseId);
-    localStorage.removeItem('databaseId');
-    setShowSettings(false);
-    fetchLogsFromNotion(notionToken, notionSources, specialDaysDatabaseId);
-  };
-
-  const handleAddSource = () => {
-    setNotionSources(prev => [...prev, { id: crypto.randomUUID(), label: '', databaseId: '' }]);
-  };
-  const handleRemoveSource = (id) => {
-    setNotionSources(prev => prev.filter(s => s.id !== id));
-  };
-  const handleUpdateSource = (id, field, value) => {
-    setNotionSources(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
-  };
-
-  const hasConfiguredSource = notionSources.some(s => s.databaseId && s.databaseId.trim());
   const gap = themeTokens?.layout?.gridGap?.$value ?? 12;
   const cardRadius = themeTokens?.card?.radius?.$value ?? 6;
 
@@ -1276,6 +1250,29 @@ function App() {
     '--theme-secondary': currentThemeColors.secondary,
   };
 
+  if (needsSetup) {
+    return (
+      <div
+        style={{ ...themeVars, backgroundColor: 'var(--theme-bg)', color: 'var(--theme-text)' }}
+        className="w-full h-screen flex flex-col items-center justify-center gap-3 p-6 text-center transition-colors duration-300"
+      >
+        <h1 className="text-xl font-bold">This calendar hasn't been set up yet</h1>
+        <p className="text-sm opacity-70 max-w-sm">
+          Connect your Notion workspace on the setup page to activate this embed, then paste your unique link into this Notion block.
+        </p>
+        <a
+          href="/setup.html"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ backgroundColor: 'var(--theme-primary)' }}
+          className="mt-2 px-4 py-2 text-sm font-bold text-white rounded cursor-pointer hover:opacity-90 shadow-sm"
+        >
+          Go to Setup
+        </a>
+      </div>
+    );
+  }
+
   return (
     <div 
       ref={appRef} 
@@ -1337,8 +1334,8 @@ function App() {
 
         <div className="flex items-center gap-3">
           <button
-            onClick={() => { if (notionToken && hasConfiguredSource) fetchLogsFromNotion(notionToken, notionSources, specialDaysDatabaseId); }}
-            disabled={isLoading || !notionToken || !hasConfiguredSource}
+            onClick={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
+            disabled={isLoading || !tenantId}
             title="Sync Notion Data"
             style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
             className="px-3 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
@@ -1401,7 +1398,7 @@ function App() {
       {fetchError && !isLoading && (
         <div className="mb-4 p-3 shrink-0 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm flex justify-between items-center">
           <span>⚠️ {fetchError}</span>
-          <button onClick={() => fetchLogsFromNotion(notionToken, notionSources, specialDaysDatabaseId)} className="underline font-bold">Retry</button>
+          <button onClick={() => fetchLogsFromNotion(tenantId, sourceFilter)} className="underline font-bold">Retry</button>
         </div>
       )}
 
@@ -1999,7 +1996,7 @@ function App() {
                   }`}
                 >
                   <IconLink />
-                  <span>Notion Sync</span>
+                  <span>Connection</span>
                 </button>
 
                 <button 
@@ -2037,78 +2034,28 @@ function App() {
               </button>
             </div>
 
-            {/* TAB 1: NOTION SYNC */}
+            {/* TAB 1: CONNECTION (read-only -- Notion token & database list live server-side per license, see setup.html) */}
             {settingsTab === 'notion' && (
               <div className="flex-1 overflow-y-auto pr-1 space-y-4 min-h-0">
-                <div>
-                  <label className="block text-xs font-bold mb-1">Notion Integration Token</label>
-                  <input 
-                    type="password" 
-                    value={notionToken} 
-                    onChange={(e) => setNotionToken(e.target.value)} 
-                    style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-                    className="w-full border rounded px-3 py-2 text-sm outline-none"
-                    placeholder="secret_..."
-                  />
+                <div className="p-3 rounded border text-xs leading-relaxed" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                  Your Notion connection and database list are configured once via your license on the setup page, not here -- so anyone who opens this embed (including someone you've shared a page with) never sees your token or needs their own login.
                 </div>
                 <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="block text-xs font-bold">Databases to Sync</label>
-                    <button
-                      onClick={handleAddSource}
-                      style={{ color: 'var(--theme-primary)' }}
-                      className="text-[10px] font-bold cursor-pointer hover:underline flex items-center gap-1"
-                    >
-                      <IconPlus />
-                      <span>Add Database</span>
-                    </button>
-                  </div>
-                  <p className="text-[10px] opacity-60 mb-2">Each database becomes its own section in the sidebar (e.g. "Project Tracking", "Plant Care Journal"). All share the token above.</p>
-                  <div className="space-y-2">
-                    {notionSources.map((source) => (
-                      <div key={source.id} className="flex items-start gap-2 p-2 border rounded" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
-                        <div className="flex-1 space-y-1.5">
-                          <input
-                            type="text"
-                            value={source.label}
-                            onChange={(e) => handleUpdateSource(source.id, 'label', e.target.value)}
-                            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-                            className="w-full border rounded px-2.5 py-1.5 text-xs font-bold outline-none"
-                            placeholder={`Label, e.g. "Project Tracking"`}
-                          />
-                          <input
-                            type="text"
-                            value={source.databaseId}
-                            onChange={(e) => handleUpdateSource(source.id, 'databaseId', e.target.value)}
-                            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-                            className="w-full border rounded px-2.5 py-1.5 text-xs outline-none"
-                            placeholder="Database ID: 3728d5a5..."
-                          />
-                        </div>
-                        {notionSources.length > 1 && (
-                          <button
-                            onClick={() => handleRemoveSource(source.id)}
-                            title="Remove this database"
-                            className="text-xs font-bold text-rose-500 hover:underline cursor-pointer px-1 py-1.5 shrink-0"
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </div>
-                    ))}
+                  <label className="block text-xs font-bold mb-1 opacity-60">This embed is showing</label>
+                  <div className="text-sm font-semibold">
+                    {sourceFilter ? `${sourceFilter.length} selected database${sourceFilter.length === 1 ? '' : 's'}` : 'All configured databases'}
                   </div>
                 </div>
-                <div>
-                  <label className="block text-xs font-bold mb-1">Special Days Database ID (Optional)</label>
-                  <input 
-                    type="text" 
-                    value={specialDaysDatabaseId} 
-                    onChange={(e) => setSpecialDaysDatabaseId(e.target.value)} 
-                    style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-                    className="w-full border rounded px-3 py-2 text-sm outline-none"
-                    placeholder="Optional ID for Birthdays/Vacations/Events..."
-                  />
-                </div>
+                <a
+                  href="/setup.html"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ backgroundColor: 'var(--theme-primary)' }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white rounded cursor-pointer shadow-xs hover:opacity-90 w-fit"
+                >
+                  <IconLink />
+                  <span>Reconnect or change databases</span>
+                </a>
               </div>
             )}
 
@@ -2430,22 +2377,12 @@ function App() {
             )}
 
             <div className="mt-2 flex items-center justify-end gap-3 border-t pt-3 shrink-0" style={{ borderColor: 'var(--theme-border)' }}>
-              <button 
-                onClick={() => setShowSettings(false)} 
+              <button
+                onClick={() => setShowSettings(false)}
                 className="px-4 py-2 text-xs font-semibold cursor-pointer opacity-70 hover:opacity-100"
               >
                 Close
               </button>
-              {settingsTab === 'notion' && (
-                <button 
-                  onClick={handleSaveSettings}
-                  disabled={!notionToken || !hasConfiguredSource}
-                  style={{ backgroundColor: 'var(--theme-primary)' }}
-                  className="px-4 py-2 text-xs font-bold text-white rounded hover:opacity-90 disabled:opacity-50 cursor-pointer shadow-sm"
-                >
-                  Save & Sync
-                </button>
-              )}
             </div>
           </div>
         </div>
