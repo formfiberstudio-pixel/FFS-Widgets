@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 
 // Relative imports matching your folder structure
 import themeTokens from '../tokens.json';
@@ -983,27 +983,33 @@ function App() {
     );
   };
 
-  const getLogsForDate = (dateObj) => {
-    if (!dateObj || !Array.isArray(timelineLogs)) return [];
-    const targetYear = dateObj.getFullYear();
-    const targetMonth = dateObj.getMonth() + 1;
-    const targetDay = dateObj.getDate();
+  // getLogsForDate is called for every day cell across the month/week/year
+  // grids, and again on every re-render those grids trigger (e.g. each
+  // hover event while highlighting a project). Re-filtering the entire
+  // timelineLogs history per cell, per render used to make hovering a
+  // long-running project (lots of history to scan, lots of cells matching)
+  // visibly laggy. Indexing by date once here means each cell does an O(1)
+  // map lookup instead of an O(total logs) scan, and the index itself only
+  // rebuilds when the underlying data or filters actually change -- not on
+  // every hover-driven re-render.
+  const logsByDateKey = useMemo(() => {
+    const map = new Map();
+    if (!Array.isArray(timelineLogs)) return map;
+    for (const log of timelineLogs) {
+      if (!log.year || !log.monthNumber || log.dayNumber === undefined) continue;
+      if (selectedProjectFilters.length > 0 && !selectedProjectFilters.includes(log.Projects)) continue;
+      const key = `${Number(log.year)}-${Number(log.monthNumber)}-${Number(log.dayNumber)}`;
+      const bucket = map.get(key);
+      if (bucket) bucket.push(log);
+      else map.set(key, [log]);
+    }
+    return map;
+  }, [timelineLogs, selectedProjectFilters]);
 
-    return timelineLogs.filter((log) => {
-      if (log.year && log.monthNumber && log.dayNumber !== undefined) {
-        const matchesDate = (
-          Number(log.year) === targetYear &&
-          Number(log.monthNumber) === targetMonth &&
-          Number(log.dayNumber) === targetDay
-        );
-        if (!matchesDate) return false;
-        if (selectedProjectFilters.length > 0) {
-          return selectedProjectFilters.includes(log.Projects);
-        }
-        return true;
-      }
-      return false;
-    });
+  const getLogsForDate = (dateObj) => {
+    if (!dateObj) return [];
+    const key = `${dateObj.getFullYear()}-${dateObj.getMonth() + 1}-${dateObj.getDate()}`;
+    return logsByDateKey.get(key) || [];
   };
 
   const getThumbnailLogForDate = (dateObj, logs) => {
