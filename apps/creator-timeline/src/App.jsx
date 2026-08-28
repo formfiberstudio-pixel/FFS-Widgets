@@ -517,6 +517,7 @@ function App() {
   const [hoveredWeek, setHoveredWeek] = useState(null);
   const [hoveredMonthButtonIndex, setHoveredMonthButtonIndex] = useState(null);
   const [collapsedTypes, setCollapsedTypes] = useState({});
+  const [collapsedSources, setCollapsedSources] = useState({});
 
   // --- SIDEBAR WIDTH RESIZING STATE ---
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -685,7 +686,7 @@ function App() {
   const [fetchError, setFetchError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [notionToken, setNotionToken] = useState('');
-  const [databaseId, setDatabaseId] = useState('');
+  const [notionSources, setNotionSources] = useState([{ id: 'default', label: 'Activity Log', databaseId: '' }]);
   const [specialDaysDatabaseId, setSpecialDaysDatabaseId] = useState('');
 
   // --- PROJECT GRADIENT SHADE MAP ---
@@ -805,11 +806,29 @@ function App() {
   // -------------------------------------------------------------
   useEffect(() => {
     const savedToken = localStorage.getItem('notionToken');
-    const savedDbId = localStorage.getItem('databaseId');
     const savedSpecialDbId = localStorage.getItem('specialDaysDatabaseId') || '';
-    if (savedToken && savedDbId) {
+
+    // notionSources replaces the old single databaseId setting. Existing
+    // users won't have notionSources saved yet, so fall back to wrapping
+    // their old databaseId as a single-item list rather than losing it.
+    let savedSources = null;
+    try {
+      const rawSources = localStorage.getItem('notionSources');
+      if (rawSources) savedSources = JSON.parse(rawSources);
+    } catch (err) {
+      savedSources = null;
+    }
+    if (!Array.isArray(savedSources) || savedSources.length === 0) {
+      const legacyDbId = localStorage.getItem('databaseId');
+      savedSources = legacyDbId
+        ? [{ id: 'default', label: 'Activity Log', databaseId: legacyDbId }]
+        : [{ id: 'default', label: 'Activity Log', databaseId: '' }];
+    }
+    setNotionSources(savedSources);
+
+    const hasConfiguredSource = savedSources.some(s => s.databaseId && s.databaseId.trim());
+    if (savedToken && hasConfiguredSource) {
       setNotionToken(savedToken);
-      setDatabaseId(savedDbId);
       setSpecialDaysDatabaseId(savedSpecialDbId);
 
       // Cache-first: paint instantly from the last synced snapshot (if any),
@@ -836,7 +855,7 @@ function App() {
       }
 
       if (!hasFreshCache) {
-        fetchLogsFromNotion(savedToken, savedDbId, savedSpecialDbId, { silent: paintedFromCache });
+        fetchLogsFromNotion(savedToken, savedSources, savedSpecialDbId, { silent: paintedFromCache });
       }
     } else {
       setShowSettings(true);
@@ -849,19 +868,22 @@ function App() {
     }
   }, [customCategoryColors, customProjectColors, activeThemeId, isDarkMode]);
 
-  const fetchLogsFromNotion = async (token, dbId, specDbId = specialDaysDatabaseId, options = {}) => {
+  const fetchLogsFromNotion = async (token, sources, specDbId = specialDaysDatabaseId, options = {}) => {
     const { silent = false } = options;
     if (!silent) setIsLoading(true);
     setFetchError(null);
     try {
       const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const validSources = (sources || [])
+        .filter(s => s.databaseId && s.databaseId.trim())
+        .map(s => ({ label: (s.label || '').trim() || 'Activity Log', databaseId: s.databaseId.trim() }));
 
       const response = await fetch('/api/get-notion-logs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           notionToken: token,
-          databaseId: dbId,
+          sources: validSources,
           specialDaysDatabaseId: specDbId ? specDbId.trim() : '',
           timeZone: userTimeZone
         }),
@@ -934,12 +956,24 @@ function App() {
 
   const handleSaveSettings = () => {
     localStorage.setItem('notionToken', notionToken);
-    localStorage.setItem('databaseId', databaseId);
+    localStorage.setItem('notionSources', JSON.stringify(notionSources));
     localStorage.setItem('specialDaysDatabaseId', specialDaysDatabaseId);
+    localStorage.removeItem('databaseId');
     setShowSettings(false);
-    fetchLogsFromNotion(notionToken, databaseId, specialDaysDatabaseId);
+    fetchLogsFromNotion(notionToken, notionSources, specialDaysDatabaseId);
   };
 
+  const handleAddSource = () => {
+    setNotionSources(prev => [...prev, { id: crypto.randomUUID(), label: '', databaseId: '' }]);
+  };
+  const handleRemoveSource = (id) => {
+    setNotionSources(prev => prev.filter(s => s.id !== id));
+  };
+  const handleUpdateSource = (id, field, value) => {
+    setNotionSources(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
+  };
+
+  const hasConfiguredSource = notionSources.some(s => s.databaseId && s.databaseId.trim());
   const gap = themeTokens?.layout?.gridGap?.$value ?? 12;
   const cardRadius = themeTokens?.card?.radius?.$value ?? 6;
 
@@ -1035,15 +1069,17 @@ function App() {
   const getYearProjects = (targetYear) => {
     if (!Array.isArray(timelineLogs)) return [];
     const yearLogs = timelineLogs.filter(log => Number(log.year) === targetYear);
-    
+
     const projectMap = {};
     yearLogs.forEach(log => {
       const projectName = log.Projects || 'Untitled Project';
-      const key = projectName + '::' + (log.projectType || 'General');
+      const source = log.source || 'Activity Log';
+      const key = source + '::' + projectName + '::' + (log.projectType || 'General');
       const logDate = new Date(Number(log.year), Number(log.monthNumber) - 1, Number(log.dayNumber));
       if (!projectMap[key]) {
         projectMap[key] = {
           title: projectName,
+          source,
           projectType: log.projectType || 'General',
           projectTypeColor: log.projectTypeColor,
           startDate: logDate,
@@ -1058,12 +1094,35 @@ function App() {
 
     const projects = Object.values(projectMap);
     projects.sort((a, b) => {
+      if (a.source !== b.source) return a.source.localeCompare(b.source);
       if (a.projectType !== b.projectType) return a.projectType.localeCompare(b.projectType);
       return a.startDate - b.startDate;
     });
     return projects;
   };
 
+  // Sidebar hierarchy is Database (source) > Category (type) > Project, one
+  // level deeper than before now that logs can come from more than one
+  // Notion database. collapsedTypes/collapsedSources are keyed by the full
+  // "source::type" / source string so two databases that happen to share a
+  // category name (e.g. both defaulting to "Log") don't share collapse state.
+  const groupedBySource = (() => {
+    const projects = getYearProjects(year);
+    const grouped = {};
+    projects.forEach(proj => {
+      const source = proj.source || 'Activity Log';
+      const type = proj.projectType || 'General';
+      if (!grouped[source]) grouped[source] = {};
+      if (!grouped[source][type]) grouped[source][type] = [];
+      grouped[source][type].push(proj);
+    });
+    return grouped;
+  })();
+
+  // Flat Type > Project view (source-agnostic) for the color palette tab --
+  // colors are keyed by type/project title only, not by which database an
+  // entry came from, so two databases sharing a category name should (and
+  // here do) share that category's color editor rather than getting split.
   const groupedProjects = (() => {
     const projects = getYearProjects(year);
     const grouped = {};
@@ -1075,9 +1134,28 @@ function App() {
     return grouped;
   })();
 
-  const toggleTypeAccordion = (type) => setCollapsedTypes(prev => ({ ...prev, [type]: !prev[type] }));
-  const handleExpandAllCategories = () => { const s = {}; Object.keys(groupedProjects).forEach(t => { s[t] = false; }); setCollapsedTypes(s); };
-  const handleCollapseAllCategories = () => { const s = {}; Object.keys(groupedProjects).forEach(t => { s[t] = true; }); setCollapsedTypes(s); };
+  const toggleSourceAccordion = (source) => setCollapsedSources(prev => ({ ...prev, [source]: !prev[source] }));
+  const toggleTypeAccordion = (source, type) => setCollapsedTypes(prev => ({ ...prev, [`${source}::${type}`]: !prev[`${source}::${type}`] }));
+  const handleExpandAllCategories = () => {
+    const sourceState = {};
+    const typeState = {};
+    Object.entries(groupedBySource).forEach(([source, types]) => {
+      sourceState[source] = false;
+      Object.keys(types).forEach(type => { typeState[`${source}::${type}`] = false; });
+    });
+    setCollapsedSources(sourceState);
+    setCollapsedTypes(typeState);
+  };
+  const handleCollapseAllCategories = () => {
+    const sourceState = {};
+    const typeState = {};
+    Object.entries(groupedBySource).forEach(([source, types]) => {
+      sourceState[source] = true;
+      Object.keys(types).forEach(type => { typeState[`${source}::${type}`] = true; });
+    });
+    setCollapsedSources(sourceState);
+    setCollapsedTypes(typeState);
+  };
   const handleShowAllFilters = () => setSelectedProjectFilters([]);
   const toggleProjectFilter = (title) => setSelectedProjectFilters((prev) => prev.includes(title) ? prev.filter(t => t !== title) : [...prev, title]);
 
@@ -1203,8 +1281,8 @@ function App() {
 
         <div className="flex items-center gap-3">
           <button
-            onClick={() => { if (notionToken && databaseId) fetchLogsFromNotion(notionToken, databaseId, specialDaysDatabaseId); }}
-            disabled={isLoading || !notionToken || !databaseId}
+            onClick={() => { if (notionToken && hasConfiguredSource) fetchLogsFromNotion(notionToken, notionSources, specialDaysDatabaseId); }}
+            disabled={isLoading || !notionToken || !hasConfiguredSource}
             title="Sync Notion Data"
             style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
             className="px-3 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
@@ -1267,7 +1345,7 @@ function App() {
       {fetchError && !isLoading && (
         <div className="mb-4 p-3 shrink-0 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm flex justify-between items-center">
           <span>⚠️ {fetchError}</span>
-          <button onClick={() => fetchLogsFromNotion(notionToken, databaseId, specialDaysDatabaseId)} className="underline font-bold">Retry</button>
+          <button onClick={() => fetchLogsFromNotion(notionToken, notionSources, specialDaysDatabaseId)} className="underline font-bold">Retry</button>
         </div>
       )}
 
@@ -1310,56 +1388,76 @@ function App() {
               </div>
             </div>
             
-            <div className="flex-1 overflow-y-auto pr-1 space-y-3 min-h-0">
-              {Object.entries(groupedProjects).map(([type, projs]) => {
-                const isHidden = collapsedTypes[type] === true;
-                const baseTypeHex = customCategoryColors[type] || (
-                  projs[0]?.projectTypeColor && NOTION_COLOR_MAP[projs[0].projectTypeColor] 
-                    ? NOTION_COLOR_MAP[projs[0].projectTypeColor] 
-                    : (themeTokens?.colour?.dot?.[type]?.$value?.hex || currentThemeColors.primary)
-                );
-                const categoryBorderColor = adjustHexColor(baseTypeHex, 40);
+            <div className="flex-1 overflow-y-auto pr-1 space-y-4 min-h-0">
+              {(() => {
+                const sourceEntries = Object.entries(groupedBySource);
+                const showSourceHeaders = sourceEntries.length > 1;
+                return sourceEntries.map(([source, typesForSource]) => {
+                  const isSourceHidden = showSourceHeaders && collapsedSources[source] === true;
+                  return (
+                    <div key={source} className="space-y-3">
+                      {showSourceHeaders && (
+                        <div
+                          onClick={() => toggleSourceAccordion(source)}
+                          className="flex items-center justify-between px-0.5 cursor-pointer select-none"
+                        >
+                          <span className="font-black uppercase tracking-wider opacity-80" style={{ fontSize: `${Math.round(11 * scaleFactor)}px` }}>{source}</span>
+                          <span className="text-[9px] font-mono opacity-50">{isSourceHidden ? '▼' : '▲'}</span>
+                        </div>
+                      )}
+                      {!isSourceHidden && Object.entries(typesForSource).map(([type, projs]) => {
+                        const isHidden = collapsedTypes[`${source}::${type}`] === true;
+                        const baseTypeHex = customCategoryColors[type] || (
+                          projs[0]?.projectTypeColor && NOTION_COLOR_MAP[projs[0].projectTypeColor]
+                            ? NOTION_COLOR_MAP[projs[0].projectTypeColor]
+                            : (themeTokens?.colour?.dot?.[type]?.$value?.hex || currentThemeColors.primary)
+                        );
+                        const categoryBorderColor = adjustHexColor(baseTypeHex, 40);
 
-                return (
-                  <div key={type} className="border rounded-md overflow-hidden shrink-0 shadow-sm" style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
-                    <div onClick={() => toggleTypeAccordion(type)} className="text-[10px] font-bold uppercase tracking-wider p-2.5 flex items-center justify-between cursor-pointer transition-colors hover:opacity-80">
-                      <span className="tracking-wide font-black" style={{ fontSize: `${Math.round(10 * scaleFactor)}px` }}>{type}</span>
-                      <span className="text-[9px] font-mono opacity-60">{isHidden ? '▼' : '▲'}</span>
-                    </div>
-                    {!isHidden && (
-                      <div className="p-2 pt-0 space-y-1.5 border-t" style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
-                        {projs.map((p, i) => {
-                          const isSelected = selectedProjectFilters.includes(p.title);
-                          const dynamicFilterActive = selectedProjectFilters.length > 0;
-                          const isHovered = hoveredProjectTitle === p.title;
-                          const projectDotHex = projectColorMap[p.title] || baseTypeHex;
-
-                          return (
-                            <div 
-                              key={i} 
-                              onClick={() => toggleProjectFilter(p.title)} 
-                              onMouseEnter={() => setHoveredProjectTitle(p.title)} 
-                              onMouseLeave={() => setHoveredProjectTitle(null)} 
-                              style={{ 
-                                backgroundColor: 'var(--theme-bg)',
-                                borderColor: isHovered || isSelected ? 'var(--theme-secondary)' : 'var(--theme-border)',
-                                opacity: dynamicFilterActive && !isSelected && !isHovered ? 0.35 : 1,
-                                fontSize: `${Math.round(12 * scaleFactor)}px`
-                              }}
-                              className={`p-2.5 rounded border transition-all cursor-pointer flex items-center gap-2 ${
-                                isHovered ? 'ring-1 ring-[var(--theme-secondary)] scale-[1.02] font-bold z-10 relative' : ''
-                              }`}
-                            >
-                              <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20 shadow-sm" style={{ backgroundColor: projectDotHex }} />
-                              <span className="truncate">{p.title}</span>
+                        return (
+                          <div key={type} className="border rounded-md overflow-hidden shrink-0 shadow-sm" style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
+                            <div onClick={() => toggleTypeAccordion(source, type)} className="text-[10px] font-bold uppercase tracking-wider p-2.5 flex items-center justify-between cursor-pointer transition-colors hover:opacity-80">
+                              <span className="tracking-wide font-black" style={{ fontSize: `${Math.round(10 * scaleFactor)}px` }}>{type}</span>
+                              <span className="text-[9px] font-mono opacity-60">{isHidden ? '▼' : '▲'}</span>
                             </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                            {!isHidden && (
+                              <div className="p-2 pt-0 space-y-1.5 border-t" style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
+                                {projs.map((p, i) => {
+                                  const isSelected = selectedProjectFilters.includes(p.title);
+                                  const dynamicFilterActive = selectedProjectFilters.length > 0;
+                                  const isHovered = hoveredProjectTitle === p.title;
+                                  const projectDotHex = projectColorMap[p.title] || baseTypeHex;
+
+                                  return (
+                                    <div
+                                      key={i}
+                                      onClick={() => toggleProjectFilter(p.title)}
+                                      onMouseEnter={() => setHoveredProjectTitle(p.title)}
+                                      onMouseLeave={() => setHoveredProjectTitle(null)}
+                                      style={{
+                                        backgroundColor: 'var(--theme-bg)',
+                                        borderColor: isHovered || isSelected ? 'var(--theme-secondary)' : 'var(--theme-border)',
+                                        opacity: dynamicFilterActive && !isSelected && !isHovered ? 0.35 : 1,
+                                        fontSize: `${Math.round(12 * scaleFactor)}px`
+                                      }}
+                                      className={`p-2.5 rounded border transition-all cursor-pointer flex items-center gap-2 ${
+                                        isHovered ? 'ring-1 ring-[var(--theme-secondary)] scale-[1.02] font-bold z-10 relative' : ''
+                                      }`}
+                                    >
+                                      <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20 shadow-sm" style={{ backgroundColor: projectDotHex }} />
+                                      <span className="truncate">{p.title}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                });
+              })()}
             </div>
           </aside>
         )}
@@ -1880,15 +1978,51 @@ function App() {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold mb-1">Activity Log Database ID</label>
-                  <input 
-                    type="text" 
-                    value={databaseId} 
-                    onChange={(e) => setDatabaseId(e.target.value)} 
-                    style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-                    className="w-full border rounded px-3 py-2 text-sm outline-none"
-                    placeholder="3728d5a5..."
-                  />
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold">Databases to Sync</label>
+                    <button
+                      onClick={handleAddSource}
+                      style={{ color: 'var(--theme-primary)' }}
+                      className="text-[10px] font-bold cursor-pointer hover:underline flex items-center gap-1"
+                    >
+                      <IconPlus />
+                      <span>Add Database</span>
+                    </button>
+                  </div>
+                  <p className="text-[10px] opacity-60 mb-2">Each database becomes its own section in the sidebar (e.g. "Project Tracking", "Plant Care Journal"). All share the token above.</p>
+                  <div className="space-y-2">
+                    {notionSources.map((source) => (
+                      <div key={source.id} className="flex items-start gap-2 p-2 border rounded" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                        <div className="flex-1 space-y-1.5">
+                          <input
+                            type="text"
+                            value={source.label}
+                            onChange={(e) => handleUpdateSource(source.id, 'label', e.target.value)}
+                            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+                            className="w-full border rounded px-2.5 py-1.5 text-xs font-bold outline-none"
+                            placeholder={`Label, e.g. "Project Tracking"`}
+                          />
+                          <input
+                            type="text"
+                            value={source.databaseId}
+                            onChange={(e) => handleUpdateSource(source.id, 'databaseId', e.target.value)}
+                            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+                            className="w-full border rounded px-2.5 py-1.5 text-xs outline-none"
+                            placeholder="Database ID: 3728d5a5..."
+                          />
+                        </div>
+                        {notionSources.length > 1 && (
+                          <button
+                            onClick={() => handleRemoveSource(source.id)}
+                            title="Remove this database"
+                            className="text-xs font-bold text-rose-500 hover:underline cursor-pointer px-1 py-1.5 shrink-0"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs font-bold mb-1">Special Days Database ID (Optional)</label>
@@ -2230,8 +2364,8 @@ function App() {
               </button>
               {settingsTab === 'notion' && (
                 <button 
-                  onClick={handleSaveSettings} 
-                  disabled={!notionToken || !databaseId}
+                  onClick={handleSaveSettings}
+                  disabled={!notionToken || !hasConfiguredSource}
                   style={{ backgroundColor: 'var(--theme-primary)' }}
                   className="px-4 py-2 text-xs font-bold text-white rounded hover:opacity-90 disabled:opacity-50 cursor-pointer shadow-sm"
                 >
