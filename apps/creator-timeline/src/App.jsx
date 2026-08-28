@@ -123,6 +123,20 @@ const IconPlus = () => (
   </svg>
 );
 
+const IconEye = () => (
+  <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </svg>
+);
+
+const IconEyeOff = () => (
+  <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a20.3 20.3 0 0 1 5.06-6.06M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a20.3 20.3 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>
+  </svg>
+);
+
 // -------------------------------------------------------------
 // BUILT-IN THEME PRESETS
 // -------------------------------------------------------------
@@ -518,6 +532,8 @@ function App() {
   const [hoveredMonthButtonIndex, setHoveredMonthButtonIndex] = useState(null);
   const [collapsedTypes, setCollapsedTypes] = useState({});
   const [collapsedSources, setCollapsedSources] = useState({});
+  const [hiddenSources, setHiddenSources] = useState({});
+  const [hiddenTypes, setHiddenTypes] = useState({});
 
   // --- SIDEBAR WIDTH RESIZING STATE ---
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -1031,6 +1047,10 @@ function App() {
     if (!Array.isArray(timelineLogs)) return map;
     for (const log of timelineLogs) {
       if (!log.year || !log.monthNumber || log.dayNumber === undefined) continue;
+      const source = log.source || 'Activity Log';
+      const type = log.projectType || 'General';
+      if (hiddenSources[source]) continue;
+      if (hiddenTypes[`${source}::${type}`]) continue;
       if (selectedProjectFilters.length > 0 && !selectedProjectFilters.includes(log.Projects)) continue;
       const key = `${Number(log.year)}-${Number(log.monthNumber)}-${Number(log.dayNumber)}`;
       const bucket = map.get(key);
@@ -1038,7 +1058,7 @@ function App() {
       else map.set(key, [log]);
     }
     return map;
-  }, [timelineLogs, selectedProjectFilters]);
+  }, [timelineLogs, selectedProjectFilters, hiddenSources, hiddenTypes]);
 
   const getLogsForDate = (dateObj) => {
     if (!dateObj) return [];
@@ -1136,6 +1156,15 @@ function App() {
 
   const toggleSourceAccordion = (source) => setCollapsedSources(prev => ({ ...prev, [source]: !prev[source] }));
   const toggleTypeAccordion = (source, type) => setCollapsedTypes(prev => ({ ...prev, [`${source}::${type}`]: !prev[`${source}::${type}`] }));
+
+  // Independent of the accordion open/closed state above -- this controls
+  // whether a branch's entries appear on the calendar at all. Hiding a
+  // source/category doesn't touch selectedProjectFilters (the existing
+  // "isolate to just these projects" click behavior on individual leaf
+  // rows), so the two compose: hidden branches are always excluded, and an
+  // active isolate-filter narrows further within whatever isn't hidden.
+  const toggleSourceVisibility = (source) => setHiddenSources(prev => ({ ...prev, [source]: !prev[source] }));
+  const toggleTypeVisibility = (source, type) => setHiddenTypes(prev => ({ ...prev, [`${source}::${type}`]: !prev[`${source}::${type}`] }));
   const handleExpandAllCategories = () => {
     const sourceState = {};
     const typeState = {};
@@ -1399,10 +1428,19 @@ function App() {
                       {showSourceHeaders && (
                         <div
                           onClick={() => toggleSourceAccordion(source)}
-                          className="flex items-center justify-between px-0.5 cursor-pointer select-none"
+                          className={`flex items-center justify-between px-0.5 cursor-pointer select-none ${hiddenSources[source] ? 'opacity-40' : ''}`}
                         >
                           <span className="font-black uppercase tracking-wider opacity-80" style={{ fontSize: `${Math.round(11 * scaleFactor)}px` }}>{source}</span>
-                          <span className="text-[9px] font-mono opacity-50">{isSourceHidden ? '▼' : '▲'}</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); toggleSourceVisibility(source); }}
+                              title={hiddenSources[source] ? 'Show this database on the calendar' : 'Hide this database from the calendar'}
+                              className="cursor-pointer opacity-70 hover:opacity-100"
+                            >
+                              {hiddenSources[source] ? <IconEyeOff /> : <IconEye />}
+                            </button>
+                            <span className="text-[9px] font-mono opacity-50">{isSourceHidden ? '▼' : '▲'}</span>
+                          </div>
                         </div>
                       )}
                       {!isSourceHidden && Object.entries(typesForSource).map(([type, projs]) => {
@@ -1415,10 +1453,19 @@ function App() {
                         const categoryBorderColor = adjustHexColor(baseTypeHex, 40);
 
                         return (
-                          <div key={type} className="border rounded-md overflow-hidden shrink-0 shadow-sm" style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
+                          <div key={type} className={`border rounded-md overflow-hidden shrink-0 shadow-sm ${hiddenTypes[`${source}::${type}`] ? 'opacity-40' : ''}`} style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
                             <div onClick={() => toggleTypeAccordion(source, type)} className="text-[10px] font-bold uppercase tracking-wider p-2.5 flex items-center justify-between cursor-pointer transition-colors hover:opacity-80">
                               <span className="tracking-wide font-black" style={{ fontSize: `${Math.round(10 * scaleFactor)}px` }}>{type}</span>
-                              <span className="text-[9px] font-mono opacity-60">{isHidden ? '▼' : '▲'}</span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); toggleTypeVisibility(source, type); }}
+                                  title={hiddenTypes[`${source}::${type}`] ? 'Show this category on the calendar' : 'Hide this category from the calendar'}
+                                  className="cursor-pointer opacity-70 hover:opacity-100"
+                                >
+                                  {hiddenTypes[`${source}::${type}`] ? <IconEyeOff /> : <IconEye />}
+                                </button>
+                                <span className="text-[9px] font-mono opacity-60">{isHidden ? '▼' : '▲'}</span>
+                              </div>
                             </div>
                             {!isHidden && (
                               <div className="p-2 pt-0 space-y-1.5 border-t" style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
