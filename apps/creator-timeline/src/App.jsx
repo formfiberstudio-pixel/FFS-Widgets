@@ -1287,25 +1287,52 @@ function App() {
       <header className="shrink-0 mb-5 flex flex-wrap items-center justify-between gap-4">
         <div>
           {viewMode === 'month' ? (
-            <h1 className="text-2xl font-bold tracking-tight inline-flex items-center gap-2">
-              <span>{currentDate.toLocaleDateString('en-US', { month: 'long' })}</span>
-              <button onClick={() => setViewMode('year')} className="cursor-pointer hover:underline" style={{ color: 'var(--theme-primary)' }}>{currentDate.getFullYear()}</button>
-            </h1>
+            <div className="leading-none">
+              <button
+                onClick={() => setViewMode('year')}
+                title="Jump to Year view"
+                className="block font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
+                style={{ fontSize: '3.25rem', color: 'var(--theme-primary)' }}
+              >
+                {currentDate.getFullYear()}
+              </button>
+              <div className="font-black uppercase tracking-wide mt-0.5" style={{ fontSize: '1.15rem' }}>
+                {currentDate.toLocaleDateString('en-US', { month: 'long' })}
+              </div>
+            </div>
           ) : viewMode === 'week' ? (
-            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-1.5">
-              <span className="cursor-pointer hover:opacity-80" onClick={() => setViewMode('month')}>
-                {startOfWeek?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-              </span>
-              <span>–</span>
-              <span>{endOfWeek?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })},</span>
-              <span className="cursor-pointer" style={{ color: 'var(--theme-primary)' }} onClick={() => setViewMode('year')}>{endOfWeek?.getFullYear()}</span>
-            </h1>
+            <div className="leading-none">
+              <button
+                onClick={() => setViewMode('year')}
+                title="Jump to Year view"
+                className="block font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
+                style={{ fontSize: '3.25rem', color: 'var(--theme-primary)' }}
+              >
+                {endOfWeek?.getFullYear()}
+              </button>
+              <button
+                onClick={() => setViewMode('month')}
+                title="Jump to Month view"
+                className="block font-black uppercase tracking-wide mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
+                style={{ fontSize: '1.15rem' }}
+              >
+                {startOfWeek?.getMonth() === endOfWeek?.getMonth()
+                  ? startOfWeek?.toLocaleDateString('en-US', { month: 'long' })
+                  : `${startOfWeek?.toLocaleDateString('en-US', { month: 'short' })} – ${endOfWeek?.toLocaleDateString('en-US', { month: 'short' })}`}
+              </button>
+              <div className="font-black uppercase tracking-wide" style={{ fontSize: '1.15rem' }}>
+                {startOfWeek?.getDate()}–{endOfWeek?.getDate()}
+              </div>
+            </div>
           ) : (
-            <h1 className="text-2xl font-bold tracking-tight">
-              <span style={{ color: 'var(--theme-primary)' }}>{year}</span> Projects Overview
-            </h1>
+            <div
+              className="font-light tracking-tight leading-none"
+              style={{ fontSize: '3.25rem', color: 'var(--theme-primary)' }}
+            >
+              {year}
+            </div>
           )}
-          <p className="text-sm mt-1 opacity-60">Driven by Figma Tokens & Notion Data.</p>
+          <p className="text-sm mt-2 opacity-60">Driven by Figma Tokens & Notion Data.</p>
         </div>
 
         <div className="flex items-center gap-3">
