@@ -53,7 +53,13 @@ export default async function handler(req, res) {
       return res.status(413).json({ error: 'Source image too large' });
     }
 
-    const thumbnail = await sharp(Buffer.from(arrayBuffer))
+    // sharp's default ~268-megapixel decompression-bomb guard was rejecting
+    // real photos (large phone panoramas/high-res shots easily clear that).
+    // Safe to lift here: the host allowlist above restricts sources to
+    // Notion's own file hosting, i.e. the widget owner's own uploaded
+    // photos, not arbitrary internet input. MAX_SOURCE_BYTES above remains
+    // the actual resource-exhaustion guard.
+    const thumbnail = await sharp(Buffer.from(arrayBuffer), { limitInputPixels: false })
       .resize({ width, withoutEnlargement: true })
       .jpeg({ quality: 78 })
       .toBuffer();
