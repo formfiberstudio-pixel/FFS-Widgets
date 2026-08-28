@@ -1,3 +1,16 @@
+import { isThumbnailableUrl } from './_lib/notionImageHosts.js';
+
+// Route Notion's images (often multi-MB originals straight from a phone)
+// through our own resize proxy so the calendar grid decodes/paints small
+// thumbnails instead of full-resolution photos. Only rewrite hosts the
+// proxy actually accepts (see notionImageHosts.js) -- anything else
+// (e.g. an externally-hosted image someone pasted into Notion) is passed
+// through unchanged rather than pointed at a proxy that would reject it.
+function toThumbnailUrl(rawUrl) {
+  if (!rawUrl || !isThumbnailableUrl(rawUrl)) return rawUrl;
+  return `/api/image-thumb?url=${encodeURIComponent(rawUrl)}&w=640`;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -160,7 +173,8 @@ export default async function handler(req, res) {
             const blockData = await blockRes.json();
             const imgBlock = blockData.results.find(b => b.type === 'image');
             if (imgBlock) {
-              imageUrl = imgBlock.image.type === 'external' ? imgBlock.image.external.url : imgBlock.image.file.url;
+              const rawImageUrl = imgBlock.image.type === 'external' ? imgBlock.image.external.url : imgBlock.image.file.url;
+              imageUrl = toThumbnailUrl(rawImageUrl);
             }
             
             for (const b of blockData.results) {
