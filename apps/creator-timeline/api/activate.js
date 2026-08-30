@@ -80,7 +80,7 @@ export default async function handler(req, res) {
   // One license, one Notion workspace -- keeps a license key from being
   // shared around while still letting its real owner rotate their own
   // integration secret freely. Both bypass kinds are exempt: the owner's
-  // own testing, and friends/family who aren't paying customers being
+  // own testing, and family who aren't paying customers being
   // protected against license sharing in the first place.
   const isBypassActivation = verification.purchase?.owner === true;
   let boundNotionBotId = existingTenant?.boundNotionBotId || null;

@@ -1,11 +1,11 @@
 import { isExactOwnerKey } from '../_lib/gumroad.js';
 import { getTenant, deleteTenant } from '../_lib/tenantStore.js';
 
-// Deletes one bypass tenant's record outright, immediately breaking their
+// Deletes one family tenant's record outright, immediately breaking their
 // embed (it'll show the "hasn't been set up yet" screen next load) without
-// touching anyone else's. Only ever deletes records already flagged
-// isBypassTenant -- never a real paying customer's, even if their tenantId
-// were somehow guessed or pasted in here.
+// touching anyone else's. Only ever deletes records with bypassKind
+// 'family' -- never a real paying customer's, and never the owner's own
+// tenant either, even if either tenantId were somehow pasted in here.
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -27,8 +27,8 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Could not load that tenant right now.' });
   }
 
-  if (!tenant || !tenant.isBypassTenant) {
-    return res.status(404).json({ error: 'No matching bypass tenant found.' });
+  if (!tenant || tenant.bypassKind !== 'family') {
+    return res.status(404).json({ error: 'No matching family tenant found.' });
   }
 
   try {

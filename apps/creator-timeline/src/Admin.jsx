@@ -7,8 +7,8 @@ function formatDate(ms) {
   return new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-// Lists and revokes friends & family (bypass key) tenants. Gated on the
-// bare OWNER_BYPASS_KEY -- there's no separate admin account/password to
+// Lists and revokes family (bypass key) tenants. Gated on the bare
+// OWNER_BYPASS_KEY -- there's no separate admin account/password to
 // manage, it's the same secret used to grant free access in the first
 // place. Never shows or touches real paying customers' tenants.
 export default function Admin() {
@@ -25,7 +25,7 @@ export default function Admin() {
     setStatus('loading');
     setErrorMessage('');
     try {
-      const res = await fetch('/api/admin/list-bypass-tenants', {
+      const res = await fetch('/api/admin/list-family-tenants', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminKey: key }),
@@ -88,8 +88,8 @@ export default function Admin() {
       <div className="w-full max-w-2xl space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold">Bypass Tenants</h1>
-            <p className="text-sm text-neutral-400 mt-1">Friends & family activations created with your FRIENDS_BYPASS_KEY. Your own tenant isn't listed here.</p>
+            <h1 className="text-2xl font-bold">Family Tenants</h1>
+            <p className="text-sm text-neutral-400 mt-1">Family activations created with your FAMILY_BYPASS_KEY. Your own tenant isn't listed here.</p>
           </div>
           {adminKey && (
             <button onClick={handleLock} className="text-sm text-neutral-400 hover:text-neutral-200 underline cursor-pointer">Lock</button>
@@ -125,7 +125,7 @@ export default function Admin() {
               <div className="p-3 rounded bg-rose-950 border border-rose-800 text-rose-200 text-sm">{errorMessage}</div>
             )}
             {tenants && tenants.length === 0 && (
-              <p className="text-sm text-neutral-400">No bypass tenants yet -- they'll show up here once someone activates with a key starting with your bypass secret.</p>
+              <p className="text-sm text-neutral-400">No family tenants yet -- they'll show up here once someone activates with a key starting with your FAMILY_BYPASS_KEY.</p>
             )}
             {tenants && tenants.map((t) => (
               <div key={t.tenantId} className={`flex items-center justify-between gap-3 p-3 ${cardClass}`}>
