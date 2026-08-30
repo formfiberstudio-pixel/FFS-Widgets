@@ -843,6 +843,7 @@ function App() {
   const [needsSetup, setNeedsSetup] = useState(false);
   const [savedViews, setSavedViews] = useState([]); // named embed-URL presets from setup.html, shown in Settings for quick copying
   const [copiedViewId, setCopiedViewId] = useState('');
+  const [showReconfigure, setShowReconfigure] = useState(false);
 
   // --- PROJECT GRADIENT SHADE MAP ---
   const [projectColorMap, setProjectColorMap] = useState({});
@@ -1055,6 +1056,35 @@ function App() {
       setFetchError('Network error occurred while fetching logs.');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Deleting a saved view only prunes a label/bookmark over already-visible
+  // config -- it can't grant or reveal access -- so unlike reconfiguring the
+  // Notion connection itself, this doesn't require the license key (see
+  // api/delete-saved-view.js).
+  const handleDeleteSavedView = async (viewId) => {
+    try {
+      const res = await fetch('/api/delete-saved-view', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId, viewId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) return;
+      setSavedViews(data.savedViews || []);
+      try {
+        const cacheKey = `${NOTION_CACHE_KEY}:${tenantId}:all`;
+        const cachedRaw = localStorage.getItem(cacheKey);
+        if (cachedRaw) {
+          const cached = JSON.parse(cachedRaw);
+          localStorage.setItem(cacheKey, JSON.stringify({ ...cached, savedViews: data.savedViews || [] }));
+        }
+      } catch (err) {
+        // Best-effort cache update -- a stale list just reappears until the next real sync.
+      }
+    } catch (err) {
+      // Silent -- the list simply won't update; the user can retry the click.
     }
   };
 
@@ -1428,10 +1458,7 @@ function App() {
             <h1 className="text-xl font-bold">This calendar hasn't been set up yet</h1>
             <p className="text-sm opacity-70 mt-1">Connect your Notion workspace below to activate this embed.</p>
           </div>
-          {/* Fixed dark styling regardless of the active theme -- ActivationPanel's
-              own Tailwind classes assume a dark background for contrast, same as
-              the standalone setup page it's shared with. */}
-          <div className="p-4 rounded-xl bg-neutral-950 text-neutral-100">
+          <div className="p-4 rounded-xl border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
             <ActivationPanel
               embedded
               onActivated={handleActivatedFromEmpty}
@@ -2230,21 +2257,44 @@ function App() {
                         <div key={v.id} className="flex items-center justify-between gap-2 p-2 rounded border text-xs" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                           <div className="min-w-0">
                             <div className="font-bold truncate">{v.label}</div>
-                            <div className="opacity-60">{v.sources ? `${v.sources.length} database${v.sources.length === 1 ? '' : 's'}` : 'All databases'}</div>
+                            <div className="opacity-60">
+                              {v.sources && v.sources.length === 1 ? (
+                                <a
+                                  href={`https://www.notion.so/${v.sources[0].replace(/-/g, '')}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="hover:underline"
+                                  style={{ color: 'var(--theme-primary)' }}
+                                >
+                                  1 database
+                                </a>
+                              ) : (
+                                v.sources ? `${v.sources.length} databases` : 'All databases'
+                              )}
+                            </div>
                           </div>
-                          <button
-                            onClick={() => {
-                              const url = `${window.location.origin}/${v.sources ? `?tenant=${tenantId}&sources=${v.sources.join(',')}` : `?tenant=${tenantId}`}`;
-                              navigator.clipboard.writeText(url).then(() => {
-                                setCopiedViewId(v.id);
-                                setTimeout(() => setCopiedViewId(''), 2000);
-                              }).catch(() => {});
-                            }}
-                            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                            className="font-bold px-2.5 py-1.5 rounded border cursor-pointer hover:opacity-80 shrink-0"
-                          >
-                            {copiedViewId === v.id ? 'Copied!' : 'Copy Link'}
-                          </button>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              onClick={() => {
+                                const url = `${window.location.origin}/${v.sources ? `?tenant=${tenantId}&sources=${v.sources.join(',')}` : `?tenant=${tenantId}`}`;
+                                navigator.clipboard.writeText(url).then(() => {
+                                  setCopiedViewId(v.id);
+                                  setTimeout(() => setCopiedViewId(''), 2000);
+                                }).catch(() => {});
+                              }}
+                              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                              className="font-bold px-2.5 py-1.5 rounded border cursor-pointer hover:opacity-80"
+                            >
+                              {copiedViewId === v.id ? 'Copied!' : 'Copy Link'}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteSavedView(v.id)}
+                              title="Remove this saved link"
+                              className="p-1.5 rounded cursor-pointer opacity-60 hover:opacity-100 hover:text-rose-500"
+                            >
+                              <IconClose />
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -2253,15 +2303,28 @@ function App() {
                 )}
 
                 <div>
-                  <label className="block text-xs font-bold mb-1.5 opacity-60">Reconfigure</label>
-                  {/* Fixed dark styling regardless of the active theme -- ActivationPanel's
-                      own Tailwind classes assume a dark background for contrast. */}
-                  <div className="p-3 rounded-lg bg-neutral-950 text-neutral-100">
-                    <ActivationPanel
-                      embedded
-                      onActivated={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
-                    />
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowReconfigure(prev => !prev)}
+                    className="flex items-center gap-1.5 text-xs font-bold mb-1.5 opacity-60 hover:opacity-100 cursor-pointer"
+                  >
+                    <svg
+                      className="w-2.5 h-2.5 fill-none stroke-current transition-transform"
+                      style={{ transform: showReconfigure ? 'rotate(90deg)' : 'rotate(0deg)' }}
+                      viewBox="0 0 24 24" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
+                    >
+                      <polyline points="9 6 15 12 9 18" />
+                    </svg>
+                    <span>Reconfigure</span>
+                  </button>
+                  {showReconfigure && (
+                    <div className="p-3 rounded-lg border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                      <ActivationPanel
+                        embedded
+                        onActivated={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             )}

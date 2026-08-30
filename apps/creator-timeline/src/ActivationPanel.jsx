@@ -12,6 +12,30 @@ function makeId() {
 // shared embed link never has this in their own browser's storage.
 const STORED_LICENSE_KEY = 'notionWidgetLicenseKey';
 
+// Colors follow the embedding app's current theme (light/dark, or any
+// custom color preset) via the --theme-* CSS custom properties it defines
+// on an ancestor element. The fallbacks match this component's original
+// hardcoded dark palette, so setup.html -- a standalone page with no
+// theme system at all -- renders exactly as before.
+const colors = {
+  bg: 'var(--theme-bg, #0a0a0a)',
+  card: 'var(--theme-card, #171717)',
+  border: 'var(--theme-border, #404040)',
+  text: 'var(--theme-text, #f5f5f5)',
+  primary: 'var(--theme-primary, #f43f5e)',
+  // Derived by blending the theme's own text color toward transparent,
+  // so "muted"/"faint" text stays readable against whatever background
+  // is actually active instead of assuming a fixed dark backdrop.
+  muted: 'color-mix(in srgb, var(--theme-text, #f5f5f5) 65%, transparent)',
+  faint: 'color-mix(in srgb, var(--theme-text, #f5f5f5) 45%, transparent)',
+  dangerText: '#e11d48',
+  dangerBg: 'rgba(244, 63, 94, 0.1)',
+  dangerBorder: 'rgba(244, 63, 94, 0.35)',
+  successText: '#059669',
+  successBg: 'rgba(16, 185, 129, 0.1)',
+  successBorder: 'rgba(16, 185, 129, 0.35)',
+};
+
 export function buildEmbedUrl(tenantId, sourcesFilter) {
   const base = `${window.location.origin}/`;
   if (!sourcesFilter || sourcesFilter.length === 0) return `${base}?tenant=${tenantId}`;
@@ -44,6 +68,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
   const [showLookup, setShowLookup] = useState(false);
   const [lookupLicenseKey, setLookupLicenseKey] = useState('');
   const [lookupStatus, setLookupStatus] = useState('idle'); // idle | looking | error
+  const [autoLoading, setAutoLoading] = useState(false);
 
   const addSource = () => setSources(prev => [...prev, { id: makeId(), label: '', databaseId: '' }]);
   const removeSource = (id) => setSources(prev => prev.filter(s => s.id !== id));
@@ -115,6 +140,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
     try { stored = localStorage.getItem(STORED_LICENSE_KEY); } catch { stored = null; }
     if (!stored) return;
 
+    setAutoLoading(true);
     (async () => {
       try {
         const res = await fetch('/api/tenant-lookup', {
@@ -129,6 +155,8 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
         // Stale/revoked key -- fall back to the normal blank/lookup flow
         // instead of silently retrying this on every future mount.
         try { localStorage.removeItem(STORED_LICENSE_KEY); } catch { /* ignore */ }
+      } finally {
+        setAutoLoading(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -205,6 +233,26 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
     }
   };
 
+  // Forgets everything about this browser's remembered license so a
+  // different license/Notion account can be activated from a clean slate,
+  // without needing to know and re-enter the previous one first. Purely
+  // local -- doesn't touch the server-side tenant record.
+  const handleReset = () => {
+    try { localStorage.removeItem(STORED_LICENSE_KEY); } catch { /* ignore */ }
+    setLicenseKey('');
+    setNotionToken('');
+    setSpecialDaysDatabaseId('');
+    setSources([{ id: makeId(), label: '', databaseId: '' }]);
+    setSavedViews([]);
+    setHasExistingToken(false);
+    setTenantId('');
+    setSelectedForEmbed([]);
+    setStatus('idle');
+    setShowLookup(false);
+    setLookupLicenseKey('');
+    setErrorMessage('');
+  };
+
   const validSources = sources.filter(s => s.databaseId.trim());
   const allSelected = selectedForEmbed.length === validSources.length;
   const embedUrl = tenantId ? buildEmbedUrl(tenantId, allSelected ? null : selectedForEmbed) : '';
@@ -213,8 +261,12 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
     setSelectedForEmbed(prev => prev.includes(databaseId) ? prev.filter(id => id !== databaseId) : [...prev, databaseId]);
   };
 
-  const inputClass = `w-full px-3 py-2 rounded border text-sm outline-none focus:border-neutral-400 ${embedded ? 'border-neutral-700 bg-black/30' : 'border-neutral-700 bg-neutral-900'}`;
-  const cardClass = `border rounded-lg ${embedded ? 'border-neutral-700 bg-black/20' : 'border-neutral-800 bg-neutral-900'}`;
+  const inputClass = 'w-full px-3 py-2 rounded border text-sm outline-none transition-colors focus:border-[var(--theme-primary,#f43f5e)]';
+  const inputStyle = { backgroundColor: colors.card, borderColor: colors.border, color: colors.text };
+  const cardClass = 'border rounded-lg';
+  const cardStyle = { backgroundColor: colors.card, borderColor: colors.border };
+  const primaryButtonClass = 'rounded text-sm font-bold text-white cursor-pointer hover:opacity-90 disabled:opacity-50';
+  const primaryButtonStyle = { backgroundColor: colors.primary };
 
   return (
     <div className={embedded ? 'space-y-5' : 'min-h-screen bg-neutral-950 text-neutral-100 flex justify-center px-4 py-12'}>
@@ -222,20 +274,34 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
         {!embedded && (
           <div>
             <h1 className="text-2xl font-bold">Creator Timeline Setup</h1>
-            <p className="text-sm text-neutral-400 mt-1">
+            <p className="text-sm mt-1" style={{ color: colors.muted }}>
               Connect your own Notion workspace to activate your license. Your Notion token stays on our server and is never shared with anyone viewing your calendar.
             </p>
           </div>
         )}
 
         <div className={embedded ? 'space-y-5' : 'space-y-6'}>
-          {status !== 'done' && (
-            <div className={`p-3 ${cardClass}`}>
-              {!showLookup ? (
+          {licenseKey && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleReset}
+                className="text-xs font-bold underline cursor-pointer opacity-70 hover:opacity-100"
+              >
+                Reset (use a different license)
+              </button>
+            </div>
+          )}
+
+          {status !== 'done' && !licenseKey && (
+            <div className={`p-3 ${cardClass}`} style={cardStyle}>
+              {autoLoading ? (
+                <p className="text-sm" style={{ color: colors.muted }}>Checking for an existing setup on this device...</p>
+              ) : !showLookup ? (
                 <button
                   type="button"
                   onClick={() => { setShowLookup(true); setLookupLicenseKey(licenseKey); }}
-                  className="text-sm text-neutral-300 hover:text-white underline cursor-pointer"
+                  className="text-sm underline cursor-pointer opacity-80 hover:opacity-100"
                 >
                   Already activated? Look up your existing setup instead of starting blank
                 </button>
@@ -250,24 +316,26 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                       onChange={(e) => setLookupLicenseKey(e.target.value)}
                       placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX"
                       className={`flex-1 ${inputClass}`}
+                      style={inputStyle}
                     />
                     <button
                       type="submit"
                       disabled={lookupStatus === 'looking'}
-                      className="px-4 py-2 rounded bg-white text-black text-sm font-bold cursor-pointer hover:opacity-90 disabled:opacity-50 shrink-0"
+                      className={`px-4 py-2 shrink-0 ${primaryButtonClass}`}
+                      style={primaryButtonStyle}
                     >
                       {lookupStatus === 'looking' ? 'Looking up...' : 'Look Up'}
                     </button>
                     <button
                       type="button"
                       onClick={() => setShowLookup(false)}
-                      className="text-sm text-neutral-400 hover:text-neutral-200 cursor-pointer px-2"
+                      className="text-sm cursor-pointer px-2 opacity-70 hover:opacity-100"
                     >
                       Cancel
                     </button>
                   </div>
                   {lookupStatus === 'error' && (
-                    <div className="p-2 rounded bg-rose-950 border border-rose-800 text-rose-200 text-xs">{errorMessage}</div>
+                    <div className="p-2 rounded border text-xs" style={{ backgroundColor: colors.dangerBg, borderColor: colors.dangerBorder, color: colors.dangerText }}>{errorMessage}</div>
                   )}
                 </form>
               )}
@@ -276,54 +344,57 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
 
           {status === 'done' ? (
             <div className="space-y-6">
-              <div className="p-4 rounded-lg bg-emerald-950 border border-emerald-800 text-emerald-200 text-sm">
+              <div className="p-4 rounded-lg border text-sm" style={{ backgroundColor: colors.successBg, borderColor: colors.successBorder, color: colors.successText }}>
                 Activated. Paste the link below into a Notion embed block on any page.
               </div>
 
               {validSources.length > 1 && (
                 <div className="space-y-2">
-                  <label className="block text-xs font-bold uppercase tracking-wide text-neutral-400">
+                  <label className="block text-xs font-bold uppercase tracking-wide" style={{ color: colors.muted }}>
                     Include in this embed's link
                   </label>
                   <div className="space-y-1.5">
                     {validSources.map(s => (
-                      <label key={s.id} className={`flex items-center gap-2 p-2 cursor-pointer text-sm ${cardClass}`}>
+                      <label key={s.id} className={`flex items-center gap-2 p-2 cursor-pointer text-sm ${cardClass}`} style={cardStyle}>
                         <input
                           type="checkbox"
                           checked={selectedForEmbed.includes(s.databaseId.trim())}
                           onChange={() => toggleEmbedSource(s.databaseId.trim())}
+                          style={{ accentColor: colors.primary }}
                         />
                         <span>{s.label || 'Untitled database'}</span>
                       </label>
                     ))}
                   </div>
-                  <p className="text-xs text-neutral-500">
+                  <p className="text-xs" style={{ color: colors.faint }}>
                     Uncheck databases to generate a filtered link -- e.g. a client-facing page showing only that client's database.
                   </p>
                 </div>
               )}
 
               <div className="space-y-2">
-                <label className="block text-xs font-bold uppercase tracking-wide text-neutral-400">Embed URL</label>
+                <label className="block text-xs font-bold uppercase tracking-wide" style={{ color: colors.muted }}>Embed URL</label>
                 <div className="flex gap-2">
                   <input
                     readOnly
                     value={embedUrl}
                     onFocus={(e) => e.target.select()}
                     className={`flex-1 font-mono ${inputClass}`}
+                    style={inputStyle}
                   />
                   <button
                     onClick={() => copyText(embedUrl, 'main')}
-                    className="px-4 py-2 rounded bg-white text-black text-sm font-bold shrink-0 cursor-pointer hover:opacity-90"
+                    className={`px-4 py-2 shrink-0 ${primaryButtonClass}`}
+                    style={primaryButtonStyle}
                   >
                     {copiedKey === 'main' ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
               </div>
 
-              <div className={`space-y-2 p-3 ${cardClass}`}>
-                <label className="block text-xs font-bold uppercase tracking-wide text-neutral-400">Save this link for later</label>
-                <p className="text-xs text-neutral-500">
+              <div className={`space-y-2 p-3 ${cardClass}`} style={cardStyle}>
+                <label className="block text-xs font-bold uppercase tracking-wide" style={{ color: colors.muted }}>Save this link for later</label>
+                <p className="text-xs" style={{ color: colors.faint }}>
                   Give the current selection a name (e.g. "Personal", "Acme Client") so you can come back here and grab it again without reconfiguring.
                 </p>
                 <div className="flex gap-2">
@@ -333,12 +404,14 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                     onChange={(e) => setNewViewLabel(e.target.value)}
                     placeholder={'e.g. "Acme Client Page"'}
                     className={`flex-1 ${inputClass}`}
+                    style={inputStyle}
                   />
                   <button
                     type="button"
                     onClick={handleSaveView}
                     disabled={!newViewLabel.trim() || status === 'submitting'}
-                    className="px-4 py-2 rounded bg-white text-black text-sm font-bold cursor-pointer hover:opacity-90 disabled:opacity-50 shrink-0"
+                    className={`px-4 py-2 shrink-0 ${primaryButtonClass}`}
+                    style={primaryButtonStyle}
                   >
                     Save Link
                   </button>
@@ -347,26 +420,28 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
 
               {savedViews.length > 0 && (
                 <div className="space-y-2">
-                  <label className="block text-xs font-bold uppercase tracking-wide text-neutral-400">Your Saved Links</label>
+                  <label className="block text-xs font-bold uppercase tracking-wide" style={{ color: colors.muted }}>Your Saved Links</label>
                   <div className="space-y-1.5">
                     {savedViews.map((v) => (
-                      <div key={v.id} className={`flex items-center justify-between gap-2 p-2.5 text-sm ${cardClass}`}>
+                      <div key={v.id} className={`flex items-center justify-between gap-2 p-2.5 text-sm ${cardClass}`} style={cardStyle}>
                         <div className="min-w-0">
                           <div className="font-bold truncate">{v.label}</div>
-                          <div className="text-xs text-neutral-500">{v.sources ? `${v.sources.length} database${v.sources.length === 1 ? '' : 's'}` : 'All databases'}</div>
+                          <div className="text-xs" style={{ color: colors.faint }}>{v.sources ? `${v.sources.length} database${v.sources.length === 1 ? '' : 's'}` : 'All databases'}</div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <button
                             type="button"
                             onClick={() => copyText(buildEmbedUrl(tenantId, v.sources), v.id)}
-                            className="text-xs font-bold px-2.5 py-1.5 rounded bg-neutral-700 hover:bg-neutral-600 cursor-pointer"
+                            className="text-xs font-bold px-2.5 py-1.5 rounded cursor-pointer hover:opacity-80 transition-opacity"
+                            style={{ backgroundColor: colors.border, color: colors.text }}
                           >
                             {copiedKey === v.id ? 'Copied!' : 'Copy'}
                           </button>
                           <button
                             type="button"
                             onClick={() => handleDeleteView(v.id)}
-                            className="text-xs font-bold text-rose-400 hover:underline cursor-pointer"
+                            className="text-xs font-bold hover:underline cursor-pointer"
+                            style={{ color: colors.dangerText }}
                           >
                             Remove
                           </button>
@@ -378,21 +453,21 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
               )}
 
               {status === 'error' && (
-                <div className="p-3 rounded bg-rose-950 border border-rose-800 text-rose-200 text-sm">{errorMessage}</div>
+                <div className="p-3 rounded border text-sm" style={{ backgroundColor: colors.dangerBg, borderColor: colors.dangerBorder, color: colors.dangerText }}>{errorMessage}</div>
               )}
 
               <div className="flex items-center gap-4">
                 <button
                   onClick={() => setStatus('idle')}
-                  className="text-sm text-neutral-400 hover:text-neutral-200 underline cursor-pointer"
+                  className="text-sm underline cursor-pointer opacity-70 hover:opacity-100"
                 >
                   Reconfigure or add another database
                 </button>
                 {onContinue && (
                   <button
                     onClick={onContinue}
-                    style={{ marginLeft: 'auto' }}
-                    className="px-4 py-2 rounded bg-white text-black text-sm font-bold cursor-pointer hover:opacity-90"
+                    style={{ marginLeft: 'auto', ...primaryButtonStyle }}
+                    className={`px-4 py-2 ${primaryButtonClass}`}
                   >
                     {continueLabel} →
                   </button>
@@ -410,8 +485,9 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                   onChange={(e) => setLicenseKey(e.target.value)}
                   placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX"
                   className={inputClass}
+                  style={inputStyle}
                 />
-                <p className="text-xs text-neutral-500 mt-1">Found in your Gumroad purchase receipt email.</p>
+                <p className="text-xs mt-1" style={{ color: colors.faint }}>Found in your Gumroad purchase receipt email.</p>
               </div>
 
               <div>
@@ -423,9 +499,10 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                   onChange={(e) => setNotionToken(e.target.value)}
                   placeholder={hasExistingToken ? 'Leave blank to keep your current token' : 'secret_...'}
                   className={inputClass}
+                  style={inputStyle}
                 />
                 {hasExistingToken && (
-                  <p className="text-xs text-neutral-500 mt-1">A token is already on file -- only fill this in if you want to replace it.</p>
+                  <p className="text-xs mt-1" style={{ color: colors.faint }}>A token is already on file -- only fill this in if you want to replace it.</p>
                 )}
               </div>
 
@@ -435,21 +512,22 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                   <button
                     type="button"
                     onClick={addSource}
-                    className="text-xs font-bold text-neutral-300 hover:text-white cursor-pointer underline"
+                    className="text-xs font-bold cursor-pointer underline opacity-80 hover:opacity-100"
                   >
                     + Add Database
                   </button>
                 </div>
                 <div className="space-y-2">
                   {sources.map((source) => (
-                    <div key={source.id} className={`flex items-start gap-2 p-2 ${cardClass}`}>
+                    <div key={source.id} className={`flex items-start gap-2 p-2 ${cardClass}`} style={cardStyle}>
                       <div className="flex-1 space-y-1.5">
                         <input
                           type="text"
                           value={source.label}
                           onChange={(e) => updateSource(source.id, 'label', e.target.value)}
                           placeholder={'Label, e.g. "Project Tracking"'}
-                          className="w-full px-2.5 py-1.5 rounded border border-neutral-700 bg-neutral-950 text-xs font-bold outline-none"
+                          className="w-full px-2.5 py-1.5 rounded border text-xs font-bold outline-none"
+                          style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.text }}
                         />
                         <input
                           type="text"
@@ -457,14 +535,16 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                           value={source.databaseId}
                           onChange={(e) => updateSource(source.id, 'databaseId', e.target.value)}
                           placeholder="Database ID: 3728d5a5..."
-                          className="w-full px-2.5 py-1.5 rounded border border-neutral-700 bg-neutral-950 text-xs outline-none"
+                          className="w-full px-2.5 py-1.5 rounded border text-xs outline-none"
+                          style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.text }}
                         />
                       </div>
                       {sources.length > 1 && (
                         <button
                           type="button"
                           onClick={() => removeSource(source.id)}
-                          className="text-xs font-bold text-rose-400 hover:underline cursor-pointer px-1 py-1.5 shrink-0"
+                          className="text-xs font-bold hover:underline cursor-pointer px-1 py-1.5 shrink-0"
+                          style={{ color: colors.dangerText }}
                         >
                           Remove
                         </button>
@@ -482,23 +562,25 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                   onChange={(e) => setSpecialDaysDatabaseId(e.target.value)}
                   placeholder="Optional ID for Birthdays/Vacations/Events..."
                   className={inputClass}
+                  style={inputStyle}
                 />
               </div>
 
               {savedViews.length > 0 && (
                 <div className="space-y-2">
-                  <label className="block text-xs font-bold uppercase tracking-wide text-neutral-400">Your Saved Links</label>
+                  <label className="block text-xs font-bold uppercase tracking-wide" style={{ color: colors.muted }}>Your Saved Links</label>
                   <div className="space-y-1.5">
                     {savedViews.map((v) => (
-                      <div key={v.id} className={`flex items-center justify-between gap-2 p-2.5 text-sm ${cardClass}`}>
+                      <div key={v.id} className={`flex items-center justify-between gap-2 p-2.5 text-sm ${cardClass}`} style={cardStyle}>
                         <div className="min-w-0">
                           <div className="font-bold truncate">{v.label}</div>
-                          <div className="text-xs text-neutral-500">{v.sources ? `${v.sources.length} database${v.sources.length === 1 ? '' : 's'}` : 'All databases'}</div>
+                          <div className="text-xs" style={{ color: colors.faint }}>{v.sources ? `${v.sources.length} database${v.sources.length === 1 ? '' : 's'}` : 'All databases'}</div>
                         </div>
                         <button
                           type="button"
                           onClick={() => copyText(buildEmbedUrl(tenantId, v.sources), v.id)}
-                          className="text-xs font-bold px-2.5 py-1.5 rounded bg-neutral-700 hover:bg-neutral-600 cursor-pointer shrink-0"
+                          className="text-xs font-bold px-2.5 py-1.5 rounded cursor-pointer hover:opacity-80 transition-opacity shrink-0"
+                          style={{ backgroundColor: colors.border, color: colors.text }}
                         >
                           {copiedKey === v.id ? 'Copied!' : 'Copy'}
                         </button>
@@ -509,7 +591,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
               )}
 
               {status === 'error' && (
-                <div className="p-3 rounded bg-rose-950 border border-rose-800 text-rose-200 text-sm">
+                <div className="p-3 rounded border text-sm" style={{ backgroundColor: colors.dangerBg, borderColor: colors.dangerBorder, color: colors.dangerText }}>
                   {errorMessage}
                 </div>
               )}
@@ -517,7 +599,8 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
               <button
                 type="submit"
                 disabled={status === 'submitting'}
-                className="w-full py-2.5 rounded bg-white text-black text-sm font-bold cursor-pointer hover:opacity-90 disabled:opacity-50"
+                className={`w-full py-2.5 ${primaryButtonClass}`}
+                style={primaryButtonStyle}
               >
                 {status === 'submitting' ? 'Saving...' : hasExistingToken ? 'Save Changes' : 'Activate'}
               </button>

@@ -3,6 +3,28 @@ import { verifyGumroadLicense } from './_lib/gumroad.js';
 import { encryptSecret, tenantIdFromLicenseKey } from './_lib/tokenCrypto.js';
 import { getTenant, saveTenant } from './_lib/tenantStore.js';
 
+// Identifies which Notion integration a token belongs to, so a license can
+// be bound to one Notion workspace and resist being handed to someone
+// else who'd just paste their own token in. This is the integration's bot
+// user id, not the workspace name (which can be renamed) or the token
+// itself (which regenerating a secret for the SAME integration changes) --
+// it stays stable across a legitimate secret rotation.
+async function fetchNotionBotId(token) {
+  const res = await fetch('https://api.notion.com/v1/users/me', {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Notion-Version': '2022-06-28',
+    },
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => null);
+    throw new Error(errData?.message || 'Could not verify the Notion integration token');
+  }
+  const data = await res.json();
+  return data.id;
+}
+
 // Called by a buyer on the setup page: proves they hold a valid license,
 // then stores THEIR OWN Notion token and database list server-side under a
 // tenant id derived from their license key. Re-running this with the same
@@ -55,6 +77,25 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Notion integration token is required' });
   }
 
+  // One license, one Notion workspace -- keeps a license key from being
+  // shared around while still letting its real owner rotate their own
+  // integration secret freely. The owner bypass key is exempt so the
+  // template's creator can test against several of their own workspaces.
+  const isOwnerActivation = verification.purchase?.owner === true;
+  let boundNotionBotId = existingTenant?.boundNotionBotId || null;
+  if (hasNewToken && !isOwnerActivation) {
+    let newBotId;
+    try {
+      newBotId = await fetchNotionBotId(notionToken.trim());
+    } catch (err) {
+      return res.status(400).json({ error: err.message || 'Could not verify the Notion integration token' });
+    }
+    if (boundNotionBotId && newBotId !== boundNotionBotId) {
+      return res.status(403).json({ error: 'This license is already linked to a different Notion account. Each license can only be used with one Notion workspace -- contact support if you need to transfer it.' });
+    }
+    boundNotionBotId = newBotId;
+  }
+
   const cleanSavedViews = Array.isArray(savedViews)
     ? savedViews
         .filter(v => v && typeof v.label === 'string' && v.label.trim())
@@ -69,6 +110,7 @@ export default async function handler(req, res) {
     await saveTenant(tenantId, {
       encryptedLicenseKey: encryptSecret(licenseKey.trim()),
       encryptedNotionToken: hasNewToken ? encryptSecret(notionToken.trim()) : existingTenant.encryptedNotionToken,
+      boundNotionBotId,
       sources: cleanSources,
       specialDaysDatabaseId: specialDaysDatabaseId
         ? specialDaysDatabaseId.trim()
