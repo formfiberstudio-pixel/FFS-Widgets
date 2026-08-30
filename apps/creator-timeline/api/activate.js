@@ -111,6 +111,8 @@ export default async function handler(req, res) {
       encryptedLicenseKey: encryptSecret(licenseKey.trim()),
       encryptedNotionToken: hasNewToken ? encryptSecret(notionToken.trim()) : existingTenant.encryptedNotionToken,
       boundNotionBotId,
+      isBypassTenant: isOwnerActivation,
+      bypassLabel: isOwnerActivation ? verification.purchase.bypassLabel : null,
       sources: cleanSources,
       specialDaysDatabaseId: specialDaysDatabaseId
         ? specialDaysDatabaseId.trim()

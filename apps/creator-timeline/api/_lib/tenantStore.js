@@ -30,3 +30,23 @@ export async function saveTenant(tenantId, record) {
 export async function deleteTenant(tenantId) {
   await redis.del(keyFor(tenantId));
 }
+
+// Friends & family activations (see gumroad.js's prefix-matched bypass
+// key) aren't tracked in any separate registry -- this just scans the
+// existing tenant records and filters to the ones flagged isBypassTenant,
+// for the admin panel's list/revoke view. Fine at the scale this is meant
+// for; not something you'd want against millions of real paying tenants.
+export async function listBypassTenants() {
+  const keys = [];
+  let cursor = '0';
+  do {
+    const [nextCursor, batch] = await redis.scan(cursor, { match: 'tenant:*', count: 100 });
+    cursor = String(nextCursor);
+    keys.push(...batch);
+  } while (cursor !== '0');
+
+  const records = await Promise.all(keys.map((key) => redis.get(key)));
+  return keys
+    .map((key, i) => ({ tenantId: key.slice('tenant:'.length), record: records[i] }))
+    .filter((entry) => entry.record?.isBypassTenant);
+}

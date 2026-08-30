@@ -19,6 +19,18 @@ function isOwnerBypassKey(licenseKey) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// Unlike isOwnerBypassKey (prefix match, so any "<secret>-alice" activates
+// a calendar), admin access requires the bare secret exactly -- otherwise
+// any friend holding their own suffixed key could open the admin panel
+// and see or revoke everyone else's.
+export function isExactOwnerKey(key) {
+  const bypass = process.env.OWNER_BYPASS_KEY;
+  if (!bypass || !key || typeof key !== 'string') return false;
+  const a = Buffer.from(key);
+  const b = Buffer.from(bypass);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 // Verifies a buyer's license key against Gumroad's own API rather than
 // trusting anything the client claims -- this is the actual gate that
 // decides whether a tenant's stored Notion token gets used to fetch data.
@@ -29,8 +41,11 @@ export async function verifyGumroadLicense(licenseKey) {
   if (!licenseKey || typeof licenseKey !== 'string') {
     return { valid: false, reason: 'Missing license key' };
   }
-  if (isOwnerBypassKey(licenseKey.trim())) {
-    return { valid: true, purchase: { owner: true } };
+  const trimmedKey = licenseKey.trim();
+  if (isOwnerBypassKey(trimmedKey)) {
+    const bypass = process.env.OWNER_BYPASS_KEY;
+    const suffix = trimmedKey.slice(bypass.length).replace(/^[-_]+/, '').trim();
+    return { valid: true, purchase: { owner: true, bypassLabel: suffix || 'Owner' } };
   }
 
   const productPermalink = process.env.GUMROAD_PRODUCT_PERMALINK;
