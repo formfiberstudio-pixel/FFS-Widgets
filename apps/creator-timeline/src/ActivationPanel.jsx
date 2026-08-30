@@ -1,8 +1,16 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 function makeId() {
   return crypto.randomUUID();
 }
+
+// Remembering the license key locally (this browser only, never synced or
+// sent anywhere but our own API) is what lets a returning creator open
+// Settings and immediately see their current setup instead of re-entering
+// the key and clicking "Look up" every time. It's still the same
+// ownership credential gating actual changes -- a client who only has a
+// shared embed link never has this in their own browser's storage.
+const STORED_LICENSE_KEY = 'notionWidgetLicenseKey';
 
 export function buildEmbedUrl(tenantId, sourcesFilter) {
   const base = `${window.location.origin}/`;
@@ -51,6 +59,35 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
     }
   };
 
+  // Shared by the manual "Look Up" form and the silent auto-load below.
+  // `showSummary` additionally jumps straight to the "Activated" screen
+  // (Embed URL + saved links) instead of the editable form, since that's
+  // the more useful thing to see when we already knew this tenant was set
+  // up before the user did anything.
+  const applyTenantData = (key, data, { showSummary = false } = {}) => {
+    const loadedSources = data.sources.length > 0
+      ? data.sources.map(s => ({ id: makeId(), label: s.label, databaseId: s.databaseId }))
+      : [{ id: makeId(), label: '', databaseId: '' }];
+
+    setLicenseKey(key);
+    setSources(loadedSources);
+    setSpecialDaysDatabaseId(data.specialDaysDatabaseId || '');
+    setSavedViews(data.savedViews || []);
+    setHasExistingToken(Boolean(data.hasToken));
+    setTenantId(data.tenantId);
+    setNotionToken('');
+    setShowLookup(false);
+    setLookupStatus('idle');
+    try { localStorage.setItem(STORED_LICENSE_KEY, key); } catch { /* storage unavailable -- non-fatal */ }
+
+    if (showSummary) {
+      setSelectedForEmbed(loadedSources.filter(s => s.databaseId.trim()).map(s => s.databaseId.trim()));
+      setStatus('done');
+    }
+
+    onActivated?.(data.tenantId);
+  };
+
   const handleLookup = async (e) => {
     e.preventDefault();
     setLookupStatus('looking');
@@ -63,26 +100,39 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Lookup failed');
-
-      setLicenseKey(lookupLicenseKey);
-      setSources(
-        data.sources.length > 0
-          ? data.sources.map(s => ({ id: makeId(), label: s.label, databaseId: s.databaseId }))
-          : [{ id: makeId(), label: '', databaseId: '' }]
-      );
-      setSpecialDaysDatabaseId(data.specialDaysDatabaseId || '');
-      setSavedViews(data.savedViews || []);
-      setHasExistingToken(Boolean(data.hasToken));
-      setTenantId(data.tenantId);
-      setNotionToken('');
-      setShowLookup(false);
-      setLookupStatus('idle');
-      onActivated?.(data.tenantId);
+      applyTenantData(lookupLicenseKey, data);
     } catch (err) {
       setErrorMessage(err.message || 'Lookup failed');
       setLookupStatus('error');
     }
   };
+
+  // Silently try a remembered license key on mount so a returning creator
+  // sees their already-activated setup immediately, without retyping the
+  // key or clicking through the manual lookup form.
+  useEffect(() => {
+    let stored;
+    try { stored = localStorage.getItem(STORED_LICENSE_KEY); } catch { stored = null; }
+    if (!stored) return;
+
+    (async () => {
+      try {
+        const res = await fetch('/api/tenant-lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ licenseKey: stored }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error();
+        applyTenantData(stored, data, { showSummary: true });
+      } catch {
+        // Stale/revoked key -- fall back to the normal blank/lookup flow
+        // instead of silently retrying this on every future mount.
+        try { localStorage.removeItem(STORED_LICENSE_KEY); } catch { /* ignore */ }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -110,6 +160,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
       setHasExistingToken(true);
       setNotionToken('');
       setStatus('done');
+      try { localStorage.setItem(STORED_LICENSE_KEY, licenseKey); } catch { /* ignore */ }
       onActivated?.(data.tenantId);
     } catch (err) {
       setErrorMessage(err.message || 'Something went wrong');
