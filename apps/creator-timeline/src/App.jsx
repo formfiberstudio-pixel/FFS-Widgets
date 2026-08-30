@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 
 // Relative imports matching your folder structure
 import themeTokens from '../tokens.json';
+import ActivationPanel from './ActivationPanel.jsx';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -451,7 +452,7 @@ function WeekDayColumn({
   getDotColor,
   scaleFactor,
   specialDay,
-  showEntryTitle
+  showWeekEntryTitle
 }) {
   const scrollRef = useRef(null);
   const [canScrollUp, setCanScrollUp] = useState(false);
@@ -580,7 +581,7 @@ function WeekDayColumn({
                   </span>
                 </div>
 
-                {showEntryTitle && (
+                {showWeekEntryTitle && (
                   <div className="relative z-10 mt-auto">
                     <ClampedTitle
                       text={log.title}
@@ -703,15 +704,26 @@ function App() {
 
   const scaleFactor = viewScale / 100;
 
-  // --- ENTRY TITLE VISIBILITY (month/week thumbnails) ---
-  const [showEntryTitle, setShowEntryTitle] = useState(() => {
-    const saved = localStorage.getItem('notionWidgetShowEntryTitle');
+  // --- ENTRY TITLE VISIBILITY (month/week thumbnails, controlled independently) ---
+  // Falls back to the old single combined setting (if present) so existing
+  // users keep whatever they had instead of both views silently resetting on.
+  const [showMonthEntryTitle, setShowMonthEntryTitle] = useState(() => {
+    const legacy = localStorage.getItem('notionWidgetShowEntryTitle');
+    const saved = localStorage.getItem('notionWidgetShowMonthEntryTitle') ?? legacy;
+    return saved === null ? true : saved === 'true';
+  });
+  const [showWeekEntryTitle, setShowWeekEntryTitle] = useState(() => {
+    const legacy = localStorage.getItem('notionWidgetShowEntryTitle');
+    const saved = localStorage.getItem('notionWidgetShowWeekEntryTitle') ?? legacy;
     return saved === null ? true : saved === 'true';
   });
 
   useEffect(() => {
-    localStorage.setItem('notionWidgetShowEntryTitle', String(showEntryTitle));
-  }, [showEntryTitle]);
+    localStorage.setItem('notionWidgetShowMonthEntryTitle', String(showMonthEntryTitle));
+  }, [showMonthEntryTitle]);
+  useEffect(() => {
+    localStorage.setItem('notionWidgetShowWeekEntryTitle', String(showWeekEntryTitle));
+  }, [showWeekEntryTitle]);
 
   // Derived baseline component dimensions
   const monthDotPx = Math.round(24 * scaleFactor);
@@ -1374,24 +1386,47 @@ function App() {
   };
 
   if (needsSetup) {
+    // Update the URL as soon as activation succeeds (so refreshing or
+    // copy-pasting the address bar already works), but don't switch away
+    // from this panel yet -- that happens once the user explicitly hits
+    // "Go to Calendar" below, so they get a chance to copy their embed URL
+    // first instead of it vanishing the instant they activate.
+    const handleActivatedFromEmpty = (newTenantId) => {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tenant', newTenantId);
+      window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
+    };
+    const handleContinueToCalendar = () => {
+      const params = new URLSearchParams(window.location.search);
+      const newTenantId = params.get('tenant');
+      if (!newTenantId) return;
+      setTenantId(newTenantId);
+      setNeedsSetup(false);
+      fetchLogsFromNotion(newTenantId, null);
+    };
+
     return (
       <div
         style={{ ...themeVars, backgroundColor: 'var(--theme-bg)', color: 'var(--theme-text)' }}
-        className="w-full h-screen flex flex-col items-center justify-center gap-3 p-6 text-center transition-colors duration-300"
+        className="w-full h-screen flex flex-col items-center p-6 overflow-y-auto transition-colors duration-300"
       >
-        <h1 className="text-xl font-bold">This calendar hasn't been set up yet</h1>
-        <p className="text-sm opacity-70 max-w-sm">
-          Connect your Notion workspace on the setup page to activate this embed, then paste your unique link into this Notion block.
-        </p>
-        <a
-          href="/setup.html"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ backgroundColor: 'var(--theme-primary)' }}
-          className="mt-2 px-4 py-2 text-sm font-bold text-white rounded cursor-pointer hover:opacity-90 shadow-sm"
-        >
-          Go to Setup
-        </a>
+        <div className="w-full max-w-xl space-y-4 py-8">
+          <div className="text-center">
+            <h1 className="text-xl font-bold">This calendar hasn't been set up yet</h1>
+            <p className="text-sm opacity-70 mt-1">Connect your Notion workspace below to activate this embed.</p>
+          </div>
+          {/* Fixed dark styling regardless of the active theme -- ActivationPanel's
+              own Tailwind classes assume a dark background for contrast, same as
+              the standalone setup page it's shared with. */}
+          <div className="p-4 rounded-xl bg-neutral-950 text-neutral-100">
+            <ActivationPanel
+              embedded
+              onActivated={handleActivatedFromEmpty}
+              onContinue={handleContinueToCalendar}
+              continueLabel="Go to Calendar"
+            />
+          </div>
+        </div>
       </div>
     );
   }
@@ -1759,7 +1794,7 @@ function App() {
                               )}
                             </div>
 
-                            {showEntryTitle && hasLog && primaryLog && (
+                            {showMonthEntryTitle && hasLog && primaryLog && (
                               <ClampedTitle
                                 text={primaryLog.title}
                                 className={`relative z-10 font-bold text-white bg-black/40 p-1.5 rounded-sm backdrop-blur-sm transition-opacity duration-200 ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
@@ -1836,7 +1871,7 @@ function App() {
                       getDotColor={getDotColor}
                       scaleFactor={scaleFactor}
                       specialDay={specialDay}
-                      showEntryTitle={showEntryTitle}
+                      showWeekEntryTitle={showWeekEntryTitle}
                     />
                   );
                 })}
@@ -2160,11 +2195,13 @@ function App() {
               </button>
             </div>
 
-            {/* TAB 1: CONNECTION (read-only -- Notion token & database list live server-side per license, see setup.html) */}
+            {/* TAB 1: CONNECTION -- reconfiguring here still needs your license key
+                (proves ownership before anything can change), but never leaving
+                this modal to a separate setup page to do it. */}
             {settingsTab === 'notion' && (
               <div className="flex-1 overflow-y-auto pr-1 space-y-4 min-h-0">
                 <div className="p-3 rounded border text-xs leading-relaxed" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
-                  Your Notion connection and database list are configured once via your license on the setup page, not here -- so anyone who opens this embed (including someone you've shared a page with) never sees your token or needs their own login.
+                  Your Notion connection and database list are tied to your license, not stored in this embed -- so anyone who opens it (including someone you've shared a page with) never sees your token or needs their own login.
                 </div>
                 <div>
                   <label className="block text-xs font-bold mb-1 opacity-60">This embed is showing</label>
@@ -2201,16 +2238,18 @@ function App() {
                     <p className="text-[10px] opacity-50 mt-1.5">Only shown on your unfiltered/full embed, not on filtered client-facing links.</p>
                   </div>
                 )}
-                <a
-                  href="/setup.html"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ backgroundColor: 'var(--theme-primary)' }}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white rounded cursor-pointer shadow-xs hover:opacity-90 w-fit"
-                >
-                  <IconLink />
-                  <span>Reconnect or change databases</span>
-                </a>
+
+                <div>
+                  <label className="block text-xs font-bold mb-1.5 opacity-60">Reconfigure</label>
+                  {/* Fixed dark styling regardless of the active theme -- ActivationPanel's
+                      own Tailwind classes assume a dark background for contrast. */}
+                  <div className="p-3 rounded-lg bg-neutral-950 text-neutral-100">
+                    <ActivationPanel
+                      embedded
+                      onActivated={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
+                    />
+                  </div>
+                </div>
               </div>
             )}
 
@@ -2343,19 +2382,38 @@ function App() {
 
                 <div className="p-3 border rounded-lg flex items-center justify-between gap-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                   <div>
-                    <h3 className="text-xs font-bold">Show Entry Title</h3>
-                    <p className="text-[11px] opacity-60">Display each entry's title text on month and week thumbnails.</p>
+                    <h3 className="text-xs font-bold">Show Entry Title (Month View)</h3>
+                    <p className="text-[11px] opacity-60">Display each entry's title text on month thumbnails.</p>
                   </div>
                   <button
-                    onClick={() => setShowEntryTitle(prev => !prev)}
+                    onClick={() => setShowMonthEntryTitle(prev => !prev)}
                     role="switch"
-                    aria-checked={showEntryTitle}
-                    title={showEntryTitle ? 'Hide entry titles' : 'Show entry titles'}
+                    aria-checked={showMonthEntryTitle}
+                    title={showMonthEntryTitle ? 'Hide entry titles' : 'Show entry titles'}
                     className="relative w-9 h-5 rounded-full transition-colors cursor-pointer shrink-0"
-                    style={{ backgroundColor: showEntryTitle ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                    style={{ backgroundColor: showMonthEntryTitle ? 'var(--theme-primary)' : 'var(--theme-border)' }}
                   >
                     <span
-                      className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${showEntryTitle ? 'translate-x-4' : 'translate-x-0'}`}
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${showMonthEntryTitle ? 'translate-x-4' : 'translate-x-0'}`}
+                    />
+                  </button>
+                </div>
+
+                <div className="p-3 border rounded-lg flex items-center justify-between gap-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                  <div>
+                    <h3 className="text-xs font-bold">Show Entry Title (Week View)</h3>
+                    <p className="text-[11px] opacity-60">Display each entry's title text on week thumbnails.</p>
+                  </div>
+                  <button
+                    onClick={() => setShowWeekEntryTitle(prev => !prev)}
+                    role="switch"
+                    aria-checked={showWeekEntryTitle}
+                    title={showWeekEntryTitle ? 'Hide entry titles' : 'Show entry titles'}
+                    className="relative w-9 h-5 rounded-full transition-colors cursor-pointer shrink-0"
+                    style={{ backgroundColor: showWeekEntryTitle ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${showWeekEntryTitle ? 'translate-x-4' : 'translate-x-0'}`}
                     />
                   </button>
                 </div>
