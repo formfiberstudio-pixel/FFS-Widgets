@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { copyToClipboard } from './clipboard.js';
 
 function makeId() {
   return crypto.randomUUID();
@@ -75,13 +76,15 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
   const updateSource = (id, field, value) => setSources(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
 
   const copyText = async (text, key) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedKey(key);
-      setTimeout(() => setCopiedKey(''), 2000);
-    } catch {
-      // Clipboard API can fail (permissions, insecure context) -- the URL is still shown to copy manually.
-    }
+    const ok = await copyToClipboard(text);
+    setCopiedKey(ok ? key : `${key}:failed`);
+    setTimeout(() => setCopiedKey(''), ok ? 2000 : 4000);
+  };
+
+  const copyLabel = (key, idleLabel) => {
+    if (copiedKey === key) return 'Copied!';
+    if (copiedKey === `${key}:failed`) return 'Copy manually';
+    return idleLabel;
   };
 
   // Shared by the manual "Look Up" form and the silent auto-load below.
@@ -391,7 +394,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                     className={`px-4 py-2 shrink-0 ${primaryButtonClass}`}
                     style={primaryButtonStyle}
                   >
-                    {copiedKey === 'main' ? 'Copied!' : 'Copy'}
+                    {copyLabel('main', 'Copy')}
                   </button>
                 </div>
               </div>
@@ -439,7 +442,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                             className="text-xs font-bold px-2.5 py-1.5 rounded cursor-pointer hover:opacity-80 transition-opacity"
                             style={{ backgroundColor: colors.border, color: colors.text }}
                           >
-                            {copiedKey === v.id ? 'Copied!' : 'Copy'}
+                            {copyLabel(v.id, 'Copy')}
                           </button>
                           <button
                             type="button"

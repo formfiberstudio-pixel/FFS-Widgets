@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 // Relative imports matching your folder structure
 import themeTokens from '../tokens.json';
 import ActivationPanel from './ActivationPanel.jsx';
+import { copyToClipboard } from './clipboard.js';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -2332,17 +2333,16 @@ function App() {
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
                             <button
-                              onClick={() => {
+                              onClick={async () => {
                                 const url = `${window.location.origin}/${v.sources ? `?tenant=${tenantId}&sources=${v.sources.join(',')}` : `?tenant=${tenantId}`}`;
-                                navigator.clipboard.writeText(url).then(() => {
-                                  setCopiedViewId(v.id);
-                                  setTimeout(() => setCopiedViewId(''), 2000);
-                                }).catch(() => {});
+                                const ok = await copyToClipboard(url);
+                                setCopiedViewId(ok ? v.id : `${v.id}:failed`);
+                                setTimeout(() => setCopiedViewId(''), ok ? 2000 : 4000);
                               }}
                               style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
                               className="font-bold px-2.5 py-1.5 rounded border cursor-pointer hover:opacity-80"
                             >
-                              {copiedViewId === v.id ? 'Copied!' : 'Copy Link'}
+                              {copiedViewId === v.id ? 'Copied!' : copiedViewId === `${v.id}:failed` ? 'Copy manually' : 'Copy Link'}
                             </button>
                             <button
                               onClick={() => handleDeleteSavedView(v.id)}

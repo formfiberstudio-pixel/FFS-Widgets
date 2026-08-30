@@ -1,51 +1,58 @@
 import crypto from 'node:crypto';
 
-function isOwnerBypassKey(licenseKey) {
-  const bypass = process.env.OWNER_BYPASS_KEY;
-  if (!bypass) return false;
-  // Prefix match, not exact match: the owner can hand out "<bypass
-  // secret>-alice", "<bypass secret>-bob", etc. to friends/family. Each
-  // distinct string still passes this check but hashes to its own
-  // separate tenant (tokenCrypto.js hashes the whole license string), so
-  // sharing the bypass doesn't mean everyone collides onto one tenant and
-  // overwrites each other's Notion connection -- everyone just needs a
-  // key that starts with the same secret.
-  if (licenseKey.length < bypass.length) return false;
-  const a = Buffer.from(licenseKey.slice(0, bypass.length));
-  const b = Buffer.from(bypass);
+function constantTimeEquals(a, b) {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
   // Different-length buffers would throw in timingSafeEqual before it gets
   // a chance to be constant-time anyway, so the length check itself leaking
   // timing info here isn't a meaningful weakening.
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
 }
 
-// Unlike isOwnerBypassKey (prefix match, so any "<secret>-alice" activates
-// a calendar), admin access requires the bare secret exactly -- otherwise
-// any friend holding their own suffixed key could open the admin panel
-// and see or revoke everyone else's.
+// Prefix match, not exact match: whoever holds FRIENDS_BYPASS_KEY can hand
+// out "<secret>-alice", "<secret>-bob", etc. Each distinct string still
+// passes this check but hashes to its own separate tenant (tokenCrypto.js
+// hashes the whole license string), so sharing it doesn't mean everyone
+// collides onto one tenant and overwrites each other's Notion connection.
+function matchesFriendsBypass(licenseKey) {
+  const secret = process.env.FRIENDS_BYPASS_KEY;
+  if (!secret || licenseKey.length < secret.length) return false;
+  return constantTimeEquals(licenseKey.slice(0, secret.length), secret);
+}
+
+// Exact match only -- the owner's own key is for their own single tenant,
+// not something meant to be shared out with per-person suffixes (that's
+// what FRIENDS_BYPASS_KEY is for). Also used to gate the admin panel, so a
+// friend's own key must NOT satisfy this.
 export function isExactOwnerKey(key) {
   const bypass = process.env.OWNER_BYPASS_KEY;
   if (!bypass || !key || typeof key !== 'string') return false;
-  const a = Buffer.from(key);
-  const b = Buffer.from(bypass);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+  return constantTimeEquals(key, bypass);
 }
 
 // Verifies a buyer's license key against Gumroad's own API rather than
 // trusting anything the client claims -- this is the actual gate that
 // decides whether a tenant's stored Notion token gets used to fetch data.
-// The one exception is OWNER_BYPASS_KEY: a secret only the template's
-// creator (and whoever they've shared it with) knows, so they can
-// activate pages without buying a license from themselves.
+// Two exceptions, both secrets only the template's creator knows:
+//   - OWNER_BYPASS_KEY: the creator's own personal/freelance pages,
+//     without buying a license from themselves.
+//   - FRIENDS_BYPASS_KEY: handed out (with a per-person suffix) to
+//     friends/family so they can use the template for free, each getting
+//     their own independent tenant.
 export async function verifyGumroadLicense(licenseKey) {
   if (!licenseKey || typeof licenseKey !== 'string') {
     return { valid: false, reason: 'Missing license key' };
   }
   const trimmedKey = licenseKey.trim();
-  if (isOwnerBypassKey(trimmedKey)) {
-    const bypass = process.env.OWNER_BYPASS_KEY;
-    const suffix = trimmedKey.slice(bypass.length).replace(/^[-_]+/, '').trim();
-    return { valid: true, purchase: { owner: true, bypassLabel: suffix || 'Owner' } };
+
+  if (isExactOwnerKey(trimmedKey)) {
+    return { valid: true, purchase: { owner: true, bypassKind: 'owner', bypassLabel: 'Owner' } };
+  }
+
+  if (matchesFriendsBypass(trimmedKey)) {
+    const secret = process.env.FRIENDS_BYPASS_KEY;
+    const suffix = trimmedKey.slice(secret.length).replace(/^[-_]+/, '').trim();
+    return { valid: true, purchase: { owner: true, bypassKind: 'friend', bypassLabel: suffix || 'Friend' } };
   }
 
   const productPermalink = process.env.GUMROAD_PRODUCT_PERMALINK;
@@ -55,7 +62,7 @@ export async function verifyGumroadLicense(licenseKey) {
 
   const params = new URLSearchParams({
     product_permalink: productPermalink,
-    license_key: licenseKey.trim(),
+    license_key: trimmedKey,
   });
 
   const res = await fetch('https://api.gumroad.com/v2/licenses/verify', {

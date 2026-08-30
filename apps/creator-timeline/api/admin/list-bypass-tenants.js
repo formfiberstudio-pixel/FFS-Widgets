@@ -26,7 +26,7 @@ export default async function handler(req, res) {
   const tenants = entries
     .map(({ tenantId, record }) => ({
       tenantId,
-      label: record.bypassLabel || 'Owner',
+      label: record.bypassLabel || 'Friend',
       databaseCount: Array.isArray(record.sources) ? record.sources.length : 0,
       lastVerifiedAt: record.lastVerifiedAt || null,
     }))

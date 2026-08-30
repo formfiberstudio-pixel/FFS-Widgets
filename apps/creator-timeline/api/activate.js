@@ -79,11 +79,12 @@ export default async function handler(req, res) {
 
   // One license, one Notion workspace -- keeps a license key from being
   // shared around while still letting its real owner rotate their own
-  // integration secret freely. The owner bypass key is exempt so the
-  // template's creator can test against several of their own workspaces.
-  const isOwnerActivation = verification.purchase?.owner === true;
+  // integration secret freely. Both bypass kinds are exempt: the owner's
+  // own testing, and friends/family who aren't paying customers being
+  // protected against license sharing in the first place.
+  const isBypassActivation = verification.purchase?.owner === true;
   let boundNotionBotId = existingTenant?.boundNotionBotId || null;
-  if (hasNewToken && !isOwnerActivation) {
+  if (hasNewToken && !isBypassActivation) {
     let newBotId;
     try {
       newBotId = await fetchNotionBotId(notionToken.trim());
@@ -111,8 +112,9 @@ export default async function handler(req, res) {
       encryptedLicenseKey: encryptSecret(licenseKey.trim()),
       encryptedNotionToken: hasNewToken ? encryptSecret(notionToken.trim()) : existingTenant.encryptedNotionToken,
       boundNotionBotId,
-      isBypassTenant: isOwnerActivation,
-      bypassLabel: isOwnerActivation ? verification.purchase.bypassLabel : null,
+      isBypassTenant: isBypassActivation,
+      bypassKind: isBypassActivation ? verification.purchase.bypassKind : null,
+      bypassLabel: isBypassActivation ? verification.purchase.bypassLabel : null,
       sources: cleanSources,
       specialDaysDatabaseId: specialDaysDatabaseId
         ? specialDaysDatabaseId.trim()

@@ -89,7 +89,7 @@ export default function Admin() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold">Bypass Tenants</h1>
-            <p className="text-sm text-neutral-400 mt-1">Friends & family activations created with your owner bypass key.</p>
+            <p className="text-sm text-neutral-400 mt-1">Friends & family activations created with your FRIENDS_BYPASS_KEY. Your own tenant isn't listed here.</p>
           </div>
           {adminKey && (
             <button onClick={handleLock} className="text-sm text-neutral-400 hover:text-neutral-200 underline cursor-pointer">Lock</button>
