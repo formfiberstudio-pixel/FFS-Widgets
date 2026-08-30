@@ -883,6 +883,11 @@ function App() {
   const [copiedViewId, setCopiedViewId] = useState('');
   const [showReconfigure, setShowReconfigure] = useState(false);
   const isDemoMode = new URLSearchParams(window.location.search).get('demo') === '1';
+  // ?blank=1 forces the setup screen to ignore any license this browser
+  // already has cached -- lets the owner share (or preview on their own
+  // device) a guaranteed-blank activation link instead of it picking up
+  // their own saved setup.
+  const forceBlankSetup = new URLSearchParams(window.location.search).get('blank') === '1';
 
   // --- PROJECT GRADIENT SHADE MAP ---
   const [projectColorMap, setProjectColorMap] = useState({});
@@ -1506,6 +1511,7 @@ function App() {
           <div className="p-4 rounded-xl border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
             <ActivationPanel
               embedded
+              skipAutoLoad={forceBlankSetup}
               onActivated={handleActivatedFromEmpty}
               onContinue={handleContinueToCalendar}
               continueLabel="Go to Calendar"

@@ -50,7 +50,7 @@ export function buildEmbedUrl(tenantId, sourcesFilter) {
 // onContinue, if provided, renders an extra button on the "done" screen for
 // explicitly moving on (used by the first-activation flow, which needs to
 // let the user copy their embed URL before the setup UI disappears).
-export default function ActivationPanel({ embedded = false, onActivated, onContinue, continueLabel = 'Continue', hideSavedViewsList = false }) {
+export default function ActivationPanel({ embedded = false, onActivated, onContinue, continueLabel = 'Continue', hideSavedViewsList = false, skipAutoLoad = false }) {
   const [licenseKey, setLicenseKey] = useState('');
   const [notionToken, setNotionToken] = useState('');
   const [specialDaysDatabaseId, setSpecialDaysDatabaseId] = useState('');
@@ -134,8 +134,12 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
 
   // Silently try a remembered license key on mount so a returning creator
   // sees their already-activated setup immediately, without retyping the
-  // key or clicking through the manual lookup form.
+  // key or clicking through the manual lookup form. skipAutoLoad opts out
+  // of this -- used for a guaranteed-blank setup link the owner can share
+  // or preview on their own browser without it picking up their own
+  // cached license.
   useEffect(() => {
+    if (skipAutoLoad) return;
     let stored;
     try { stored = localStorage.getItem(STORED_LICENSE_KEY); } catch { stored = null; }
     if (!stored) return;
