@@ -2321,6 +2321,7 @@ function App() {
                     <div className="p-3 rounded-lg border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                       <ActivationPanel
                         embedded
+                        hideSavedViewsList
                         onActivated={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
                       />
                     </div>

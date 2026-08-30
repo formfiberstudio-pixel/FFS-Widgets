@@ -50,7 +50,7 @@ export function buildEmbedUrl(tenantId, sourcesFilter) {
 // onContinue, if provided, renders an extra button on the "done" screen for
 // explicitly moving on (used by the first-activation flow, which needs to
 // let the user copy their embed URL before the setup UI disappears).
-export default function ActivationPanel({ embedded = false, onActivated, onContinue, continueLabel = 'Continue' }) {
+export default function ActivationPanel({ embedded = false, onActivated, onContinue, continueLabel = 'Continue', hideSavedViewsList = false }) {
   const [licenseKey, setLicenseKey] = useState('');
   const [notionToken, setNotionToken] = useState('');
   const [specialDaysDatabaseId, setSpecialDaysDatabaseId] = useState('');
@@ -418,7 +418,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                 </div>
               </div>
 
-              {savedViews.length > 0 && (
+              {!hideSavedViewsList && savedViews.length > 0 && (
                 <div className="space-y-2">
                   <label className="block text-xs font-bold uppercase tracking-wide" style={{ color: colors.muted }}>Your Saved Links</label>
                   <div className="space-y-1.5">
@@ -456,10 +456,11 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                 <div className="p-3 rounded border text-sm" style={{ backgroundColor: colors.dangerBg, borderColor: colors.dangerBorder, color: colors.dangerText }}>{errorMessage}</div>
               )}
 
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
                 <button
                   onClick={() => setStatus('idle')}
-                  className="text-sm underline cursor-pointer opacity-70 hover:opacity-100"
+                  className={`px-4 py-2 ${primaryButtonClass}`}
+                  style={primaryButtonStyle}
                 >
                   Reconfigure or add another database
                 </button>
@@ -566,7 +567,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                 />
               </div>
 
-              {savedViews.length > 0 && (
+              {!hideSavedViewsList && savedViews.length > 0 && (
                 <div className="space-y-2">
                   <label className="block text-xs font-bold uppercase tracking-wide" style={{ color: colors.muted }}>Your Saved Links</label>
                   <div className="space-y-1.5">
