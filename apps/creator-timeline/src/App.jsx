@@ -29,6 +29,44 @@ const TIMELINE_WEEKDAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const NOTION_CACHE_KEY = 'notionWidgetCache';
 
+// ?demo=1 shows this hardcoded sample dataset instead of a real Notion
+// connection -- lets the widget be shared/previewed (a Gumroad product
+// page, a "try it" Notion embed) without anyone needing a license or a
+// Notion workspace of their own. Dates are fixed (not relative to today)
+// so the demo looks the same for every visitor.
+const DEMO_SOURCE = 'Demo Workspace';
+const demoImg = (seed) => `https://picsum.photos/seed/creator-timeline-${seed}/640/480`;
+const DEMO_TIMELINE_LOGS = [
+  { id: 'demo-1', source: DEMO_SOURCE, year: 2026, monthNumber: 1, dayNumber: 12, title: 'Mapped out the Q1 content calendar', Projects: 'YouTube Channel', projectType: 'Planning', projectTypeColor: 'gray', imageUrl: null, pageContent: 'Blocked out release dates for the next twelve weeks.' },
+  { id: 'demo-2', source: DEMO_SOURCE, year: 2026, monthNumber: 1, dayNumber: 22, title: "Drafted 'How I Edit Faster'", Projects: 'Personal Blog', projectType: 'Writing', projectTypeColor: 'orange', imageUrl: null, pageContent: 'First pass on the editing workflow post.' },
+  { id: 'demo-3', source: DEMO_SOURCE, year: 2026, monthNumber: 2, dayNumber: 3, title: 'Kickoff call with the Acme marketing team', Projects: 'Client: Acme Co', projectType: 'Meeting', projectTypeColor: 'pink', imageUrl: null, pageContent: 'Aligned on scope and timeline for the spring campaign.' },
+  { id: 'demo-4', source: DEMO_SOURCE, year: 2026, monthNumber: 2, dayNumber: 19, title: 'Filmed the studio tour walkthrough', Projects: 'YouTube Channel', projectType: 'Filming', projectTypeColor: 'blue', imageUrl: demoImg(1), pageContent: 'Two takes, kept the second one.' },
+  { id: 'demo-5', source: DEMO_SOURCE, year: 2026, monthNumber: 3, dayNumber: 5, title: 'Collected sources for the SEO deep-dive', Projects: 'Personal Blog', projectType: 'Research', projectTypeColor: 'yellow', imageUrl: null, pageContent: 'Twelve articles worth reading before drafting.' },
+  { id: 'demo-6', source: DEMO_SOURCE, year: 2026, monthNumber: 3, dayNumber: 27, title: 'Cut together the bloopers reel', Projects: 'YouTube Channel', projectType: 'Editing', projectTypeColor: 'purple', imageUrl: demoImg(2), pageContent: 'Saving this one for the channel anniversary.' },
+  { id: 'demo-7', source: DEMO_SOURCE, year: 2026, monthNumber: 4, dayNumber: 9, title: 'Delivered the final brand video cut', Projects: 'Client: Acme Co', projectType: 'Deliverable', projectTypeColor: 'red', imageUrl: null, pageContent: 'Signed off after one round of revisions.' },
+  { id: 'demo-8', source: DEMO_SOURCE, year: 2026, monthNumber: 4, dayNumber: 21, title: "Published 'Behind the Scenes'", Projects: 'YouTube Channel', projectType: 'Upload', projectTypeColor: 'green', imageUrl: null, pageContent: 'Scheduled for the usual Tuesday slot.' },
+  { id: 'demo-9', source: DEMO_SOURCE, year: 2026, monthNumber: 5, dayNumber: 4, title: 'Finished the long-form gear guide', Projects: 'Personal Blog', projectType: 'Writing', projectTypeColor: 'orange', imageUrl: null, pageContent: 'Ended up over 3,000 words -- might split it in two.' },
+  { id: 'demo-10', source: DEMO_SOURCE, year: 2026, monthNumber: 5, dayNumber: 15, title: 'Shot the live Q&A stream', Projects: 'YouTube Channel', projectType: 'Filming', projectTypeColor: 'blue', imageUrl: demoImg(3), pageContent: 'Ran long -- almost two hours of questions.' },
+  { id: 'demo-11', source: DEMO_SOURCE, year: 2026, monthNumber: 6, dayNumber: 2, title: 'Quarterly check-in with Acme', Projects: 'Client: Acme Co', projectType: 'Meeting', projectTypeColor: 'pink', imageUrl: null, pageContent: 'Renewed for another quarter.' },
+  { id: 'demo-12', source: DEMO_SOURCE, year: 2026, monthNumber: 6, dayNumber: 18, title: 'Color graded the travel vlog', Projects: 'YouTube Channel', projectType: 'Editing', projectTypeColor: 'purple', imageUrl: null, pageContent: 'Warmed up the tones to match the location.' },
+  { id: 'demo-13', source: DEMO_SOURCE, year: 2026, monthNumber: 7, dayNumber: 7, title: 'Interviewed a guest contributor', Projects: 'Personal Blog', projectType: 'Research', projectTypeColor: 'yellow', imageUrl: null, pageContent: 'Great quotes on burnout and pacing.' },
+  { id: 'demo-14', source: DEMO_SOURCE, year: 2026, monthNumber: 7, dayNumber: 20, title: 'Filmed on location at the studio move', Projects: 'YouTube Channel', projectType: 'Filming', projectTypeColor: 'blue', imageUrl: demoImg(4), pageContent: 'New space has much better natural light.' },
+  { id: 'demo-15', source: DEMO_SOURCE, year: 2026, monthNumber: 8, dayNumber: 3, title: 'Sketched the September content calendar', Projects: 'YouTube Channel', projectType: 'Planning', projectTypeColor: 'gray', imageUrl: null, pageContent: 'Four episodes, one collab slot held open.' },
+  { id: 'demo-16', source: DEMO_SOURCE, year: 2026, monthNumber: 8, dayNumber: 9, title: 'Reviewed the new campaign brief', Projects: 'Client: Acme Co', projectType: 'Meeting', projectTypeColor: 'pink', imageUrl: null, pageContent: 'Waiting on final assets before locking scope.' },
+  { id: 'demo-17', source: DEMO_SOURCE, year: 2026, monthNumber: 8, dayNumber: 14, title: 'A very long shoot day covering three separate segments back to back', Projects: 'YouTube Channel', projectType: 'Filming', projectTypeColor: 'blue', imageUrl: demoImg(5), pageContent: 'Long day, but got everything on the list.' },
+  { id: 'demo-18', source: DEMO_SOURCE, year: 2026, monthNumber: 8, dayNumber: 18, title: "Published 'Studio Setup 2026'", Projects: 'Personal Blog', projectType: 'Writing', projectTypeColor: 'orange', imageUrl: null, pageContent: 'Linked all the gear in the description.' },
+  { id: 'demo-19', source: DEMO_SOURCE, year: 2026, monthNumber: 8, dayNumber: 22, title: 'Final cut for the September premiere', Projects: 'YouTube Channel', projectType: 'Editing', projectTypeColor: 'purple', imageUrl: demoImg(6), pageContent: 'Trimmed the cold open by thirty seconds.' },
+  { id: 'demo-20', source: DEMO_SOURCE, year: 2026, monthNumber: 8, dayNumber: 27, title: 'Sent the revised storyboard', Projects: 'Client: Acme Co', projectType: 'Deliverable', projectTypeColor: 'red', imageUrl: null, pageContent: 'Two scenes reordered per feedback.' },
+  { id: 'demo-21', source: DEMO_SOURCE, year: 2026, monthNumber: 9, dayNumber: 6, title: 'Premiered the September episode', Projects: 'YouTube Channel', projectType: 'Upload', projectTypeColor: 'green', imageUrl: null, pageContent: 'Best first-day watch time in months.' },
+  { id: 'demo-22', source: DEMO_SOURCE, year: 2026, monthNumber: 9, dayNumber: 24, title: 'Started research for the year-end roundup', Projects: 'Personal Blog', projectType: 'Research', projectTypeColor: 'yellow', imageUrl: null, pageContent: 'Pulling favorites from the whole year.' },
+  { id: 'demo-23', source: DEMO_SOURCE, year: 2026, monthNumber: 10, dayNumber: 10, title: 'Planning session for the Q4 campaign', Projects: 'Client: Acme Co', projectType: 'Meeting', projectTypeColor: 'pink', imageUrl: null, pageContent: 'Locked the launch date for November.' },
+  { id: 'demo-24', source: DEMO_SOURCE, year: 2026, monthNumber: 10, dayNumber: 28, title: 'Filmed the Halloween special', Projects: 'YouTube Channel', projectType: 'Filming', projectTypeColor: 'blue', imageUrl: demoImg(7), pageContent: 'Practical effects took longer than the actual filming.' },
+  { id: 'demo-25', source: DEMO_SOURCE, year: 2026, monthNumber: 11, dayNumber: 5, title: 'Drafted the Black Friday gear roundup', Projects: 'Personal Blog', projectType: 'Writing', projectTypeColor: 'orange', imageUrl: null, pageContent: 'Only including things actually worth the price.' },
+  { id: 'demo-26', source: DEMO_SOURCE, year: 2026, monthNumber: 11, dayNumber: 19, title: 'Edited the November vlog', Projects: 'YouTube Channel', projectType: 'Editing', projectTypeColor: 'purple', imageUrl: null, pageContent: 'Cut it down from forty minutes to twelve.' },
+  { id: 'demo-27', source: DEMO_SOURCE, year: 2026, monthNumber: 12, dayNumber: 3, title: 'Delivered the year-end recap video', Projects: 'Client: Acme Co', projectType: 'Deliverable', projectTypeColor: 'red', imageUrl: null, pageContent: 'Approved with no notes on the first pass.' },
+  { id: 'demo-28', source: DEMO_SOURCE, year: 2026, monthNumber: 12, dayNumber: 15, title: 'Published the 2026 Year in Review', Projects: 'YouTube Channel', projectType: 'Upload', projectTypeColor: 'green', imageUrl: demoImg(8), pageContent: 'Pinned comment linking every episode from the year.' },
+];
+
 // -------------------------------------------------------------
 // VECTOR LINE ICONS (NO COLOR, NO FILL)
 // -------------------------------------------------------------
@@ -844,6 +882,7 @@ function App() {
   const [savedViews, setSavedViews] = useState([]); // named embed-URL presets from setup.html, shown in Settings for quick copying
   const [copiedViewId, setCopiedViewId] = useState('');
   const [showReconfigure, setShowReconfigure] = useState(false);
+  const isDemoMode = new URLSearchParams(window.location.search).get('demo') === '1';
 
   // --- PROJECT GRADIENT SHADE MAP ---
   const [projectColorMap, setProjectColorMap] = useState({});
@@ -961,6 +1000,12 @@ function App() {
   // API FETCHING & DYNAMIC DOT COLOR MAPPING LOGIC
   // -------------------------------------------------------------
   useEffect(() => {
+    if (isDemoMode) {
+      setTimelineLogs(DEMO_TIMELINE_LOGS);
+      generateProjectColorMap(DEMO_TIMELINE_LOGS);
+      return;
+    }
+
     const params = new URLSearchParams(window.location.search);
     const urlTenantId = params.get('tenant');
 
@@ -1534,7 +1579,7 @@ function App() {
           <button
             onClick={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
             disabled={isLoading || !tenantId}
-            title="Sync Notion Data"
+            title={isDemoMode ? 'Sync is disabled in this demo' : 'Sync Notion Data'}
             style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
             className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50"
           >
@@ -2240,6 +2285,12 @@ function App() {
                 this modal to a separate setup page to do it. */}
             {settingsTab === 'notion' && (
               <div className="flex-1 overflow-y-auto pr-1 space-y-4 min-h-0">
+                {isDemoMode ? (
+                  <div className="p-4 rounded-lg border text-sm leading-relaxed" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                    You're viewing a demo filled with sample data -- there's no real Notion connection to configure here. Get your own copy to connect your own workspace.
+                  </div>
+                ) : (
+                  <>
                 <div className="p-3 rounded border text-xs leading-relaxed" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                   Your Notion connection and database list are tied to your license, not stored in this embed -- so anyone who opens it (including someone you've shared a page with) never sees your token or needs their own login.
                 </div>
@@ -2327,6 +2378,8 @@ function App() {
                     </div>
                   )}
                 </div>
+                  </>
+                )}
               </div>
             )}
 
