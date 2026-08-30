@@ -246,6 +246,108 @@ const adjustHexColor = (hex, percent) => {
 };
 
 // -------------------------------------------------------------
+// TWO-LINE TITLE CLAMP (measured, not CSS line-clamp)
+// -------------------------------------------------------------
+// -webkit-line-clamp turns out to be genuinely unreliable at the narrow
+// widths these day-cell titles render at: confirmed with an isolated,
+// from-scratch repro (no Tailwind, no app CSS involved) that once a word
+// needs wrapping near the box edge, the browser can let a sliver of a third
+// line paint past the clamped box even though the box's own height is
+// correctly computed. Rather than fight that, measure the text with a
+// canvas (matching the element's actual font) and hard-cut the string
+// itself to whatever fits two lines -- nothing past the "..." ever exists
+// in the DOM, so there's nothing left for the renderer to leak.
+let titleMeasureCanvas = null;
+function measureTextWidth(text, font) {
+  if (!titleMeasureCanvas) titleMeasureCanvas = document.createElement('canvas');
+  const ctx = titleMeasureCanvas.getContext('2d');
+  ctx.font = font;
+  return ctx.measureText(text).width;
+}
+
+function clampTextToLines(text, maxLines, widthPx, font) {
+  if (!text || !widthPx) return text || '';
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let remaining = words;
+
+  while (remaining.length > 0 && lines.length < maxLines) {
+    let line = '';
+    while (remaining.length > 0) {
+      const word = remaining[0];
+      const candidate = line ? `${line} ${word}` : word;
+      if (measureTextWidth(candidate, font) <= widthPx) {
+        line = candidate;
+        remaining = remaining.slice(1);
+      } else if (!line) {
+        // a single word wider than the whole box on its own -- hard-break by character
+        let piece = '';
+        for (const ch of word) {
+          if (measureTextWidth(piece + ch, font) <= widthPx) piece += ch;
+          else break;
+        }
+        line = piece || word[0] || '';
+        const rest = word.slice(line.length);
+        remaining = rest ? [rest, ...remaining.slice(1)] : remaining.slice(1);
+        break;
+      } else {
+        break;
+      }
+    }
+    lines.push(line);
+  }
+
+  if (remaining.length === 0) return lines.join('\n');
+
+  let lastLine = lines[lines.length - 1] || '';
+  let overflowText = (lastLine ? lastLine + ' ' : '') + remaining.join(' ');
+  let truncated = overflowText;
+  while (truncated.length > 0 && measureTextWidth(truncated + '…', font) > widthPx) {
+    truncated = truncated.slice(0, -1);
+  }
+  truncated = truncated.trimEnd() || overflowText.slice(0, 1);
+  lines[lines.length - 1] = `${truncated}…`;
+  return lines.join('\n');
+}
+
+function ClampedTitle({ text, maxLines = 2, className, style }) {
+  const ref = useRef(null);
+  const [displayText, setDisplayText] = useState(text);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const measure = () => {
+      if (!text) { setDisplayText(''); return; }
+      const cs = window.getComputedStyle(el);
+      // clientWidth includes padding, but that space isn't available to the
+      // text itself -- measuring against it (instead of the content-box
+      // width) is exactly what let lines run long enough to wrap a second
+      // time on render.
+      // -2px safety margin: canvas measureText and actual DOM text layout
+      // can round sub-pixels slightly differently, so bias toward a line
+      // that's a hair short rather than one that risks wrapping again.
+      const contentWidth = el.clientWidth - parseFloat(cs.paddingLeft || 0) - parseFloat(cs.paddingRight || 0) - 2;
+      if (!contentWidth) { setDisplayText(text); return; }
+      const font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      setDisplayText(clampTextToLines(text, maxLines, contentWidth, font));
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text, maxLines]);
+
+  return (
+    <div ref={ref} className={className} style={{ ...style, whiteSpace: 'pre-line', overflow: 'hidden' }}>
+      {displayText}
+    </div>
+  );
+}
+
+// -------------------------------------------------------------
 // ONTARIO STATUTORY HOLIDAY CALCULATOR
 // -------------------------------------------------------------
 const getOntarioStatHolidayName = (dateObj) => {
@@ -336,19 +438,20 @@ const getDayDotStyling = (dateObj, hasLog, logDotHex, specialDay) => {
 // -------------------------------------------------------------
 // SUB-COMPONENT: WEEK DAY COLUMN
 // -------------------------------------------------------------
-function WeekDayColumn({ 
-  slot, 
-  logs, 
-  isTodayDate, 
-  displayDotHex, 
-  weekCardHeight, 
-  cardRadius, 
-  hoveredProjectTitle, 
-  setHoveredProjectTitle, 
-  setSelectedLogModal, 
+function WeekDayColumn({
+  slot,
+  logs,
+  isTodayDate,
+  displayDotHex,
+  weekCardHeight,
+  cardRadius,
+  hoveredProjectTitle,
+  setHoveredProjectTitle,
+  setSelectedLogModal,
   getDotColor,
   scaleFactor,
-  specialDay
+  specialDay,
+  showEntryTitle
 }) {
   const scrollRef = useRef(null);
   const [canScrollUp, setCanScrollUp] = useState(false);
@@ -464,23 +567,28 @@ function WeekDayColumn({
                   />
                 )}
 
-                <div className="relative z-10 flex items-center gap-1.5 pointer-events-none">
+                <div className="relative z-10 flex items-center gap-1.5 pointer-events-none min-w-0">
                   <span
-                    className="inline-flex items-center font-bold text-white px-2 py-0.5 rounded-full truncate max-w-full leading-none shadow-xs"
+                    className="inline-flex items-center min-w-0 max-w-full font-bold text-white px-2 py-0.5 rounded-full leading-none shadow-xs"
                     style={{ backgroundColor: logDotHex, fontSize: `${Math.round(10 * scaleFactor)}px` }}
                   >
-                    {log.Projects}
+                    {/* text-overflow:ellipsis doesn't reliably paint on a flex
+                        container itself -- the anonymous flex item wrapping
+                        raw text ignores it. Truncating on a plain block child
+                        instead is what actually renders the "..." */}
+                    <span className="block truncate">{log.Projects}</span>
                   </span>
                 </div>
 
-                <div className="relative z-10 mt-auto">
-                  <div 
-                    className="font-bold text-white bg-black/40 p-1.5 rounded-sm backdrop-blur-sm line-clamp-2 leading-tight"
-                    style={{ fontSize: `${Math.round(11 * scaleFactor)}px` }}
-                  >
-                    {log.title}
+                {showEntryTitle && (
+                  <div className="relative z-10 mt-auto">
+                    <ClampedTitle
+                      text={log.title}
+                      className="font-bold text-white bg-black/40 p-1.5 rounded-sm backdrop-blur-sm"
+                      style={{ fontSize: `${Math.round(11 * scaleFactor)}px`, lineHeight: 1.2 }}
+                    />
                   </div>
-                </div>
+                )}
               </div>
             );
           })
@@ -594,6 +702,16 @@ function App() {
   }, [viewScale]);
 
   const scaleFactor = viewScale / 100;
+
+  // --- ENTRY TITLE VISIBILITY (month/week thumbnails) ---
+  const [showEntryTitle, setShowEntryTitle] = useState(() => {
+    const saved = localStorage.getItem('notionWidgetShowEntryTitle');
+    return saved === null ? true : saved === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('notionWidgetShowEntryTitle', String(showEntryTitle));
+  }, [showEntryTitle]);
 
   // Derived baseline component dimensions
   const monthDotPx = Math.round(24 * scaleFactor);
@@ -711,6 +829,8 @@ function App() {
   const [tenantId, setTenantId] = useState(null);
   const [sourceFilter, setSourceFilter] = useState(null); // null = show all of the tenant's configured databases
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [savedViews, setSavedViews] = useState([]); // named embed-URL presets from setup.html, shown in Settings for quick copying
+  const [copiedViewId, setCopiedViewId] = useState('');
 
   // --- PROJECT GRADIENT SHADE MAP ---
   const [projectColorMap, setProjectColorMap] = useState({});
@@ -861,6 +981,7 @@ function App() {
         if (cached && Array.isArray(cached.data)) {
           setTimelineLogs(cached.data);
           setSpecialDays(cached.specialDays || []);
+          setSavedViews(cached.savedViews || []);
           generateProjectColorMap(cached.data);
           paintedFromCache = true;
           hasFreshCache = typeof cached.cachedAt === 'number' && (Date.now() - cached.cachedAt) < CACHE_TTL_MS;
@@ -902,12 +1023,14 @@ function App() {
       if (result.success) {
         setTimelineLogs(result.data || []);
         setSpecialDays(result.specialDays || []);
+        setSavedViews(result.savedViews || []);
         generateProjectColorMap(result.data || []);
         try {
           const cacheKey = `${NOTION_CACHE_KEY}:${tenant}:${sourcesFilterArg ? sourcesFilterArg.join(',') : 'all'}`;
           localStorage.setItem(cacheKey, JSON.stringify({
             data: result.data || [],
             specialDays: result.specialDays || [],
+            savedViews: result.savedViews || [],
             cachedAt: Date.now(),
           }));
         } catch (err) {
@@ -1625,21 +1748,23 @@ function App() {
                               </div>
                               {hasLog && primaryLog && (
                                 <span
-                                  className={`inline-flex items-center font-bold text-white px-2.5 py-0.5 rounded-full truncate max-w-[calc(100%-2rem)] leading-none shadow-xs transition-opacity duration-200 pointer-events-auto ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
+                                  className={`inline-flex items-center min-w-0 max-w-[calc(100%-2rem)] font-bold text-white px-2.5 py-0.5 rounded-full leading-none shadow-xs transition-opacity duration-200 pointer-events-auto ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
                                   style={{ backgroundColor: displayDotHex, fontSize: `${projectTagFontPx}px` }}
                                 >
-                                  {primaryLog.Projects}
+                                  {/* text-overflow:ellipsis doesn't reliably paint on a flex
+                                      container itself -- truncating on a plain block child
+                                      instead is what actually renders the "..." */}
+                                  <span className="block truncate">{primaryLog.Projects}</span>
                                 </span>
                               )}
                             </div>
 
-                            {hasLog && primaryLog && (
-                              <div 
-                                className={`relative z-10 font-bold text-white bg-black/40 p-1.5 rounded-sm backdrop-blur-sm line-clamp-2 leading-tight transition-opacity duration-200 ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
-                                style={{ fontSize: `${cardTitleFontPx}px` }}
-                              >
-                                {primaryLog.title}
-                              </div>
+                            {showEntryTitle && hasLog && primaryLog && (
+                              <ClampedTitle
+                                text={primaryLog.title}
+                                className={`relative z-10 font-bold text-white bg-black/40 p-1.5 rounded-sm backdrop-blur-sm transition-opacity duration-200 ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
+                                style={{ fontSize: `${cardTitleFontPx}px`, lineHeight: 1.2 }}
+                              />
                             )}
                           </div>
                         );
@@ -1711,6 +1836,7 @@ function App() {
                       getDotColor={getDotColor}
                       scaleFactor={scaleFactor}
                       specialDay={specialDay}
+                      showEntryTitle={showEntryTitle}
                     />
                   );
                 })}
@@ -2046,6 +2172,35 @@ function App() {
                     {sourceFilter ? `${sourceFilter.length} selected database${sourceFilter.length === 1 ? '' : 's'}` : 'All configured databases'}
                   </div>
                 </div>
+                {!sourceFilter && savedViews.length > 0 && (
+                  <div>
+                    <label className="block text-xs font-bold mb-1.5 opacity-60">Your Saved Links</label>
+                    <div className="space-y-1.5">
+                      {savedViews.map((v) => (
+                        <div key={v.id} className="flex items-center justify-between gap-2 p-2 rounded border text-xs" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                          <div className="min-w-0">
+                            <div className="font-bold truncate">{v.label}</div>
+                            <div className="opacity-60">{v.sources ? `${v.sources.length} database${v.sources.length === 1 ? '' : 's'}` : 'All databases'}</div>
+                          </div>
+                          <button
+                            onClick={() => {
+                              const url = `${window.location.origin}/${v.sources ? `?tenant=${tenantId}&sources=${v.sources.join(',')}` : `?tenant=${tenantId}`}`;
+                              navigator.clipboard.writeText(url).then(() => {
+                                setCopiedViewId(v.id);
+                                setTimeout(() => setCopiedViewId(''), 2000);
+                              }).catch(() => {});
+                            }}
+                            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                            className="font-bold px-2.5 py-1.5 rounded border cursor-pointer hover:opacity-80 shrink-0"
+                          >
+                            {copiedViewId === v.id ? 'Copied!' : 'Copy Link'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[10px] opacity-50 mt-1.5">Only shown on your unfiltered/full embed, not on filtered client-facing links.</p>
+                  </div>
+                )}
                 <a
                   href="/setup.html"
                   target="_blank"
@@ -2176,13 +2331,32 @@ function App() {
                     <h3 className="text-xs font-bold">Text Size & Baseline Component Scale</h3>
                     <p className="text-[11px] opacity-60">Controls default dimensions of day dots, tags, and text across all views.</p>
                   </div>
-                  <button 
-                    onClick={() => setViewScale(100)} 
+                  <button
+                    onClick={() => setViewScale(100)}
                     className="text-[11px] font-bold px-2.5 py-1 rounded border hover:opacity-100 opacity-70 transition-opacity shrink-0 cursor-pointer flex items-center gap-1"
                     style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}
                   >
                     <IconReset />
                     <span>Reset to 100%</span>
+                  </button>
+                </div>
+
+                <div className="p-3 border rounded-lg flex items-center justify-between gap-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                  <div>
+                    <h3 className="text-xs font-bold">Show Entry Title</h3>
+                    <p className="text-[11px] opacity-60">Display each entry's title text on month and week thumbnails.</p>
+                  </div>
+                  <button
+                    onClick={() => setShowEntryTitle(prev => !prev)}
+                    role="switch"
+                    aria-checked={showEntryTitle}
+                    title={showEntryTitle ? 'Hide entry titles' : 'Show entry titles'}
+                    className="relative w-9 h-5 rounded-full transition-colors cursor-pointer shrink-0"
+                    style={{ backgroundColor: showEntryTitle ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${showEntryTitle ? 'translate-x-4' : 'translate-x-0'}`}
+                    />
                   </button>
                 </div>
 

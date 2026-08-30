@@ -273,7 +273,7 @@ export default async function handler(req, res) {
     const validLogs = perSourceLogs.flat();
     console.log(`[Diagnostic] Successfully returning ${validLogs.length} valid logs to frontend across ${sources.length} database(s) for tenant ${tenantId}.`);
 
-    return res.status(200).json({ success: true, data: validLogs });
+    return res.status(200).json({ success: true, data: validLogs, savedViews: tenant.savedViews || [] });
 
   } catch (error) {
     console.error('[Diagnostic] Fatal API Error:', error.message);

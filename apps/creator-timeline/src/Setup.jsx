@@ -4,6 +4,12 @@ function makeId() {
   return crypto.randomUUID();
 }
 
+function buildEmbedUrl(tenantId, sourcesFilter) {
+  const base = `${window.location.origin}/`;
+  if (!sourcesFilter || sourcesFilter.length === 0) return `${base}?tenant=${tenantId}`;
+  return `${base}?tenant=${tenantId}&sources=${sourcesFilter.join(',')}`;
+}
+
 export default function Setup() {
   const [licenseKey, setLicenseKey] = useState('');
   const [notionToken, setNotionToken] = useState('');
@@ -13,11 +19,61 @@ export default function Setup() {
   const [errorMessage, setErrorMessage] = useState('');
   const [tenantId, setTenantId] = useState('');
   const [selectedForEmbed, setSelectedForEmbed] = useState([]); // databaseIds included in the copyable URL
-  const [copied, setCopied] = useState(false);
+  const [copiedKey, setCopiedKey] = useState('');
+
+  const [hasExistingToken, setHasExistingToken] = useState(false);
+  const [savedViews, setSavedViews] = useState([]);
+  const [newViewLabel, setNewViewLabel] = useState('');
+
+  const [showLookup, setShowLookup] = useState(false);
+  const [lookupLicenseKey, setLookupLicenseKey] = useState('');
+  const [lookupStatus, setLookupStatus] = useState('idle'); // idle | looking | error
 
   const addSource = () => setSources(prev => [...prev, { id: makeId(), label: '', databaseId: '' }]);
   const removeSource = (id) => setSources(prev => prev.filter(s => s.id !== id));
   const updateSource = (id, field, value) => setSources(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
+
+  const copyText = async (text, key) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(''), 2000);
+    } catch {
+      // Clipboard API can fail (permissions, insecure context) -- the URL is still shown to copy manually.
+    }
+  };
+
+  const handleLookup = async (e) => {
+    e.preventDefault();
+    setLookupStatus('looking');
+    setErrorMessage('');
+    try {
+      const res = await fetch('/api/tenant-lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ licenseKey: lookupLicenseKey }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Lookup failed');
+
+      setLicenseKey(lookupLicenseKey);
+      setSources(
+        data.sources.length > 0
+          ? data.sources.map(s => ({ id: makeId(), label: s.label, databaseId: s.databaseId }))
+          : [{ id: makeId(), label: '', databaseId: '' }]
+      );
+      setSpecialDaysDatabaseId(data.specialDaysDatabaseId || '');
+      setSavedViews(data.savedViews || []);
+      setHasExistingToken(Boolean(data.hasToken));
+      setTenantId(data.tenantId);
+      setNotionToken('');
+      setShowLookup(false);
+      setLookupStatus('idle');
+    } catch (err) {
+      setErrorMessage(err.message || 'Lookup failed');
+      setLookupStatus('error');
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -29,9 +85,10 @@ export default function Setup() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           licenseKey,
-          notionToken,
+          notionToken: notionToken || undefined,
           specialDaysDatabaseId,
           sources: sources.map(s => ({ label: s.label, databaseId: s.databaseId })),
+          savedViews,
         }),
       });
       const data = await res.json();
@@ -39,7 +96,46 @@ export default function Setup() {
         throw new Error(data.error || 'Setup failed');
       }
       setTenantId(data.tenantId);
+      setSavedViews(data.savedViews || []);
       setSelectedForEmbed(sources.filter(s => s.databaseId.trim()).map(s => s.databaseId.trim()));
+      setHasExistingToken(true);
+      setNotionToken('');
+      setStatus('done');
+    } catch (err) {
+      setErrorMessage(err.message || 'Something went wrong');
+      setStatus('error');
+    }
+  };
+
+  const handleSaveView = async () => {
+    if (!newViewLabel.trim()) return;
+    const newView = { id: makeId(), label: newViewLabel.trim(), sources: allSelected ? null : selectedForEmbed };
+    await persistViews([...savedViews, newView]);
+    setNewViewLabel('');
+  };
+
+  const handleDeleteView = async (id) => {
+    await persistViews(savedViews.filter(v => v.id !== id));
+  };
+
+  const persistViews = async (updatedViews) => {
+    setStatus('submitting');
+    setErrorMessage('');
+    try {
+      const res = await fetch('/api/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          licenseKey,
+          notionToken: notionToken || undefined,
+          specialDaysDatabaseId,
+          sources: sources.map(s => ({ label: s.label, databaseId: s.databaseId })),
+          savedViews: updatedViews,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Could not save');
+      setSavedViews(data.savedViews || []);
       setStatus('done');
     } catch (err) {
       setErrorMessage(err.message || 'Something went wrong');
@@ -49,23 +145,10 @@ export default function Setup() {
 
   const validSources = sources.filter(s => s.databaseId.trim());
   const allSelected = selectedForEmbed.length === validSources.length;
-  const embedUrl = tenantId
-    ? `${window.location.origin}/${allSelected ? `?tenant=${tenantId}` : `?tenant=${tenantId}&sources=${selectedForEmbed.join(',')}`}`
-    : '';
+  const embedUrl = tenantId ? buildEmbedUrl(tenantId, allSelected ? null : selectedForEmbed) : '';
 
   const toggleEmbedSource = (databaseId) => {
     setSelectedForEmbed(prev => prev.includes(databaseId) ? prev.filter(id => id !== databaseId) : [...prev, databaseId]);
-    setCopied(false);
-  };
-
-  const copyEmbedUrl = async () => {
-    try {
-      await navigator.clipboard.writeText(embedUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard API can fail (permissions, insecure context) -- the URL is still shown to copy manually.
-    }
   };
 
   return (
@@ -78,8 +161,53 @@ export default function Setup() {
           </p>
         </div>
 
+        {status !== 'done' && (
+          <div className="p-3 rounded-lg border border-neutral-800 bg-neutral-900">
+            {!showLookup ? (
+              <button
+                type="button"
+                onClick={() => { setShowLookup(true); setLookupLicenseKey(licenseKey); }}
+                className="text-sm text-neutral-300 hover:text-white underline cursor-pointer"
+              >
+                Already activated? Look up your existing setup instead of starting blank
+              </button>
+            ) : (
+              <form onSubmit={handleLookup} className="space-y-2">
+                <label className="block text-xs font-bold">Gumroad License Key</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    required
+                    value={lookupLicenseKey}
+                    onChange={(e) => setLookupLicenseKey(e.target.value)}
+                    placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX"
+                    className="flex-1 px-3 py-2 rounded border border-neutral-700 bg-neutral-950 text-sm outline-none focus:border-neutral-400"
+                  />
+                  <button
+                    type="submit"
+                    disabled={lookupStatus === 'looking'}
+                    className="px-4 py-2 rounded bg-white text-black text-sm font-bold cursor-pointer hover:opacity-90 disabled:opacity-50 shrink-0"
+                  >
+                    {lookupStatus === 'looking' ? 'Looking up...' : 'Look Up'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowLookup(false)}
+                    className="text-sm text-neutral-400 hover:text-neutral-200 cursor-pointer px-2"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {lookupStatus === 'error' && (
+                  <div className="p-2 rounded bg-rose-950 border border-rose-800 text-rose-200 text-xs">{errorMessage}</div>
+                )}
+              </form>
+            )}
+          </div>
+        )}
+
         {status === 'done' ? (
-          <div className="space-y-5">
+          <div className="space-y-6">
             <div className="p-4 rounded-lg bg-emerald-950 border border-emerald-800 text-emerald-200 text-sm">
               Activated. Paste the link below into a Notion embed block on any page.
             </div>
@@ -117,13 +245,73 @@ export default function Setup() {
                   className="flex-1 px-3 py-2 rounded border border-neutral-700 bg-neutral-900 text-sm font-mono"
                 />
                 <button
-                  onClick={copyEmbedUrl}
+                  onClick={() => copyText(embedUrl, 'main')}
                   className="px-4 py-2 rounded bg-white text-black text-sm font-bold shrink-0 cursor-pointer hover:opacity-90"
                 >
-                  {copied ? 'Copied!' : 'Copy'}
+                  {copiedKey === 'main' ? 'Copied!' : 'Copy'}
                 </button>
               </div>
             </div>
+
+            <div className="space-y-2 p-3 rounded-lg border border-neutral-800">
+              <label className="block text-xs font-bold uppercase tracking-wide text-neutral-400">Save this link for later</label>
+              <p className="text-xs text-neutral-500">
+                Give the current selection a name (e.g. "Personal", "Acme Client") so you can come back here and grab it again without reconfiguring.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newViewLabel}
+                  onChange={(e) => setNewViewLabel(e.target.value)}
+                  placeholder={'e.g. "Acme Client Page"'}
+                  className="flex-1 px-3 py-2 rounded border border-neutral-700 bg-neutral-900 text-sm outline-none focus:border-neutral-400"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveView}
+                  disabled={!newViewLabel.trim() || status === 'submitting'}
+                  className="px-4 py-2 rounded bg-white text-black text-sm font-bold cursor-pointer hover:opacity-90 disabled:opacity-50 shrink-0"
+                >
+                  Save Link
+                </button>
+              </div>
+            </div>
+
+            {savedViews.length > 0 && (
+              <div className="space-y-2">
+                <label className="block text-xs font-bold uppercase tracking-wide text-neutral-400">Your Saved Links</label>
+                <div className="space-y-1.5">
+                  {savedViews.map((v) => (
+                    <div key={v.id} className="flex items-center justify-between gap-2 p-2.5 rounded border border-neutral-800 bg-neutral-900 text-sm">
+                      <div className="min-w-0">
+                        <div className="font-bold truncate">{v.label}</div>
+                        <div className="text-xs text-neutral-500">{v.sources ? `${v.sources.length} database${v.sources.length === 1 ? '' : 's'}` : 'All databases'}</div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => copyText(buildEmbedUrl(tenantId, v.sources), v.id)}
+                          className="text-xs font-bold px-2.5 py-1.5 rounded bg-neutral-700 hover:bg-neutral-600 cursor-pointer"
+                        >
+                          {copiedKey === v.id ? 'Copied!' : 'Copy'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteView(v.id)}
+                          className="text-xs font-bold text-rose-400 hover:underline cursor-pointer"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {status === 'error' && (
+              <div className="p-3 rounded bg-rose-950 border border-rose-800 text-rose-200 text-sm">{errorMessage}</div>
+            )}
 
             <button
               onClick={() => setStatus('idle')}
@@ -151,12 +339,15 @@ export default function Setup() {
               <label className="block text-xs font-bold mb-1.5">Notion Integration Token</label>
               <input
                 type="password"
-                required
+                required={!hasExistingToken}
                 value={notionToken}
                 onChange={(e) => setNotionToken(e.target.value)}
-                placeholder="secret_..."
+                placeholder={hasExistingToken ? 'Leave blank to keep your current token' : 'secret_...'}
                 className="w-full px-3 py-2 rounded border border-neutral-700 bg-neutral-900 text-sm outline-none focus:border-neutral-400"
               />
+              {hasExistingToken && (
+                <p className="text-xs text-neutral-500 mt-1">A token is already on file -- only fill this in if you want to replace it.</p>
+              )}
             </div>
 
             <div>
@@ -215,6 +406,29 @@ export default function Setup() {
               />
             </div>
 
+            {savedViews.length > 0 && (
+              <div className="space-y-2">
+                <label className="block text-xs font-bold uppercase tracking-wide text-neutral-400">Your Saved Links</label>
+                <div className="space-y-1.5">
+                  {savedViews.map((v) => (
+                    <div key={v.id} className="flex items-center justify-between gap-2 p-2.5 rounded border border-neutral-800 bg-neutral-900 text-sm">
+                      <div className="min-w-0">
+                        <div className="font-bold truncate">{v.label}</div>
+                        <div className="text-xs text-neutral-500">{v.sources ? `${v.sources.length} database${v.sources.length === 1 ? '' : 's'}` : 'All databases'}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => copyText(buildEmbedUrl(tenantId, v.sources), v.id)}
+                        className="text-xs font-bold px-2.5 py-1.5 rounded bg-neutral-700 hover:bg-neutral-600 cursor-pointer shrink-0"
+                      >
+                        {copiedKey === v.id ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {status === 'error' && (
               <div className="p-3 rounded bg-rose-950 border border-rose-800 text-rose-200 text-sm">
                 {errorMessage}
@@ -226,7 +440,7 @@ export default function Setup() {
               disabled={status === 'submitting'}
               className="w-full py-2.5 rounded bg-white text-black text-sm font-bold cursor-pointer hover:opacity-90 disabled:opacity-50"
             >
-              {status === 'submitting' ? 'Activating...' : 'Activate'}
+              {status === 'submitting' ? 'Saving...' : hasExistingToken ? 'Save Changes' : 'Activate'}
             </button>
           </form>
         )}
