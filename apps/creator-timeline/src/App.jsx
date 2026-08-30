@@ -1385,6 +1385,19 @@ function App() {
     '--theme-secondary': currentThemeColors.secondary,
   };
 
+  // Keeps an installed (standalone-window) PWA's title bar in sync with
+  // the app's own background -- otherwise Chrome falls back to a default
+  // dark frame that clashes with a light theme (or vice versa).
+  useEffect(() => {
+    let meta = document.querySelector('meta[name="theme-color"]');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.setAttribute('name', 'theme-color');
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute('content', currentThemeColors.bg);
+  }, [currentThemeColors.bg]);
+
   if (needsSetup) {
     // Update the URL as soon as activation succeeds (so refreshing or
     // copy-pasting the address bar already works), but don't switch away
