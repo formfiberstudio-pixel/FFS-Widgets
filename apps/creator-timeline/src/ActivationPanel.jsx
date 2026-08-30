@@ -272,8 +272,14 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
   const inputStyle = { backgroundColor: colors.card, borderColor: colors.border, color: colors.text };
   const cardClass = 'border rounded-lg';
   const cardStyle = { backgroundColor: colors.card, borderColor: colors.border };
-  const primaryButtonClass = 'rounded text-sm font-bold text-white cursor-pointer hover:opacity-90 disabled:opacity-50';
-  const primaryButtonStyle = { backgroundColor: colors.primary };
+  const primaryButtonClass = 'rounded text-sm font-bold cursor-pointer hover:opacity-90 disabled:cursor-not-allowed disabled:hover:opacity-100';
+  // A disabled button needs to look clearly inert, not just a slightly
+  // paler version of the same color -- opacity alone on a bright primary
+  // color still reads as "active but faint," which is exactly what looked
+  // like a broken/unresponsive Save Link button in practice.
+  const primaryButtonStyle = (disabled) => disabled
+    ? { backgroundColor: colors.border, color: colors.faint }
+    : { backgroundColor: colors.primary, color: '#fff' };
 
   return (
     <div className={embedded ? 'space-y-5' : 'min-h-screen bg-neutral-950 text-neutral-100 flex justify-center px-4 py-12'}>
@@ -329,7 +335,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                       type="submit"
                       disabled={lookupStatus === 'looking'}
                       className={`px-4 py-2 shrink-0 ${primaryButtonClass}`}
-                      style={primaryButtonStyle}
+                      style={primaryButtonStyle(lookupStatus === 'looking')}
                     >
                       {lookupStatus === 'looking' ? 'Looking up...' : 'Look Up'}
                     </button>
@@ -392,7 +398,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                   <button
                     onClick={() => copyText(embedUrl, 'main')}
                     className={`px-4 py-2 shrink-0 ${primaryButtonClass}`}
-                    style={primaryButtonStyle}
+                    style={primaryButtonStyle(false)}
                   >
                     {copyLabel('main', 'Copy')}
                   </button>
@@ -418,7 +424,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                     onClick={handleSaveView}
                     disabled={!newViewLabel.trim() || status === 'submitting'}
                     className={`px-4 py-2 shrink-0 ${primaryButtonClass}`}
-                    style={primaryButtonStyle}
+                    style={primaryButtonStyle(!newViewLabel.trim() || status === 'submitting')}
                   >
                     Save Link
                   </button>
@@ -467,14 +473,14 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                 <button
                   onClick={() => setStatus('idle')}
                   className={`px-4 py-2 ${primaryButtonClass}`}
-                  style={primaryButtonStyle}
+                  style={primaryButtonStyle(false)}
                 >
                   Reconfigure or add another database
                 </button>
                 {onContinue && (
                   <button
                     onClick={onContinue}
-                    style={{ marginLeft: 'auto', ...primaryButtonStyle }}
+                    style={{ marginLeft: 'auto', ...primaryButtonStyle(false) }}
                     className={`px-4 py-2 ${primaryButtonClass}`}
                   >
                     {continueLabel} →
@@ -608,7 +614,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                 type="submit"
                 disabled={status === 'submitting'}
                 className={`w-full py-2.5 ${primaryButtonClass}`}
-                style={primaryButtonStyle}
+                style={primaryButtonStyle(status === 'submitting')}
               >
                 {status === 'submitting' ? 'Saving...' : hasExistingToken ? 'Save Changes' : 'Activate'}
               </button>
