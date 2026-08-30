@@ -1479,7 +1479,7 @@ function App() {
     >
       
       {/* HEADER */}
-      <header className="shrink-0 mb-5 flex flex-wrap items-center justify-between gap-4">
+      <header className="shrink-0 mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
           {viewMode === 'month' ? (
             <div className="leading-none">
@@ -1530,13 +1530,13 @@ function App() {
           <p className="text-sm mt-2 opacity-60">Driven by Figma Tokens & Notion Data.</p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <button
             onClick={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
             disabled={isLoading || !tenantId}
             title="Sync Notion Data"
             style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-            className="px-3 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
+            className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50"
           >
             <span className={isLoading ? "animate-spin" : ""}><IconSync /></span>
             <span>Sync</span>
@@ -1546,7 +1546,7 @@ function App() {
             onClick={() => setShowSettings(true)}
             title="Widget Settings & Customization"
             style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-            className="px-3 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1.5 shadow-sm transition-colors"
+            className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors"
           >
             <IconSettings />
             <span>Settings</span>
@@ -1555,7 +1555,7 @@ function App() {
           <button
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
             style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-            className="px-3 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1.5"
+            className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1"
           >
             <IconFolder />
             <span>{isSidebarOpen ? 'Hide Projects' : 'Projects'}</span>
@@ -1563,25 +1563,25 @@ function App() {
 
           <button
             onClick={() => setCurrentDate(today)}
-            style={{ 
-              backgroundColor: 'var(--theme-card)', 
+            style={{
+              backgroundColor: 'var(--theme-card)',
               borderColor: 'var(--theme-primary)',
               color: 'var(--theme-primary)'
             }}
-            className="px-3 py-1.5 text-xs font-semibold rounded-md flex items-center gap-1.5 border cursor-pointer"
+            className="px-2.5 py-1.5 text-xs font-semibold rounded-md flex items-center gap-1.5 border cursor-pointer"
           >
             <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--theme-primary)' }} />Today
           </button>
 
           <div className="flex items-center p-0.5 rounded-lg border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
-            <button onClick={() => setViewMode('year')} className={`px-3 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
-            <button onClick={() => setViewMode('month')} className={`px-3 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
-            <button onClick={() => setViewMode('week')} className={`px-3 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
+            <button onClick={() => setViewMode('year')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
+            <button onClick={() => setViewMode('month')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
+            <button onClick={() => setViewMode('week')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
           </div>
 
-          <div className="flex items-center gap-1.5">
-            <button onClick={handlePrev} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-3 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">← Prev</button>
-            <button onClick={handleNext} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-3 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">Next →</button>
+          <div className="flex items-center gap-1">
+            <button onClick={handlePrev} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">← Prev</button>
+            <button onClick={handleNext} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">Next →</button>
           </div>
         </div>
       </header>
