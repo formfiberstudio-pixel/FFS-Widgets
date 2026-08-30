@@ -14,6 +14,136 @@ function toThumbnailUrl(rawUrl) {
   return `/api/image-thumb?url=${encodeURIComponent(rawUrl)}&w=640`;
 }
 
+// Auto-detects which Notion property types on a page could serve as a
+// "facet" (an independent tag dimension) -- relation, rollup, select, and
+// multi_select are all Notion's own ways of tagging a page, so any of them
+// qualifies. Computed once per SOURCE, not per page: a single Notion
+// database query returns the same property schema for every row, so
+// there's no need (and no benefit) to re-detect it 100+ times per sync.
+const FACET_PROP_TYPES = new Set(['relation', 'rollup', 'select', 'multi_select']);
+
+function slugifyFacetKey(name) {
+  const words = name.trim().split(/[^a-zA-Z0-9]+/).filter(Boolean);
+  if (words.length === 0) return 'facet';
+  return words.map((w, i) => i === 0 ? w.toLowerCase() : w[0].toUpperCase() + w.slice(1).toLowerCase()).join('');
+}
+
+export function detectFacetSchema(sampleProps) {
+  const raw = Object.entries(sampleProps || {})
+    .filter(([, v]) => FACET_PROP_TYPES.has(v.type))
+    .map(([name, v]) => ({ name, type: v.type, key: slugifyFacetKey(name) }));
+
+  // Two differently-named properties could slug to the same key (e.g.
+  // "Meal Type" and "meal-type") -- keep both, just disambiguate.
+  const seenKeys = new Map();
+  return raw.map(f => {
+    const count = (seenKeys.get(f.key) || 0) + 1;
+    seenKeys.set(f.key, count);
+    return count === 1 ? f : { ...f, key: `${f.key}_${count}` };
+  });
+}
+
+// Reads every value out of one Notion property (not just the first), so a
+// multi_select or multi-relation facet keeps all of its simultaneous tags
+// instead of the single-value assumption the legacy path still makes.
+export async function extractFacetValues(propVal, type, getRelationTitle) {
+  let raw = [];
+  switch (type) {
+    case 'select':
+      if (propVal.select) raw = [{ name: propVal.select.name, color: propVal.select.color }];
+      break;
+    case 'multi_select':
+      raw = (propVal.multi_select || []).map(t => ({ name: t.name, color: t.color }));
+      break;
+    case 'relation': {
+      const ids = (propVal.relation || []).map(r => r.id);
+      const names = await Promise.all(ids.map(id => getRelationTitle(id)));
+      // Relations carry no native Notion color (today's single-relation
+      // "Projects" field has never had one either -- it's colored
+      // procedurally on the frontend). Default to a neutral gray.
+      raw = names.map(name => ({ name, color: 'default' }));
+      break;
+    }
+    case 'rollup':
+      for (const item of (propVal.rollup?.array || [])) {
+        if (item.type === 'select' && item.select) {
+          raw.push({ name: item.select.name, color: item.select.color });
+        } else if (item.type === 'multi_select') {
+          raw.push(...(item.multi_select || []).map(t => ({ name: t.name, color: t.color })));
+        } else if (item.type === 'title' && item.title?.length) {
+          raw.push({ name: item.title[0].plain_text, color: 'default' });
+        } else if (item.type === 'rich_text' && item.rich_text?.length) {
+          raw.push({ name: item.rich_text[0].plain_text, color: 'default' });
+        }
+      }
+      break;
+  }
+  // De-dupe by name -- a relation linking the same page twice, or a rollup
+  // surfacing the same select value from several related rows, shouldn't
+  // render as a duplicate tag.
+  const seen = new Set();
+  return raw.filter(v => (seen.has(v.name) ? false : (seen.add(v.name), true)));
+}
+
+// Builds the category fields for one page. Sources with 2 or fewer
+// detected facets go through the ORIGINAL single-value logic verbatim --
+// this is the entire compatibility guarantee for existing Plants/Projects
+// tenants: the exact same code executes, not a rewrite that merely
+// intends to match it. Sources with 3+ facets get the new `facets` map
+// instead, with legacy Projects/projectType/projectTypeColor synthesized
+// from facets #1/#2 as a safety net for any caller that isn't
+// facet-aware yet.
+export async function buildLogFields(props, facetSchema, isFaceted, getRelationTitle) {
+  const propValues = Object.values(props);
+  let projectName = 'General';
+  let typeName = 'Log';
+  let typeColor = 'default';
+  let facets;
+
+  if (!isFaceted) {
+    // --- RELATION SAFEGUARD ---
+    let projectNameLocal = 'General';
+    const validRelations = propValues.filter(p => p.type === 'relation' && p.relation?.length > 0);
+
+    if (validRelations.length > 0) {
+      const relatedPageId = validRelations[0].relation[0].id;
+      projectNameLocal = await getRelationTitle(relatedPageId);
+    }
+    projectName = projectNameLocal;
+
+    // --- ROLLUP SAFEGUARD ---
+    const validRollups = propValues.filter(p => p.type === 'rollup' && p.rollup?.array?.length > 0);
+
+    if (validRollups.length > 0) {
+      const firstItem = validRollups[0].rollup.array[0];
+      if (firstItem.type === 'select' && firstItem.select) {
+        typeName = firstItem.select.name;
+        typeColor = firstItem.select.color;
+      } else if (firstItem.type === 'multi_select' && firstItem.multi_select.length > 0) {
+        typeName = firstItem.multi_select[0].name;
+        typeColor = firstItem.multi_select[0].color;
+      } else if (firstItem.type === 'title' && firstItem.title.length > 0) {
+        typeName = firstItem.title[0].plain_text;
+      } else if (firstItem.type === 'rich_text' && firstItem.rich_text.length > 0) {
+        typeName = firstItem.rich_text[0].plain_text;
+      }
+    }
+  } else {
+    facets = {};
+    for (const f of facetSchema) {
+      facets[f.key] = await extractFacetValues(props[f.name], f.type, getRelationTitle);
+    }
+    const orderedKeys = facetSchema.map(f => f.key);
+    const firstVals = facets[orderedKeys[0]] || [];
+    const secondVals = facets[orderedKeys[1]] || [];
+    projectName = firstVals[0]?.name || 'General';
+    typeName = secondVals[0]?.name || 'Log';
+    typeColor = secondVals[0]?.color || 'default';
+  }
+
+  return { projectName, typeName, typeColor, facets };
+}
+
 // Queries one Notion database and maps its pages into the widget's log
 // shape, tagged with which configured source (database) they came from so
 // the frontend can group entries from different databases (e.g. a project
@@ -51,6 +181,12 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
   }
 
   console.log(`[Diagnostic] (${sourceLabel}) Successfully fetched ${allResults.length} rows.`);
+
+  // The facet schema (which properties qualify, their type, their order)
+  // is a property of the DATABASE, not of any individual row -- detect it
+  // once from the first row rather than per-page.
+  const facetSchema = detectFacetSchema(allResults[0]?.properties);
+  const isFaceted = facetSchema.length >= 3;
 
   // Many rows share the same related project page, so without this we'd
   // re-fetch that same relation (and hit Notion's rate limit) once per
@@ -116,34 +252,7 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
       const titleProp = propValues.find(p => p.type === 'title');
       const title = titleProp?.title?.[0]?.plain_text || 'Untitled Log';
 
-      // --- RELATION SAFEGUARD ---
-      let projectName = 'General';
-      const validRelations = propValues.filter(p => p.type === 'relation' && p.relation?.length > 0);
-
-      if (validRelations.length > 0) {
-        const relatedPageId = validRelations[0].relation[0].id;
-        projectName = await getRelationTitle(relatedPageId);
-      }
-
-      // --- ROLLUP SAFEGUARD ---
-      let typeName = 'Log';
-      let typeColor = 'default';
-      const validRollups = propValues.filter(p => p.type === 'rollup' && p.rollup?.array?.length > 0);
-
-      if (validRollups.length > 0) {
-        const firstItem = validRollups[0].rollup.array[0];
-        if (firstItem.type === 'select' && firstItem.select) {
-          typeName = firstItem.select.name;
-          typeColor = firstItem.select.color;
-        } else if (firstItem.type === 'multi_select' && firstItem.multi_select.length > 0) {
-          typeName = firstItem.multi_select[0].name;
-          typeColor = firstItem.multi_select[0].color;
-        } else if (firstItem.type === 'title' && firstItem.title.length > 0) {
-          typeName = firstItem.title[0].plain_text;
-        } else if (firstItem.type === 'rich_text' && firstItem.rich_text.length > 0) {
-          typeName = firstItem.rich_text[0].plain_text;
-        }
-      }
+      const { projectName, typeName, typeColor, facets } = await buildLogFields(props, facetSchema, isFaceted, getRelationTitle);
 
       // --- DEEP FETCH SAFEGUARD ---
       let imageUrl = null;
@@ -185,6 +294,7 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
         Projects: projectName,
         projectType: typeName,
         projectTypeColor: typeColor,
+        ...(facets ? { facets } : {}),
         imageUrl,
         pageContent
       };
@@ -194,7 +304,10 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
     }
   }));
 
-  return formattedLogs.filter(log => log !== null);
+  return {
+    logs: formattedLogs.filter(log => log !== null),
+    facetSchema: isFaceted ? facetSchema.map(({ name, type, key }) => ({ key, label: name, type })) : [],
+  };
 }
 
 export default async function handler(req, res) {
@@ -267,13 +380,23 @@ export default async function handler(req, res) {
   };
 
   try {
-    const perSourceLogs = await Promise.all(
+    const perSourceResults = await Promise.all(
       sources.map(s => fetchDatabaseLogs(s.databaseId, s.label || 'Activity Log', headers, targetTimeZone))
     );
-    const validLogs = perSourceLogs.flat();
+    const validLogs = perSourceResults.flatMap(r => r.logs);
+
+    // Each faceted source's schema (key -> label/type, in Notion's own
+    // property order) is the same for every log entry from that source --
+    // ship it once per source rather than duplicating it onto every row.
+    const facetSchemas = {};
+    perSourceResults.forEach((r, i) => {
+      const label = sources[i].label || 'Activity Log';
+      if (r.facetSchema.length > 0) facetSchemas[label] = r.facetSchema;
+    });
+
     console.log(`[Diagnostic] Successfully returning ${validLogs.length} valid logs to frontend across ${sources.length} database(s) for tenant ${tenantId}.`);
 
-    return res.status(200).json({ success: true, data: validLogs, savedViews: tenant.savedViews || [] });
+    return res.status(200).json({ success: true, data: validLogs, savedViews: tenant.savedViews || [], facetSchemas });
 
   } catch (error) {
     console.error('[Diagnostic] Fatal API Error:', error.message);

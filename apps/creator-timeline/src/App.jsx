@@ -4,6 +4,15 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import themeTokens from '../tokens.json';
 import ActivationPanel from './ActivationPanel.jsx';
 import { copyToClipboard } from './clipboard.js';
+import {
+  isFacetedSource,
+  filterTreeLogs,
+  resolveColorFacetKey,
+  facetValueExcluded,
+  facetSelectionMatches,
+  getYearFacetGroups,
+} from './facets.js';
+import FacetedSidebarGroup from './FacetedSidebarGroup.jsx';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -67,6 +76,47 @@ const DEMO_TIMELINE_LOGS = [
   { id: 'demo-27', source: DEMO_SOURCE, year: 2026, monthNumber: 12, dayNumber: 3, title: 'Delivered the year-end recap video', Projects: 'Client: Acme Co', projectType: 'Deliverable', projectTypeColor: 'red', imageUrl: null, pageContent: 'Approved with no notes on the first pass.' },
   { id: 'demo-28', source: DEMO_SOURCE, year: 2026, monthNumber: 12, dayNumber: 15, title: 'Published the 2026 Year in Review', Projects: 'YouTube Channel', projectType: 'Upload', projectTypeColor: 'green', imageUrl: demoImg(8), pageContent: 'Pinned comment linking every episode from the year.' },
 ];
+
+// A second demo source shaped like "Food Log" -- 3+ independently
+// auto-detected facets (Establishment/Cuisine/Meal Type) instead of the
+// source -> type -> project tree the rest of the demo data uses. Shows off
+// the flat faceted sidebar, the colorFacet-driven pill, and the
+// multi-value conic-gradient split (a fusion dish tagged two cuisines at
+// once) without needing a real Notion connection.
+const DEMO_FOOD_SOURCE = 'Food Log';
+const DEMO_FOOD_LOGS = [
+  { id: 'food-1', source: DEMO_FOOD_SOURCE, year: 2026, monthNumber: 8, dayNumber: 2, title: 'Katsu curry', imageUrl: null, pageContent: '', facets: {
+      establishment: [{ name: 'Home', color: 'green' }],
+      cuisine: [{ name: 'Japanese', color: 'red' }],
+      mealType: [{ name: 'Dinner', color: 'purple' }] } },
+  { id: 'food-2', source: DEMO_FOOD_SOURCE, year: 2026, monthNumber: 8, dayNumber: 6, title: 'Margherita pizza', imageUrl: null, pageContent: '', facets: {
+      establishment: [{ name: 'Restaurant', color: 'blue' }],
+      cuisine: [{ name: 'Italian', color: 'green' }],
+      mealType: [{ name: 'Lunch', color: 'orange' }] } },
+  { id: 'food-3', source: DEMO_FOOD_SOURCE, year: 2026, monthNumber: 8, dayNumber: 10, title: 'Ramen burger', imageUrl: null, pageContent: '', facets: {
+      establishment: [{ name: 'Restaurant', color: 'blue' }],
+      cuisine: [{ name: 'Japanese', color: 'red' }, { name: 'American', color: 'blue' }],
+      mealType: [{ name: 'Dinner', color: 'purple' }] } },
+  { id: 'food-4', source: DEMO_FOOD_SOURCE, year: 2026, monthNumber: 8, dayNumber: 16, title: 'Avocado toast', imageUrl: null, pageContent: '', facets: {
+      establishment: [{ name: 'Home', color: 'green' }],
+      cuisine: [{ name: 'American', color: 'blue' }],
+      mealType: [{ name: 'Breakfast', color: 'yellow' }] } },
+  { id: 'food-5', source: DEMO_FOOD_SOURCE, year: 2026, monthNumber: 8, dayNumber: 18, title: 'Kimchi quesadilla', imageUrl: null, pageContent: '', facets: {
+      establishment: [{ name: "Friend's Place", color: 'yellow' }],
+      cuisine: [{ name: 'Korean', color: 'pink' }, { name: 'Mexican', color: 'orange' }],
+      mealType: [{ name: 'Dinner', color: 'purple' }] } },
+  { id: 'food-6', source: DEMO_FOOD_SOURCE, year: 2026, monthNumber: 8, dayNumber: 27, title: 'Sushi omakase', imageUrl: null, pageContent: '', facets: {
+      establishment: [{ name: 'Restaurant', color: 'blue' }],
+      cuisine: [{ name: 'Japanese', color: 'red' }],
+      mealType: [{ name: 'Dinner', color: 'purple' }] } },
+];
+const DEMO_FACET_SCHEMAS = {
+  [DEMO_FOOD_SOURCE]: [
+    { key: 'establishment', label: 'Establishment', type: 'select' },
+    { key: 'cuisine', label: 'Cuisine', type: 'multi_select' },
+    { key: 'mealType', label: 'Meal Type', type: 'select' },
+  ],
+};
 
 // -------------------------------------------------------------
 // VECTOR LINE ICONS (NO COLOR, NO FILL)
@@ -489,6 +539,10 @@ function WeekDayColumn({
   setHoveredProjectTitle,
   setSelectedLogModal,
   getDotColor,
+  getPillBackground,
+  getSecondaryFacetKeys,
+  getFacetDotBackground,
+  getPillLabel,
   scaleFactor,
   specialDay,
   showWeekEntryTitle
@@ -533,11 +587,11 @@ function WeekDayColumn({
           className={`rounded-full flex items-center justify-center font-bold shadow-sm border transition-all ${
             isTodayDate && !hasLog ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''
           }`} 
-          style={{ 
+          style={{
             width: `${dotPx}px`,
             height: `${dotPx}px`,
             fontSize: `${dotFontPx}px`,
-            backgroundColor: isTodayDate && !hasLog ? 'var(--theme-primary)' : dotStyle.bg,
+            background: isTodayDate && !hasLog ? 'var(--theme-primary)' : dotStyle.bg,
             color: isTodayDate && !hasLog ? '#FFFFFF' : dotStyle.text,
             borderColor: dotStyle.border
           }}
@@ -581,6 +635,8 @@ function WeekDayColumn({
         {hasLog ? (
           logs.map((log) => {
             const logDotHex = getDotColor(log);
+            const pillBackground = getPillBackground(log, logDotHex);
+            const secondaryFacetKeys = log.facets ? getSecondaryFacetKeys(log.source) : [];
             const isHoveredProject = (log.Projects || 'Untitled Project') === hoveredProjectTitle;
             const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
 
@@ -610,14 +666,26 @@ function WeekDayColumn({
                 <div className="relative z-10 flex items-center gap-1.5 pointer-events-none min-w-0">
                   <span
                     className="inline-flex items-center min-w-0 max-w-full font-bold text-white px-2 py-0.5 rounded-full leading-none shadow-xs"
-                    style={{ backgroundColor: logDotHex, fontSize: `${Math.round(10 * scaleFactor)}px` }}
+                    style={{ background: pillBackground, fontSize: `${Math.round(10 * scaleFactor)}px` }}
                   >
                     {/* text-overflow:ellipsis doesn't reliably paint on a flex
                         container itself -- the anonymous flex item wrapping
                         raw text ignores it. Truncating on a plain block child
                         instead is what actually renders the "..." */}
-                    <span className="block truncate">{log.Projects}</span>
+                    <span className="block truncate">{getPillLabel(log)}</span>
                   </span>
+                  {secondaryFacetKeys.map(key => {
+                    const values = log.facets[key] || [];
+                    if (values.length === 0) return null;
+                    return (
+                      <span
+                        key={key}
+                        title={`${key}: ${values.map(v => v.name).join(' + ')}`}
+                        className="rounded-full shrink-0 border border-white/40 shadow-xs"
+                        style={{ width: '7px', height: '7px', background: getFacetDotBackground(values) }}
+                      />
+                    );
+                  })}
                 </div>
 
                 {showWeekEntryTitle && (
@@ -816,6 +884,19 @@ function App() {
     localStorage.setItem('notionWidgetCustomProjectColors', JSON.stringify(customProjectColors));
   }, [customProjectColors]);
 
+  // --- FACETED SOURCE STATE (sources with 3+ independent tag dimensions,
+  // e.g. a food log's Establishment/Cuisine/Meal Type -- see src/facets.js) ---
+  const [facetSchemas, setFacetSchemas] = useState({}); // { [source]: [{key,label,type}] }, from the API response
+  const [colorFacetBySource, setColorFacetBySource] = useState(() => {
+    const saved = localStorage.getItem('notionWidgetColorFacetBySource');
+    return saved ? JSON.parse(saved) : {}; // { [source]: facetKey } -- a viewer display preference, not tenant config
+  });
+  useEffect(() => {
+    localStorage.setItem('notionWidgetColorFacetBySource', JSON.stringify(colorFacetBySource));
+  }, [colorFacetBySource]);
+  const [hiddenFacetValues, setHiddenFacetValues] = useState({}); // key: `${source}::${facetKey}::${valueName}`
+  const [selectedFacetFilters, setSelectedFacetFilters] = useState({}); // { [source]: { [facetKey]: string[] } }
+
   // --- WEEK VIEW CARD HEIGHT & RESIZING STATE ---
   const [weekCardHeight, setWeekCardHeight] = useState(() => {
     const saved = localStorage.getItem('notionWidgetWeekCardHeight');
@@ -1007,8 +1088,10 @@ function App() {
   // -------------------------------------------------------------
   useEffect(() => {
     if (isDemoMode) {
-      setTimelineLogs(DEMO_TIMELINE_LOGS);
-      generateProjectColorMap(DEMO_TIMELINE_LOGS);
+      const combinedDemoLogs = [...DEMO_TIMELINE_LOGS, ...DEMO_FOOD_LOGS];
+      setTimelineLogs(combinedDemoLogs);
+      setFacetSchemas(DEMO_FACET_SCHEMAS);
+      generateProjectColorMap(filterTreeLogs(combinedDemoLogs, DEMO_FACET_SCHEMAS));
       return;
     }
 
@@ -1046,7 +1129,8 @@ function App() {
           setTimelineLogs(cached.data);
           setSpecialDays(cached.specialDays || []);
           setSavedViews(cached.savedViews || []);
-          generateProjectColorMap(cached.data);
+          setFacetSchemas(cached.facetSchemas || {});
+          generateProjectColorMap(filterTreeLogs(cached.data, cached.facetSchemas || {}));
           paintedFromCache = true;
           hasFreshCache = typeof cached.cachedAt === 'number' && (Date.now() - cached.cachedAt) < CACHE_TTL_MS;
         }
@@ -1062,9 +1146,9 @@ function App() {
 
   useEffect(() => {
     if (timelineLogs.length > 0) {
-      generateProjectColorMap(timelineLogs);
+      generateProjectColorMap(filterTreeLogs(timelineLogs, facetSchemas));
     }
-  }, [customCategoryColors, customProjectColors, activeThemeId, isDarkMode]);
+  }, [customCategoryColors, customProjectColors, activeThemeId, isDarkMode, facetSchemas]);
 
   const fetchLogsFromNotion = async (tenant, sourcesFilterArg, options = {}) => {
     const { silent = false } = options;
@@ -1088,13 +1172,15 @@ function App() {
         setTimelineLogs(result.data || []);
         setSpecialDays(result.specialDays || []);
         setSavedViews(result.savedViews || []);
-        generateProjectColorMap(result.data || []);
+        setFacetSchemas(result.facetSchemas || {});
+        generateProjectColorMap(filterTreeLogs(result.data || [], result.facetSchemas || {}));
         try {
           const cacheKey = `${NOTION_CACHE_KEY}:${tenant}:${sourcesFilterArg ? sourcesFilterArg.join(',') : 'all'}`;
           localStorage.setItem(cacheKey, JSON.stringify({
             data: result.data || [],
             specialDays: result.specialDays || [],
             savedViews: result.savedViews || [],
+            facetSchemas: result.facetSchemas || {},
             cachedAt: Date.now(),
           }));
         } catch (err) {
@@ -1188,6 +1274,13 @@ function App() {
 
   const getDotColor = (log) => {
     if (!log) return currentThemeColors.border;
+    if (log.facets) {
+      const colorKey = resolveColorFacetKey(log.source, facetSchemas, colorFacetBySource);
+      const values = (colorKey && log.facets[colorKey]) || [];
+      if (values.length === 1) return NOTION_COLOR_MAP[values[0].color] || currentThemeColors.primary;
+      if (values.length > 1) return null; // multi-value -- caller builds a conic-gradient instead of a solid color
+      return currentThemeColors.primary;
+    }
     const projName = log.Projects || 'Untitled Project';
     if (projectColorMap[projName]) {
       return projectColorMap[projName];
@@ -1200,6 +1293,53 @@ function App() {
       if (tokenHex) return tokenHex;
     }
     return currentThemeColors.primary;
+  };
+
+  // A solid hex for one value, or a conic-gradient split evenly across
+  // each value's color when a facet holds multiple simultaneous tags --
+  // shared by the tile's primary pill and its secondary facet dots so the
+  // "how do I paint N colors into one shape" logic lives in one place.
+  const getFacetDotBackground = (values) => {
+    if (!values || values.length === 0) return currentThemeColors.border;
+    if (values.length === 1) return NOTION_COLOR_MAP[values[0].color] || NOTION_COLOR_MAP.default;
+    const step = 100 / values.length;
+    const stops = values.map((v, i) => `${NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default} ${i * step}% ${(i + 1) * step}%`);
+    return `conic-gradient(${stops.join(', ')})`;
+  };
+
+  // getDotColor returns null specifically to signal "this is a multi-value
+  // facet, build a gradient" -- this is where that gradient actually gets
+  // built, reusing the exact same colorFacet resolution so the pill and
+  // the color used to pick it never disagree.
+  const getPillBackground = (log, solidColor) => {
+    if (solidColor !== null) return solidColor;
+    if (!log?.facets) return currentThemeColors.primary;
+    const colorKey = resolveColorFacetKey(log.source, facetSchemas, colorFacetBySource);
+    const values = (colorKey && log.facets[colorKey]) || [];
+    return getFacetDotBackground(values);
+  };
+
+  // A faceted tile's pill shows one "colorFacet" as its title-bar color;
+  // every OTHER detected facet on that source rides along as a small dot
+  // instead, so a viewer sees all of an entry's tags at a glance rather
+  // than needing to switch which facet is currently promoted.
+  const getSecondaryFacetKeys = (source) => {
+    const schema = facetSchemas[source] || [];
+    const colorKey = resolveColorFacetKey(source, facetSchemas, colorFacetBySource);
+    return schema.map(f => f.key).filter(k => k !== colorKey);
+  };
+
+  // For a faceted log, the pill's label follows whichever facet is
+  // currently driving its color (joining multiple values with "+"),
+  // rather than the synthesized legacy Projects field, which is always
+  // facet #1 regardless of which facet the viewer chose to promote.
+  const getPillLabel = (log) => {
+    if (log?.facets) {
+      const colorKey = resolveColorFacetKey(log.source, facetSchemas, colorFacetBySource);
+      const values = (colorKey && log.facets[colorKey]) || [];
+      if (values.length > 0) return values.map(v => v.name).join(' + ');
+    }
+    return log?.Projects;
   };
 
   const getDisplayDotColor = (logs, dateObj) => {
@@ -1238,17 +1378,22 @@ function App() {
     for (const log of timelineLogs) {
       if (!log.year || !log.monthNumber || log.dayNumber === undefined) continue;
       const source = log.source || 'Activity Log';
-      const type = log.projectType || 'General';
       if (hiddenSources[source]) continue;
-      if (hiddenTypes[`${source}::${type}`]) continue;
-      if (selectedProjectFilters.length > 0 && !selectedProjectFilters.includes(log.Projects)) continue;
+      if (isFacetedSource(source, facetSchemas)) {
+        if (facetValueExcluded(log, source, hiddenFacetValues)) continue;
+        if (!facetSelectionMatches(log, source, selectedFacetFilters)) continue;
+      } else {
+        const type = log.projectType || 'General';
+        if (hiddenTypes[`${source}::${type}`]) continue;
+        if (selectedProjectFilters.length > 0 && !selectedProjectFilters.includes(log.Projects)) continue;
+      }
       const key = `${Number(log.year)}-${Number(log.monthNumber)}-${Number(log.dayNumber)}`;
       const bucket = map.get(key);
       if (bucket) bucket.push(log);
       else map.set(key, [log]);
     }
     return map;
-  }, [timelineLogs, selectedProjectFilters, hiddenSources, hiddenTypes]);
+  }, [timelineLogs, selectedProjectFilters, hiddenSources, hiddenTypes, facetSchemas, hiddenFacetValues, selectedFacetFilters]);
 
   const getLogsForDate = (dateObj) => {
     if (!dateObj) return [];
@@ -1278,7 +1423,10 @@ function App() {
 
   const getYearProjects = (targetYear) => {
     if (!Array.isArray(timelineLogs)) return [];
-    const yearLogs = timelineLogs.filter(log => Number(log.year) === targetYear);
+    // Faceted sources (3+ independent tags, e.g. a food log) have no
+    // source -> type -> project tree to join -- keep them out of this
+    // entirely rather than letting a synthesized Projects/type leak in.
+    const yearLogs = filterTreeLogs(timelineLogs, facetSchemas).filter(log => Number(log.year) === targetYear);
 
     const projectMap = {};
     yearLogs.forEach(log => {
@@ -1779,6 +1927,19 @@ function App() {
                   );
                 });
               })()}
+              <FacetedSidebarGroup
+                year={year}
+                timelineLogs={timelineLogs}
+                facetSchemas={facetSchemas}
+                hiddenSources={hiddenSources}
+                toggleSourceVisibility={toggleSourceVisibility}
+                hiddenFacetValues={hiddenFacetValues}
+                setHiddenFacetValues={setHiddenFacetValues}
+                selectedFacetFilters={selectedFacetFilters}
+                setSelectedFacetFilters={setSelectedFacetFilters}
+                scaleFactor={scaleFactor}
+                colorMap={NOTION_COLOR_MAP}
+              />
             </div>
           </aside>
         )}
@@ -1822,9 +1983,14 @@ function App() {
                         const hasMultipleProjects = uniqueProjects.size > 1;
                         const { primaryLog, isHalftoned } = getThumbnailLogForDate(slot.dateObj, logs);
                         const displayDotHex = getDisplayDotColor(logs, slot.dateObj);
+                        // displayDotHex is null specifically for a multi-value colorFacet
+                        // (see getDotColor) -- resolve it to an actual paintable
+                        // background (solid or conic-gradient) before it touches any style prop.
+                        const pillBackground = hasLog && primaryLog ? getPillBackground(primaryLog, displayDotHex) : displayDotHex;
+                        const secondaryFacetKeys = hasLog && primaryLog?.facets ? getSecondaryFacetKeys(primaryLog.source) : [];
                         const specialDay = getSpecialDayForDate(slot.dateObj, specialDays);
-                        const dotStyle = getDayDotStyling(slot.dateObj, hasLog, displayDotHex, specialDay);
-                        
+                        const dotStyle = getDayDotStyling(slot.dateObj, hasLog, pillBackground, specialDay);
+
                         const isHoveredProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
                         const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
 
@@ -1857,11 +2023,11 @@ function App() {
                                 className={`rounded-full flex items-center justify-center font-bold shadow-sm border transition-opacity duration-200 pointer-events-auto relative shrink-0 ${
                                   isToday(slot.dateObj) ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''
                                 } ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`} 
-                                style={{ 
+                                style={{
                                   width: `${monthDotPx}px`,
                                   height: `${monthDotPx}px`,
                                   fontSize: `${monthDotFontPx}px`,
-                                  backgroundColor: isToday(slot.dateObj) ? 'var(--theme-primary)' : dotStyle.bg,
+                                  background: isToday(slot.dateObj) ? 'var(--theme-primary)' : dotStyle.bg,
                                   color: isToday(slot.dateObj) ? '#FFFFFF' : dotStyle.text,
                                   borderColor: dotStyle.border
                                 }}
@@ -1876,13 +2042,29 @@ function App() {
                               {hasLog && primaryLog && (
                                 <span
                                   className={`inline-flex items-center min-w-0 max-w-[calc(100%-2rem)] font-bold text-white px-2.5 py-0.5 rounded-full leading-none shadow-xs transition-opacity duration-200 pointer-events-auto ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
-                                  style={{ backgroundColor: displayDotHex, fontSize: `${projectTagFontPx}px` }}
+                                  style={{ background: pillBackground, fontSize: `${projectTagFontPx}px` }}
                                 >
                                   {/* text-overflow:ellipsis doesn't reliably paint on a flex
                                       container itself -- truncating on a plain block child
                                       instead is what actually renders the "..." */}
-                                  <span className="block truncate">{primaryLog.Projects}</span>
+                                  <span className="block truncate">{getPillLabel(primaryLog)}</span>
                                 </span>
+                              )}
+                              {secondaryFacetKeys.length > 0 && (
+                                <div className="flex items-center gap-1 pointer-events-auto shrink-0">
+                                  {secondaryFacetKeys.map(key => {
+                                    const values = primaryLog.facets[key] || [];
+                                    if (values.length === 0) return null;
+                                    return (
+                                      <span
+                                        key={key}
+                                        title={`${key}: ${values.map(v => v.name).join(' + ')}`}
+                                        className={`rounded-full shrink-0 border border-white/40 shadow-xs transition-opacity duration-200 ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
+                                        style={{ width: '7px', height: '7px', background: getFacetDotBackground(values) }}
+                                      />
+                                    );
+                                  })}
+                                </div>
                               )}
                             </div>
 
@@ -1946,21 +2128,29 @@ function App() {
                 {slots.map((slot, index) => {
                   const logs = getLogsForDate(slot.dateObj);
                   const displayDotHex = getDisplayDotColor(logs, slot.dateObj);
+                  // Resolve a possible multi-value null (see getDotColor) to an
+                  // actual paintable background before it reaches the day-number circle.
+                  const { primaryLog: weekPrimaryLog } = getThumbnailLogForDate(slot.dateObj, logs);
+                  const displayBackground = logs.length > 0 && weekPrimaryLog ? getPillBackground(weekPrimaryLog, displayDotHex) : displayDotHex;
                   const specialDay = getSpecialDayForDate(slot.dateObj, specialDays);
 
                   return (
-                    <WeekDayColumn 
+                    <WeekDayColumn
                       key={index}
                       slot={slot}
                       logs={logs}
                       isTodayDate={isToday(slot.dateObj)}
-                      displayDotHex={displayDotHex}
+                      displayDotHex={displayBackground}
                       weekCardHeight={weekCardHeight}
                       cardRadius={cardRadius}
                       hoveredProjectTitle={hoveredProjectTitle}
                       setHoveredProjectTitle={setHoveredProjectTitle}
                       setSelectedLogModal={setSelectedLogModal}
                       getDotColor={getDotColor}
+                      getPillBackground={getPillBackground}
+                      getSecondaryFacetKeys={getSecondaryFacetKeys}
+                      getFacetDotBackground={getFacetDotBackground}
+                      getPillLabel={getPillLabel}
                       scaleFactor={scaleFactor}
                       specialDay={specialDay}
                       showWeekEntryTitle={showWeekEntryTitle}
@@ -2676,6 +2866,34 @@ function App() {
                   </button>
                 </div>
 
+                {Object.keys(facetSchemas).length > 0 && (
+                  <div className="space-y-3">
+                    {Object.entries(facetSchemas).map(([source, schema]) => {
+                      const activeFacetKey = resolveColorFacetKey(source, facetSchemas, colorFacetBySource);
+                      return (
+                        <div key={source} className="border rounded-lg p-3 space-y-2" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                          <div className="text-xs font-black uppercase tracking-wider">{source}</div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[11px] opacity-70 shrink-0">Color tiles by:</span>
+                            <div className="flex items-center gap-1 rounded-lg border p-0.5" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}>
+                              {schema.map(f => (
+                                <button
+                                  key={f.key}
+                                  onClick={() => setColorFacetBySource(prev => ({ ...prev, [source]: f.key }))}
+                                  className={`text-[11px] font-bold px-2.5 py-1 rounded-md transition-all cursor-pointer ${f.key === activeFacetKey ? 'bg-black/20' : 'opacity-60 hover:opacity-100'}`}
+                                >
+                                  {f.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <p className="text-[10px] opacity-50">The other facets still show as small dots on each tile.</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
                 <div className="space-y-4">
                   {Object.entries(groupedProjects).map(([type, projs]) => {
                     const categoryCustomHex = customCategoryColors[type];
@@ -2839,9 +3057,23 @@ function App() {
                             isThumbnail ? 'ring-2 ring-[var(--theme-secondary)]' : ''
                           }`}
                         >
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block" style={{ color: getDotColor(log), borderColor: getDotColor(log) }}>{log.projectType}</span>
-                            <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${isThumbnail ? 'bg-[var(--theme-secondary)] text-white' : 'opacity-60'}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            {log.facets ? (
+                              <div className="flex flex-wrap items-center gap-1 min-w-0">
+                                {Object.values(log.facets).flat().map((v, i) => (
+                                  <span
+                                    key={`${v.name}-${i}`}
+                                    className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block"
+                                    style={{ color: NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default, borderColor: NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default }}
+                                  >
+                                    {v.name}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block" style={{ color: getDotColor(log), borderColor: getDotColor(log) }}>{log.projectType}</span>
+                            )}
+                            <span className={`text-xs font-bold px-2.5 py-1 rounded-full shrink-0 ${isThumbnail ? 'bg-[var(--theme-secondary)] text-white' : 'opacity-60'}`}>
                               {isThumbnail ? '★ Current Thumbnail' : 'Click to set as thumbnail'}
                             </span>
                           </div>
