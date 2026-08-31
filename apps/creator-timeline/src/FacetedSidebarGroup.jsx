@@ -32,6 +32,10 @@ export default function FacetedSidebarGroup({
   setSelectedFacetFilters,
   scaleFactor,
   colorMap,
+  isolateActive = false, // a tree category elsewhere is isolated -- every
+  // faceted source is excluded from the calendar while that's active (see
+  // App.jsx's logsByDateKey), so dim these groups to match rather than
+  // leaving them looking normal while contributing nothing.
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState({}); // key: `${source}::${facetKey}`
 
@@ -62,7 +66,7 @@ export default function FacetedSidebarGroup({
         const facetGroupsForSource = groups[source];
         const isSourceHidden = hiddenSources[source];
         return (
-          <div key={source} className="space-y-3">
+          <div key={source} className={`space-y-3 ${isolateActive ? 'opacity-40' : ''}`}>
             {showSourceHeaders && (
               <div className={`flex items-center justify-between px-0.5 select-none ${isSourceHidden ? 'opacity-40' : ''}`}>
                 <span className="font-black uppercase tracking-wider opacity-80" style={{ fontSize: `${Math.round(11 * scaleFactor)}px` }}>{source}</span>

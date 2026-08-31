@@ -227,6 +227,20 @@ const IconEyeOff = () => (
   </svg>
 );
 
+// An eye with lash-like strokes radiating off the brow -- the "isolate"
+// toggle: solo this branch, hiding every other source/category instead of
+// just this one. Deliberately distinct from IconEye/IconEyeOff (which only
+// ever affect their own branch) so the two can't be mistaken for each other.
+const IconIsolate = () => (
+  <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+    <line x1="6" y1="6" x2="4" y2="3"/>
+    <line x1="12" y1="4" x2="12" y2="1"/>
+    <line x1="18" y1="6" x2="20" y2="3"/>
+  </svg>
+);
+
 // -------------------------------------------------------------
 // BUILT-IN THEME PRESETS
 // -------------------------------------------------------------
@@ -750,6 +764,11 @@ function App() {
   const [collapsedSources, setCollapsedSources] = useState({});
   const [hiddenSources, setHiddenSources] = useState({});
   const [hiddenTypes, setHiddenTypes] = useState({});
+  // `${source}::${type}` of the one category currently soloed, or null.
+  // When set, this overrides hiddenSources/hiddenTypes/facet filters
+  // entirely -- isolate means "show only this," not "also respect
+  // whatever else happened to already be hidden."
+  const [isolatedTypeKey, setIsolatedTypeKey] = useState(null);
 
   // --- SIDEBAR WIDTH RESIZING STATE ---
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -1382,14 +1401,21 @@ function App() {
     for (const log of timelineLogs) {
       if (!log.year || !log.monthNumber || log.dayNumber === undefined) continue;
       const source = log.source || 'Activity Log';
-      if (hiddenSources[source]) continue;
-      if (isFacetedSource(source, facetSchemas)) {
-        if (facetValueExcluded(log, source, hiddenFacetValues)) continue;
-        if (!facetSelectionMatches(log, source, selectedFacetFilters)) continue;
-      } else {
+      const isFacetedLog = isFacetedSource(source, facetSchemas);
+      if (isolatedTypeKey) {
+        if (isFacetedLog) continue;
         const type = log.projectType || 'General';
-        if (hiddenTypes[`${source}::${type}`]) continue;
-        if (selectedProjectFilters.length > 0 && !selectedProjectFilters.includes(log.Projects)) continue;
+        if (`${source}::${type}` !== isolatedTypeKey) continue;
+      } else {
+        if (hiddenSources[source]) continue;
+        if (isFacetedLog) {
+          if (facetValueExcluded(log, source, hiddenFacetValues)) continue;
+          if (!facetSelectionMatches(log, source, selectedFacetFilters)) continue;
+        } else {
+          const type = log.projectType || 'General';
+          if (hiddenTypes[`${source}::${type}`]) continue;
+          if (selectedProjectFilters.length > 0 && !selectedProjectFilters.includes(log.Projects)) continue;
+        }
       }
       const key = `${Number(log.year)}-${Number(log.monthNumber)}-${Number(log.dayNumber)}`;
       const bucket = map.get(key);
@@ -1397,7 +1423,7 @@ function App() {
       else map.set(key, [log]);
     }
     return map;
-  }, [timelineLogs, selectedProjectFilters, hiddenSources, hiddenTypes, facetSchemas, hiddenFacetValues, selectedFacetFilters]);
+  }, [timelineLogs, selectedProjectFilters, hiddenSources, hiddenTypes, facetSchemas, hiddenFacetValues, selectedFacetFilters, isolatedTypeKey]);
 
   const getLogsForDate = (dateObj) => {
     if (!dateObj) return [];
@@ -1507,6 +1533,14 @@ function App() {
   // active isolate-filter narrows further within whatever isn't hidden.
   const toggleSourceVisibility = (source) => setHiddenSources(prev => ({ ...prev, [source]: !prev[source] }));
   const toggleTypeVisibility = (source, type) => setHiddenTypes(prev => ({ ...prev, [`${source}::${type}`]: !prev[`${source}::${type}`] }));
+  // A stronger sibling of toggleTypeVisibility: solo this one category,
+  // hiding every other source/category regardless of their own hidden
+  // state, rather than just toggling this one. Clicking the already-
+  // isolated category again clears it -- a real on/off toggle.
+  const isolateType = (source, type) => {
+    const key = `${source}::${type}`;
+    setIsolatedTypeKey(prev => prev === key ? null : key);
+  };
   const handleExpandAllCategories = () => {
     const sourceState = {};
     const typeState = {};
@@ -1527,7 +1561,7 @@ function App() {
     setCollapsedSources(sourceState);
     setCollapsedTypes(typeState);
   };
-  const handleShowAllFilters = () => setSelectedProjectFilters([]);
+  const handleShowAllFilters = () => { setSelectedProjectFilters([]); setIsolatedTypeKey(null); };
   const toggleProjectFilter = (title) => setSelectedProjectFilters((prev) => prev.includes(title) ? prev.filter(t => t !== title) : [...prev, title]);
 
   const handleWeekClick = (mIdx, weekIndex) => {
@@ -1849,12 +1883,13 @@ function App() {
                 const showSourceHeaders = sourceEntries.length > 1;
                 return sourceEntries.map(([source, typesForSource]) => {
                   const isSourceHidden = showSourceHeaders && collapsedSources[source] === true;
+                  const sourceDimmedByIsolate = isolatedTypeKey !== null && !Object.keys(typesForSource).some(t => `${source}::${t}` === isolatedTypeKey);
                   return (
                     <div key={source} className="space-y-3">
                       {showSourceHeaders && (
                         <div
                           onClick={() => toggleSourceAccordion(source)}
-                          className={`flex items-center justify-between px-0.5 cursor-pointer select-none ${hiddenSources[source] ? 'opacity-40' : ''}`}
+                          className={`flex items-center justify-between px-0.5 cursor-pointer select-none ${(hiddenSources[source] || sourceDimmedByIsolate) ? 'opacity-40' : ''}`}
                         >
                           <span className="font-black uppercase tracking-wider opacity-80" style={{ fontSize: `${Math.round(11 * scaleFactor)}px` }}>{source}</span>
                           <div className="flex items-center gap-2">
@@ -1871,6 +1906,9 @@ function App() {
                       )}
                       {!isSourceHidden && Object.entries(typesForSource).map(([type, projs]) => {
                         const isHidden = collapsedTypes[`${source}::${type}`] === true;
+                        const typeKey = `${source}::${type}`;
+                        const isIsolated = isolatedTypeKey === typeKey;
+                        const dimmedByIsolate = isolatedTypeKey !== null && !isIsolated;
                         const baseTypeHex = customCategoryColors[type] || (
                           projs[0]?.projectTypeColor && NOTION_COLOR_MAP[projs[0].projectTypeColor]
                             ? NOTION_COLOR_MAP[projs[0].projectTypeColor]
@@ -1879,16 +1917,24 @@ function App() {
                         const categoryBorderColor = adjustHexColor(baseTypeHex, 40);
 
                         return (
-                          <div key={type} className={`border rounded-md overflow-hidden shrink-0 shadow-sm ${hiddenTypes[`${source}::${type}`] ? 'opacity-40' : ''}`} style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
+                          <div key={type} className={`border rounded-md overflow-hidden shrink-0 shadow-sm ${(hiddenTypes[typeKey] || dimmedByIsolate) ? 'opacity-40' : ''}`} style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
                             <div onClick={() => toggleTypeAccordion(source, type)} className="text-[10px] font-bold uppercase tracking-wider p-2.5 flex items-center justify-between cursor-pointer transition-colors hover:opacity-80">
                               <span className="tracking-wide font-black" style={{ fontSize: `${Math.round(10 * scaleFactor)}px` }}>{type}</span>
                               <div className="flex items-center gap-2">
                                 <button
+                                  onClick={(e) => { e.stopPropagation(); isolateType(source, type); }}
+                                  title={isIsolated ? 'Show everything again' : 'Isolate: hide every other category'}
+                                  className="cursor-pointer hover:opacity-100"
+                                  style={{ opacity: isIsolated ? 1 : 0.7, color: isIsolated ? 'var(--theme-primary)' : 'inherit' }}
+                                >
+                                  <IconIsolate />
+                                </button>
+                                <button
                                   onClick={(e) => { e.stopPropagation(); toggleTypeVisibility(source, type); }}
-                                  title={hiddenTypes[`${source}::${type}`] ? 'Show this category on the calendar' : 'Hide this category from the calendar'}
+                                  title={hiddenTypes[typeKey] ? 'Show this category on the calendar' : 'Hide this category from the calendar'}
                                   className="cursor-pointer opacity-70 hover:opacity-100"
                                 >
-                                  {hiddenTypes[`${source}::${type}`] ? <IconEyeOff /> : <IconEye />}
+                                  {hiddenTypes[typeKey] ? <IconEyeOff /> : <IconEye />}
                                 </button>
                                 <span className="text-[9px] font-mono opacity-60">{isHidden ? '▼' : '▲'}</span>
                               </div>
@@ -1943,6 +1989,7 @@ function App() {
                 setSelectedFacetFilters={setSelectedFacetFilters}
                 scaleFactor={scaleFactor}
                 colorMap={NOTION_COLOR_MAP}
+                isolateActive={isolatedTypeKey !== null}
               />
             </div>
           </aside>
