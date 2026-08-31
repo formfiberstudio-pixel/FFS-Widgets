@@ -189,6 +189,55 @@ test('manual override: topic from a select, type from a relation, bypasses auto-
   assert.equal(result.facets, undefined);
 });
 
+// A rollup aggregates ANY property type from the related database, not just
+// a plain select -- e.g. "Home Food Log" rolling up each linked recipe's own
+// Cuisine relation ("show unique values" on a relation). Before this fix,
+// extractFacetValues' rollup case only understood select/multi_select/title/
+// rich_text sub-items, so a relation-shaped rollup silently produced an
+// empty array and the sidebar fell back to generic Log/General.
+test('manual override: type from a rollup that aggregates a relation resolves the nested relation titles', async () => {
+  const props = {
+    Name: { type: 'title', title: [{ plain_text: 'Bibimbap' }] },
+    Date: { type: 'date', date: { start: '2026-08-20' } },
+    Recipes: { type: 'relation', relation: [{ id: 'recipe-1' }] },
+    Rollup: {
+      type: 'rollup',
+      rollup: { array: [{ type: 'relation', relation: [{ id: 'cuisine-korean' }] }] },
+    },
+  };
+  const relationTitles = { 'recipe-1': 'Bibimbap Recipe', 'cuisine-korean': 'Korean' };
+  const getTitle = (id) => Promise.resolve(relationTitles[id] || 'General');
+
+  const facetSchema = detectFacetSchema(props);
+  const recipesKey = facetSchema.find(f => f.name === 'Recipes').key;
+  const rollupKey = facetSchema.find(f => f.name === 'Rollup').key;
+  const { overrideTopicProp, overrideTypeProp } =
+    resolveFacetOverride(facetSchema, { topicFacetKey: recipesKey, typeFacetKey: rollupKey });
+
+  const result = await buildLogFields(props, facetSchema, true, getTitle, false, {
+    topicProp: overrideTopicProp, typeProp: overrideTypeProp,
+  });
+  assert.equal(result.projectName, 'Bibimbap Recipe');
+  assert.equal(result.typeName, 'Korean');
+});
+
+test('manual override: type from a rollup aggregating status/people/formula sub-types', async () => {
+  const props = {
+    Name: { type: 'title', title: [{ plain_text: 'Entry' }] },
+    Date: { type: 'date', date: { start: '2026-08-20' } },
+    StatusRollup: { type: 'rollup', rollup: { array: [{ type: 'status', status: { name: 'Done', color: 'green' } }] } },
+  };
+  const facetSchema = detectFacetSchema(props);
+  const rollupKey = facetSchema.find(f => f.name === 'StatusRollup').key;
+  const { overrideTypeProp } = resolveFacetOverride(facetSchema, { topicFacetKey: null, typeFacetKey: rollupKey });
+
+  const result = await buildLogFields(props, facetSchema, true, fakeGetRelationTitle, false, {
+    topicProp: null, typeProp: overrideTypeProp,
+  });
+  assert.equal(result.typeName, 'Done');
+  assert.equal(result.typeColor, 'green');
+});
+
 test('manual override: only topicFacetKey set, typeName/typeColor fall back to plain defaults (not auto-detection)', async () => {
   const props = {
     Name: { type: 'title', title: [{ plain_text: 'Watered the monstera' }] },
@@ -273,7 +322,7 @@ function makeProgressPage(relationId, rollupName) {
   };
 }
 
-test('detectSwappedRoles: rollup with more distinct values than the relation is treated as the identity', () => {
+test('detectSwappedRoles: rollup with more distinct values than the relation is treated as the identity', async () => {
   // 6 rows, only 2 distinct relation ids ("type"-like), 6 distinct rollup
   // names ("identity"-like) -- exactly the shape from the reported bug.
   const pages = [
@@ -284,10 +333,10 @@ test('detectSwappedRoles: rollup with more distinct values than the relation is 
     makeProgressPage('type-3d', 'Kokedama 01'),
     makeProgressPage('type-web', 'Life Log'),
   ];
-  assert.equal(detectSwappedRoles(pages, 'Field A', 'Field B'), true);
+  assert.equal(await detectSwappedRoles(pages, 'Field A', 'Field B', fakeGetRelationTitle), true);
 });
 
-test('detectSwappedRoles: relation with more distinct values than the rollup stays unswapped', () => {
+test('detectSwappedRoles: relation with more distinct values than the rollup stays unswapped', async () => {
   // The normal shape: many distinct relation ids (one per project), one
   // rollup value ("type") reused across several rows.
   const pages = [
@@ -296,15 +345,15 @@ test('detectSwappedRoles: relation with more distinct values than the rollup sta
     makeProgressPage('scarf-1', 'Knitting'),
     makeProgressPage('hat-1', 'Knitting'),
   ];
-  assert.equal(detectSwappedRoles(pages, 'Field A', 'Field B'), false);
+  assert.equal(await detectSwappedRoles(pages, 'Field A', 'Field B', fakeGetRelationTitle), false);
 });
 
-test('detectSwappedRoles: too few rows to trust cardinality falls back to property naming', () => {
+test('detectSwappedRoles: too few rows to trust cardinality falls back to property naming', async () => {
   const pages = [makeProgressPage('a', 'x'), makeProgressPage('b', 'y')];
   // Relation named "Type", rollup named "Project" -- naming says swap.
-  assert.equal(detectSwappedRoles(pages, 'Type', 'Project'), true);
+  assert.equal(await detectSwappedRoles(pages, 'Type', 'Project', fakeGetRelationTitle), true);
   // Relation named "Project", rollup named "Type" -- naming says don't.
-  assert.equal(detectSwappedRoles(pages, 'Project', 'Type'), false);
+  assert.equal(await detectSwappedRoles(pages, 'Project', 'Type', fakeGetRelationTitle), false);
 });
 
 test('buildLogFields: rolesSwapped routes the rollup value to projectName and the relation to typeName', async () => {

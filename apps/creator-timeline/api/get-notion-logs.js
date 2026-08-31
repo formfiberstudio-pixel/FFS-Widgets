@@ -50,6 +50,7 @@ export function detectFacetSchema(sampleProps) {
 // multi_select or multi-relation facet keeps all of its simultaneous tags
 // instead of the single-value assumption the legacy path still makes.
 export async function extractFacetValues(propVal, type, getRelationTitle) {
+  if (!propVal) return [];
   let raw = [];
   switch (type) {
     case 'select':
@@ -68,15 +69,36 @@ export async function extractFacetValues(propVal, type, getRelationTitle) {
       break;
     }
     case 'rollup':
+      // A rollup can aggregate ANY property type from the related database
+      // -- not just a select someone set up specifically as a category.
+      // "Show unique values" on a relation (e.g. Home Food Log rolling up
+      // each linked recipe's own Cuisine relation) is a common shape this
+      // needs to read just as well as a plain select.
       for (const item of (propVal.rollup?.array || [])) {
         if (item.type === 'select' && item.select) {
           raw.push({ name: item.select.name, color: item.select.color });
+        } else if (item.type === 'status' && item.status) {
+          raw.push({ name: item.status.name, color: item.status.color });
         } else if (item.type === 'multi_select') {
           raw.push(...(item.multi_select || []).map(t => ({ name: t.name, color: t.color })));
         } else if (item.type === 'title' && item.title?.length) {
           raw.push({ name: item.title[0].plain_text, color: 'default' });
         } else if (item.type === 'rich_text' && item.rich_text?.length) {
           raw.push({ name: item.rich_text[0].plain_text, color: 'default' });
+        } else if (item.type === 'relation' && item.relation?.length) {
+          const nestedIds = item.relation.map(r => r.id);
+          const nestedNames = await Promise.all(nestedIds.map(id => getRelationTitle(id)));
+          raw.push(...nestedNames.map(name => ({ name, color: 'default' })));
+        } else if (item.type === 'people' && item.people?.length) {
+          raw.push(...item.people.map(p => ({ name: p.name || 'Unknown', color: 'default' })));
+        } else if (item.type === 'formula' && item.formula) {
+          const f = item.formula;
+          const value = f.type === 'string' ? f.string
+            : f.type === 'number' ? (f.number != null ? String(f.number) : null)
+            : f.type === 'boolean' ? String(f.boolean)
+            : f.type === 'date' ? f.date?.start
+            : null;
+          if (value) raw.push({ name: value, color: 'default' });
         }
       }
       break;
@@ -112,25 +134,14 @@ function typeNameScore(propName) {
   return 0;
 }
 
-// Rollup -> {name, color} for the ROLLUP SAFEGUARD, factored out so the
-// same extraction can serve either role (category, or -- when roles are
-// detected as swapped for this tenant -- identity).
-function extractRollupFirstValue(prop) {
-  if (!prop || prop.type !== 'rollup' || !prop.rollup?.array?.length) return null;
-  const firstItem = prop.rollup.array[0];
-  if (firstItem.type === 'select' && firstItem.select) {
-    return { name: firstItem.select.name, color: firstItem.select.color };
-  }
-  if (firstItem.type === 'multi_select' && firstItem.multi_select.length > 0) {
-    return { name: firstItem.multi_select[0].name, color: firstItem.multi_select[0].color };
-  }
-  if (firstItem.type === 'title' && firstItem.title.length > 0) {
-    return { name: firstItem.title[0].plain_text, color: 'default' };
-  }
-  if (firstItem.type === 'rich_text' && firstItem.rich_text.length > 0) {
-    return { name: firstItem.rich_text[0].plain_text, color: 'default' };
-  }
-  return null;
+// First value of a rollup, via extractFacetValues (so the ROLLUP SAFEGUARD
+// and detectSwappedRoles below share the exact same rollup-parsing logic --
+// including nested-relation/status/people/formula support -- as the
+// faceted/override paths, rather than a second, narrower copy of it).
+async function extractRollupFirstValue(prop, getRelationTitle) {
+  if (!prop || prop.type !== 'rollup') return null;
+  const values = await extractFacetValues(prop, 'rollup', getRelationTitle);
+  return values[0] || null;
 }
 
 // A source with both a Relation and a Rollup is a "progress tracking"
@@ -171,7 +182,7 @@ export function resolveFacetOverride(facetSchema, override) {
 
 // Computed once per source (not per page) from every fetched row, since
 // this is a property of the DATABASE's schema, not any individual page.
-export function detectSwappedRoles(allResults, relationPropName, rollupPropName) {
+export async function detectSwappedRoles(allResults, relationPropName, rollupPropName, getRelationTitle) {
   if (!relationPropName || !rollupPropName) return false;
 
   if (allResults.length >= 4) {
@@ -180,7 +191,7 @@ export function detectSwappedRoles(allResults, relationPropName, rollupPropName)
     for (const page of allResults) {
       const relId = page.properties?.[relationPropName]?.relation?.[0]?.id;
       if (relId) relationIds.add(relId);
-      const rollupVal = extractRollupFirstValue(page.properties?.[rollupPropName]);
+      const rollupVal = await extractRollupFirstValue(page.properties?.[rollupPropName], getRelationTitle);
       if (rollupVal) rollupNames.add(rollupVal.name);
     }
     if (rollupNames.size !== relationIds.size) return rollupNames.size > relationIds.size;
@@ -235,7 +246,7 @@ export async function buildLogFields(props, facetSchema, isFaceted, getRelationT
       : null;
     // Relations carry no native Notion color -- if a relation ends up in
     // the category role, its type badge just renders in the neutral gray.
-    const rollupValue = validRollups.length > 0 ? extractRollupFirstValue(validRollups[0]) : null;
+    const rollupValue = validRollups.length > 0 ? await extractRollupFirstValue(validRollups[0], getRelationTitle) : null;
 
     const identityValue = rolesSwapped ? (rollupValue?.name ?? null) : relationValue;
     const categoryValue = rolesSwapped
@@ -306,26 +317,6 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
   // once from the first row rather than per-page.
   const facetSchema = detectFacetSchema(allResults[0]?.properties);
 
-  // An owner-picked manual override (see resolveFacetOverride) always wins
-  // over auto-detection entirely, forcing this source into tree-mode
-  // rendering using whichever properties were explicitly chosen.
-  const { overrideTopicProp, overrideTypeProp, hasManualOverride } = resolveFacetOverride(facetSchema, facetOverride);
-
-  let isFaceted;
-  let rolesSwapped = false;
-  if (hasManualOverride) {
-    isFaceted = false;
-  } else {
-    isFaceted = isFacetedSchema(facetSchema);
-
-    // Which literal property is the Relation vs the Rollup, for the
-    // swapped-roles check below -- only meaningful for a 2-facet source.
-    const schemaSampleProps = allResults[0]?.properties || {};
-    const relationPropName = Object.entries(schemaSampleProps).find(([, v]) => v.type === 'relation')?.[0];
-    const rollupPropName = Object.entries(schemaSampleProps).find(([, v]) => v.type === 'rollup')?.[0];
-    rolesSwapped = !isFaceted && detectSwappedRoles(allResults, relationPropName, rollupPropName);
-  }
-
   // How many Notion requests this source's sync actually skipped via the
   // persistent caches (see notionCache.js) -- logged once at the end,
   // purely so cache effectiveness is visible in production logs without
@@ -336,7 +327,10 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
   // re-fetch that same relation (and hit Notion's rate limit) once per
   // row. Memoize by related-page id, storing the in-flight promise (not
   // just the resolved value) so concurrent rows awaiting the same id
-  // share one request instead of each kicking off their own.
+  // share one request instead of each kicking off their own. Defined
+  // before the swapped-roles check below since a rollup can itself
+  // aggregate a relation (extractFacetValues' rollup case resolves those
+  // through this same function).
   const relationTitleCache = new Map();
   function getRelationTitle(relatedPageId) {
     if (!relationTitleCache.has(relatedPageId)) {
@@ -368,6 +362,26 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
       relationTitleCache.set(relatedPageId, promise);
     }
     return relationTitleCache.get(relatedPageId);
+  }
+
+  // An owner-picked manual override (see resolveFacetOverride) always wins
+  // over auto-detection entirely, forcing this source into tree-mode
+  // rendering using whichever properties were explicitly chosen.
+  const { overrideTopicProp, overrideTypeProp, hasManualOverride } = resolveFacetOverride(facetSchema, facetOverride);
+
+  let isFaceted;
+  let rolesSwapped = false;
+  if (hasManualOverride) {
+    isFaceted = false;
+  } else {
+    isFaceted = isFacetedSchema(facetSchema);
+
+    // Which literal property is the Relation vs the Rollup, for the
+    // swapped-roles check below -- only meaningful for a 2-facet source.
+    const schemaSampleProps = allResults[0]?.properties || {};
+    const relationPropName = Object.entries(schemaSampleProps).find(([, v]) => v.type === 'relation')?.[0];
+    const rollupPropName = Object.entries(schemaSampleProps).find(([, v]) => v.type === 'rollup')?.[0];
+    rolesSwapped = !isFaceted && await detectSwappedRoles(allResults, relationPropName, rollupPropName, getRelationTitle);
   }
 
   const formattedLogs = await Promise.all(allResults.map(async (page) => {
