@@ -2,6 +2,7 @@ import { isThumbnailableUrl } from './_lib/notionImageHosts.js';
 import { decryptSecret } from './_lib/tokenCrypto.js';
 import { getTenant, saveTenant, LICENSE_REVERIFY_MS } from './_lib/tenantStore.js';
 import { verifyGumroadLicense } from './_lib/gumroad.js';
+import { getCachedRelationTitle, setCachedRelationTitle, getCachedBlockData, setCachedBlockData } from './_lib/notionCache.js';
 
 // force-rebuild marker: Vercel's change-detection skipped an earlier deploy
 
@@ -325,6 +326,12 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
     rolesSwapped = !isFaceted && detectSwappedRoles(allResults, relationPropName, rollupPropName);
   }
 
+  // How many Notion requests this source's sync actually skipped via the
+  // persistent caches (see notionCache.js) -- logged once at the end,
+  // purely so cache effectiveness is visible in production logs without
+  // needing to guess at it.
+  const cacheStats = { relationHits: 0, relationMisses: 0, blockHits: 0, blockMisses: 0 };
+
   // Many rows share the same related project page, so without this we'd
   // re-fetch that same relation (and hit Notion's rate limit) once per
   // row. Memoize by related-page id, storing the in-flight promise (not
@@ -334,13 +341,21 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
   function getRelationTitle(relatedPageId) {
     if (!relationTitleCache.has(relatedPageId)) {
       const promise = (async () => {
+        // Persistent (cross-sync) cache first -- a related page's title
+        // rarely changes, so most historical rows can skip this Notion
+        // request entirely after the first sync ever resolves them.
+        const cachedTitle = await getCachedRelationTitle(relatedPageId);
+        if (cachedTitle) { cacheStats.relationHits++; return cachedTitle; }
+        cacheStats.relationMisses++;
         try {
           const relRes = await fetch(`https://api.notion.com/v1/pages/${relatedPageId}`, { method: 'GET', headers });
           if (relRes.ok) {
             const relData = await relRes.json();
             const relTitleProp = Object.values(relData.properties).find(p => p.type === 'title');
             if (relTitleProp && relTitleProp.title.length > 0) {
-              return relTitleProp.title[0].plain_text;
+              const title = relTitleProp.title[0].plain_text;
+              await setCachedRelationTitle(relatedPageId, title);
+              return title;
             }
           } else {
             console.warn(`[Diagnostic] Relation fetch failed. Missing integration access to related DB.`);
@@ -395,34 +410,51 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
       );
 
       // --- DEEP FETCH SAFEGUARD ---
-      let imageUrl = null;
+      // Cached first, keyed by this exact page's last_edited_time (already
+      // in hand from the database query, no extra cost) -- most historical
+      // rows are never edited again after creation, so a repeat sync skips
+      // this Notion request for all of them. toThumbnailUrl is applied
+      // fresh either way rather than cached, since the underlying Notion
+      // file URL is signed and short-lived (see getCachedBlockData/
+      // notionCache.js for the freshness bound this relies on).
+      let rawImageUrl = null;
       let pageContent = '';
 
-      try {
-        const blockRes = await fetch(`https://api.notion.com/v1/blocks/${page.id}/children?page_size=25`, {
-          method: 'GET',
-          headers
-        });
+      const cachedBlockData = await getCachedBlockData(page.id, page.last_edited_time);
+      if (cachedBlockData) {
+        cacheStats.blockHits++;
+        rawImageUrl = cachedBlockData.rawImageUrl;
+        pageContent = cachedBlockData.pageContent;
+      } else {
+        cacheStats.blockMisses++;
+        try {
+          const blockRes = await fetch(`https://api.notion.com/v1/blocks/${page.id}/children?page_size=25`, {
+            method: 'GET',
+            headers
+          });
 
-        if (blockRes.ok) {
-          const blockData = await blockRes.json();
-          const imgBlock = blockData.results.find(b => b.type === 'image');
-          if (imgBlock) {
-            const rawImageUrl = imgBlock.image.type === 'external' ? imgBlock.image.external.url : imgBlock.image.file.url;
-            imageUrl = toThumbnailUrl(rawImageUrl);
-          }
+          if (blockRes.ok) {
+            const blockData = await blockRes.json();
+            const imgBlock = blockData.results.find(b => b.type === 'image');
+            if (imgBlock) {
+              rawImageUrl = imgBlock.image.type === 'external' ? imgBlock.image.external.url : imgBlock.image.file.url;
+            }
 
-          for (const b of blockData.results) {
-            const blockTypeData = b[b.type];
-            if (blockTypeData && blockTypeData.rich_text && blockTypeData.rich_text.length > 0) {
-              pageContent = blockTypeData.rich_text.map(t => t.plain_text).join('');
-              break;
+            for (const b of blockData.results) {
+              const blockTypeData = b[b.type];
+              if (blockTypeData && blockTypeData.rich_text && blockTypeData.rich_text.length > 0) {
+                pageContent = blockTypeData.rich_text.map(t => t.plain_text).join('');
+                break;
+              }
             }
           }
+        } catch (err) {
+          console.warn(`[Diagnostic] Failed to fetch blocks for page ${page.id}`);
         }
-      } catch (err) {
-        console.warn(`[Diagnostic] Failed to fetch blocks for page ${page.id}`);
+        await setCachedBlockData(page.id, page.last_edited_time, rawImageUrl, pageContent);
       }
+
+      const imageUrl = toThumbnailUrl(rawImageUrl);
 
       return {
         id: page.id,
@@ -443,6 +475,9 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
       return null;
     }
   }));
+
+  const skippedRequests = cacheStats.relationHits + cacheStats.blockHits;
+  console.log(`[Diagnostic] (${sourceLabel}) Cache: ${cacheStats.relationHits}/${cacheStats.relationHits + cacheStats.relationMisses} relation titles, ${cacheStats.blockHits}/${cacheStats.blockHits + cacheStats.blockMisses} page blocks served from cache (${skippedRequests} Notion requests skipped).`);
 
   return {
     logs: formattedLogs.filter(log => log !== null),
