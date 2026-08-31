@@ -47,10 +47,11 @@ export default function FacetedSidebarGroup({
   colorMap,
   isolatedTarget,
   setIsolatedTarget,
+  isLogInActiveView,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState({}); // key: `${source}::${facetKey}`
 
-  const groups = getYearFacetGroups(year, timelineLogs, facetSchemas);
+  const groups = getYearFacetGroups(year, timelineLogs, facetSchemas, isLogInActiveView);
   const sources = Object.keys(groups);
   if (sources.length === 0) return null;
 

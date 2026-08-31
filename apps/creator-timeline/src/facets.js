@@ -108,13 +108,19 @@ export function isDimmedByOtherIsolate(isolatedTarget, candidate) {
   return true;
 }
 
-export function getYearFacetGroups(targetYear, timelineLogs, facetSchemas) {
+// `isLogInActiveView`, when passed, narrows the aggregation further than
+// the year alone -- e.g. to just the visible month or week in App.jsx's
+// Month/Week views -- so the sidebar lists only topics/types actually
+// present on screen. Optional and defaults to "everything in the year" so
+// existing callers are unaffected.
+export function getYearFacetGroups(targetYear, timelineLogs, facetSchemas, isLogInActiveView = () => true) {
   const groups = {};
   if (!Array.isArray(timelineLogs)) return groups;
 
   for (const log of timelineLogs) {
     const source = log.source || 'Activity Log';
     if (!isFacetedSource(source, facetSchemas) || Number(log.year) !== targetYear) continue;
+    if (!isLogInActiveView(log)) continue;
     if (!log.facets) continue;
 
     if (!groups[source]) groups[source] = {};

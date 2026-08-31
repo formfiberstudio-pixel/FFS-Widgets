@@ -1464,12 +1464,39 @@ function App() {
     return { primaryLog, isHalftoned: false };
   };
 
+  // The sidebar's topic/type list narrows to whatever date range is
+  // actually on screen -- the whole year in Year view, just the visible
+  // month in Month view, just the visible week in Week view -- rather than
+  // always listing every topic/type from the whole year regardless of
+  // which slice of it is showing. Comparing real Date objects (not
+  // log.year/currentDate's year as strings) keeps a week that crosses a
+  // month or year boundary (e.g. Dec 29 - Jan 4) correct.
+  const activeViewRange = (() => {
+    if (viewMode === 'month') {
+      return { start: new Date(year, month, 1), end: new Date(year, month + 1, 0) };
+    }
+    if (viewMode === 'week') {
+      const start = new Date(currentDate);
+      start.setHours(0, 0, 0, 0);
+      start.setDate(currentDate.getDate() - currentDate.getDay());
+      const end = new Date(start);
+      end.setDate(start.getDate() + 6);
+      return { start, end };
+    }
+    return null; // Year view: the existing per-year filter is already the active view.
+  })();
+  const isLogInActiveView = (log) => {
+    if (!activeViewRange) return true;
+    const logDate = new Date(Number(log.year), Number(log.monthNumber) - 1, Number(log.dayNumber));
+    return logDate >= activeViewRange.start && logDate <= activeViewRange.end;
+  };
+
   const getYearProjects = (targetYear) => {
     if (!Array.isArray(timelineLogs)) return [];
     // Faceted sources (3+ independent tags, e.g. a food log) have no
     // source -> type -> project tree to join -- keep them out of this
     // entirely rather than letting a synthesized Projects/type leak in.
-    const yearLogs = filterTreeLogs(timelineLogs, facetSchemas).filter(log => Number(log.year) === targetYear);
+    const yearLogs = filterTreeLogs(timelineLogs, facetSchemas).filter(log => Number(log.year) === targetYear && isLogInActiveView(log));
 
     const projectMap = {};
     yearLogs.forEach(log => {
@@ -2013,6 +2040,7 @@ function App() {
                 colorMap={NOTION_COLOR_MAP}
                 isolatedTarget={isolatedTarget}
                 setIsolatedTarget={setIsolatedTarget}
+                isLogInActiveView={isLogInActiveView}
               />
             </div>
           </aside>
