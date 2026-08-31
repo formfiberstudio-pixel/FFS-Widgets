@@ -59,6 +59,55 @@ export function facetSelectionMatches(log, source, selectedFacetFilters) {
 // given year -- the flat sidebar's own analog to getYearProjects, since
 // there's no tree to adapt for a source with no hierarchy.
 // Returns { [source]: { [facetKey]: { label, values: Map<name, {color, count}> } } }
+// Every visibility icon in the sidebar (a source header, a tree category,
+// or a single facet value) can be in one of three states -- Visible,
+// Hidden (just this branch excluded), or Isolated (this is the ONLY
+// branch shown anywhere, at any level). Clicking cycles
+// Visible -> Hidden -> Isolated -> Visible. Hidden is a per-branch flag
+// each branch tracks independently; Isolated is a single GLOBAL choice
+// (isolatedTarget), since "show only this" is only meaningful relative to
+// everything else at once.
+export function cycleVisibility({ ownHidden, setOwnHidden, isTarget, target, setIsolatedTarget }) {
+  if (isTarget) {
+    setIsolatedTarget(null);
+  } else if (ownHidden) {
+    setOwnHidden(false);
+    setIsolatedTarget(target);
+  } else {
+    setOwnHidden(true);
+  }
+}
+
+// Whether `candidate` (one specific source, tree-category, or facet-value
+// branch -- `{level, source, type?, facetKey?, valueName?}`) IS the
+// current global isolate target, by exact structural match.
+export function isIsolateTarget(isolatedTarget, candidate) {
+  if (!isolatedTarget || isolatedTarget.level !== candidate.level) return false;
+  if (candidate.level === 'source') return isolatedTarget.source === candidate.source;
+  if (candidate.level === 'type') return isolatedTarget.source === candidate.source && isolatedTarget.type === candidate.type;
+  if (candidate.level === 'facetValue') {
+    return isolatedTarget.source === candidate.source
+      && isolatedTarget.facetKey === candidate.facetKey
+      && isolatedTarget.valueName === candidate.valueName;
+  }
+  return false;
+}
+
+// Whether `candidate` should visually dim because something ELSE (not it,
+// and not something whose isolation already keeps it visible) is
+// isolated. A source header never dims for something isolated inside its
+// own subtree -- only for a target belonging to a different source -- and
+// isolating a whole source leaves everything inside that same source
+// undimmed; anything more specific than that dims everything except its
+// own exact match.
+export function isDimmedByOtherIsolate(isolatedTarget, candidate) {
+  if (!isolatedTarget) return false;
+  if (isIsolateTarget(isolatedTarget, candidate)) return false;
+  if (candidate.level === 'source') return isolatedTarget.source !== candidate.source;
+  if (isolatedTarget.level === 'source') return isolatedTarget.source !== candidate.source;
+  return true;
+}
+
 export function getYearFacetGroups(targetYear, timelineLogs, facetSchemas) {
   const groups = {};
   if (!Array.isArray(timelineLogs)) return groups;
