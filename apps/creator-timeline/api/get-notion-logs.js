@@ -130,6 +130,20 @@ function extractRollupFirstValue(prop) {
   return null;
 }
 
+// A source with both a Relation and a Rollup is a "progress tracking"
+// database (Plants, Projects) -- an entity plus its type, always
+// rendered as the existing two-level tree -- even if it also happens to
+// carry other incidental select/multi_select properties (e.g. a Payment
+// Method field) that would otherwise push the facet count to 3+ and flip
+// it into the flat, independently-tagged rendering meant for a source
+// like Food Log that has no such entity/type hierarchy at all. Only a
+// source with no relation+rollup pairing is treated as faceted.
+export function isFacetedSchema(facetSchema) {
+  const types = new Set(facetSchema.map(f => f.type));
+  const looksLikeProgressTracking = types.has('relation') && types.has('rollup');
+  return facetSchema.length >= 3 && !looksLikeProgressTracking;
+}
+
 // Computed once per source (not per page) from every fetched row, since
 // this is a property of the DATABASE's schema, not any individual page.
 export function detectSwappedRoles(allResults, relationPropName, rollupPropName) {
@@ -247,7 +261,7 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
   // is a property of the DATABASE, not of any individual row -- detect it
   // once from the first row rather than per-page.
   const facetSchema = detectFacetSchema(allResults[0]?.properties);
-  const isFaceted = facetSchema.length >= 3;
+  const isFaceted = isFacetedSchema(facetSchema);
 
   // Which literal property is the Relation vs the Rollup, for the
   // swapped-roles check below -- only meaningful for a 2-facet source.

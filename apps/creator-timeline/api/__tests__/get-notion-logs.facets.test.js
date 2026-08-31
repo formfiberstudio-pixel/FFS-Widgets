@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectFacetSchema, buildLogFields, detectSwappedRoles } from '../get-notion-logs.js';
+import { detectFacetSchema, buildLogFields, detectSwappedRoles, isFacetedSchema } from '../get-notion-logs.js';
 
 // Fake relation resolver -- no network involved, since buildLogFields takes
 // getRelationTitle as a parameter rather than closing over a real fetch.
@@ -19,7 +19,7 @@ test('Plants-shaped source (1 relation): stays on the legacy single-value path',
 
   const facetSchema = detectFacetSchema(props);
   assert.equal(facetSchema.length, 1);
-  const isFaceted = facetSchema.length >= 3;
+  const isFaceted = isFacetedSchema(facetSchema);
   assert.equal(isFaceted, false);
 
   const result = await buildLogFields(props, facetSchema, isFaceted, fakeGetRelationTitle);
@@ -41,7 +41,34 @@ test('Projects-shaped source (1 relation + 1 rollup): stays on the legacy single
 
   const facetSchema = detectFacetSchema(props);
   assert.equal(facetSchema.length, 2);
-  const isFaceted = facetSchema.length >= 3;
+  const isFaceted = isFacetedSchema(facetSchema);
+  assert.equal(isFaceted, false);
+
+  const result = await buildLogFields(props, facetSchema, isFaceted, fakeGetRelationTitle);
+  assert.deepEqual(result, {
+    projectName: 'Sweater #3',
+    typeName: 'Knitting',
+    typeColor: 'blue',
+    facets: undefined,
+  });
+});
+
+test('Projects-shaped source with an incidental extra select property (e.g. Payment Method): still stays on the tree path', async () => {
+  const props = {
+    Name: { type: 'title', title: [{ plain_text: 'Cast on the ribbing' }] },
+    Date: { type: 'date', date: { start: '2026-08-03' } },
+    Project: { type: 'relation', relation: [{ id: 'project-page-1' }] },
+    Type: { type: 'rollup', rollup: { array: [{ type: 'select', select: { name: 'Knitting', color: 'blue' } }] } },
+    'Payment Method': { type: 'select', select: { name: 'Card', color: 'gray' } },
+  };
+
+  const facetSchema = detectFacetSchema(props);
+  assert.equal(facetSchema.length, 3);
+  // A Relation+Rollup pair means this is still a progress-tracking source
+  // (entity + type), even though the extra select property alone would
+  // otherwise cross the 3-facet threshold into the flat/independent-tags
+  // rendering meant for a source like Food Log.
+  const isFaceted = isFacetedSchema(facetSchema);
   assert.equal(isFaceted, false);
 
   const result = await buildLogFields(props, facetSchema, isFaceted, fakeGetRelationTitle);
@@ -65,7 +92,7 @@ test('Food-Log-shaped source (3 select/multi_select properties): switches to the
   const facetSchema = detectFacetSchema(props);
   assert.equal(facetSchema.length, 3);
   assert.deepEqual(facetSchema.map(f => f.key), ['establishment', 'cuisine', 'mealType']);
-  const isFaceted = facetSchema.length >= 3;
+  const isFaceted = isFacetedSchema(facetSchema);
   assert.equal(isFaceted, true);
 
   const result = await buildLogFields(props, facetSchema, isFaceted, fakeGetRelationTitle);
