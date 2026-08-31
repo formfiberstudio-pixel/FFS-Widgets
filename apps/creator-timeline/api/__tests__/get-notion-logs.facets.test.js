@@ -10,7 +10,7 @@ const RELATION_TITLES = {
 };
 const fakeGetRelationTitle = (id) => Promise.resolve(RELATION_TITLES[id] || 'General');
 
-test('Plants-shaped source (1 relation): stays on the legacy single-value path', async () => {
+test('a lone relation with no paired rollup (no entity+type structure) is faceted, not tree', async () => {
   const props = {
     Name: { type: 'title', title: [{ plain_text: 'Watered the monstera' }] },
     Date: { type: 'date', date: { start: '2026-08-01' } },
@@ -19,16 +19,30 @@ test('Plants-shaped source (1 relation): stays on the legacy single-value path',
 
   const facetSchema = detectFacetSchema(props);
   assert.equal(facetSchema.length, 1);
+  // No rollup anywhere, so there's no "type" dimension to pair with this
+  // relation -- nothing to build a tree out of, so this is a single-facet
+  // log rather than legacy tree mode.
   const isFaceted = isFacetedSchema(facetSchema);
-  assert.equal(isFaceted, false);
+  assert.equal(isFaceted, true);
 
   const result = await buildLogFields(props, facetSchema, isFaceted, fakeGetRelationTitle);
-  assert.deepEqual(result, {
-    projectName: 'Monstera',
-    typeName: 'Log',
-    typeColor: 'default',
-    facets: undefined,
-  });
+  assert.deepEqual(result.facets.plant, [{ name: 'Monstera', color: 'default' }]);
+});
+
+test('Home-Food-Log-shaped source (1 multi_select, no relation/rollup): faceted, not the generic Log/General fallback', async () => {
+  const props = {
+    Name: { type: 'title', title: [{ plain_text: 'Peach Jam' }] },
+    'Log Date': { type: 'date', date: { start: '2026-08-30' } },
+    Cuisine: { type: 'multi_select', multi_select: [{ name: 'Western', color: 'gray' }] },
+  };
+
+  const facetSchema = detectFacetSchema(props);
+  assert.equal(facetSchema.length, 1);
+  const isFaceted = isFacetedSchema(facetSchema);
+  assert.equal(isFaceted, true);
+
+  const result = await buildLogFields(props, facetSchema, isFaceted, fakeGetRelationTitle);
+  assert.deepEqual(result.facets.cuisine, [{ name: 'Western', color: 'gray' }]);
 });
 
 test('Projects-shaped source (1 relation + 1 rollup): stays on the legacy single-value path', async () => {

@@ -136,14 +136,17 @@ function extractRollupFirstValue(prop) {
 // database (Plants, Projects) -- an entity plus its type, always
 // rendered as the existing two-level tree -- even if it also happens to
 // carry other incidental select/multi_select properties (e.g. a Payment
-// Method field) that would otherwise push the facet count to 3+ and flip
-// it into the flat, independently-tagged rendering meant for a source
-// like Food Log that has no such entity/type hierarchy at all. Only a
-// source with no relation+rollup pairing is treated as faceted.
+// Method field). Every other source is "logging one-time instances"
+// (Food Log, Home Food Log) and gets the flat, independently-tagged
+// rendering -- regardless of how many tag-like properties it has. A
+// single-select log (one property) and a five-select log both fit this
+// the same way; the property COUNT was never the real signal, the
+// presence of an entity+type pair is.
 export function isFacetedSchema(facetSchema) {
+  if (facetSchema.length === 0) return false;
   const types = new Set(facetSchema.map(f => f.type));
   const looksLikeProgressTracking = types.has('relation') && types.has('rollup');
-  return facetSchema.length >= 3 && !looksLikeProgressTracking;
+  return !looksLikeProgressTracking;
 }
 
 // Computed once per source (not per page) from every fetched row, since
