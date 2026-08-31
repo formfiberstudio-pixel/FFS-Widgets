@@ -232,10 +232,16 @@ export async function buildLogFields(props, facetSchema, isFaceted, getRelationT
     const typeVals = override.typeProp
       ? await extractFacetValues(props[override.typeProp.name], override.typeProp.type, getRelationTitle)
       : [];
-    if (topicVals[0]) projectName = topicVals[0].name;
+    if (topicVals[0]) {
+      projectName = topicVals[0].name;
+    } else if (override.topicProp) {
+      console.warn(`[Diagnostic] Manual topic override "${override.topicProp.name}" (${override.topicProp.type}) produced no value. Raw property:`, JSON.stringify(props[override.topicProp.name]));
+    }
     if (typeVals[0]) {
       typeName = typeVals[0].name;
       typeColor = typeVals[0].color;
+    } else if (override.typeProp) {
+      console.warn(`[Diagnostic] Manual type override "${override.typeProp.name}" (${override.typeProp.type}) produced no value. Raw property:`, JSON.stringify(props[override.typeProp.name]));
     }
   } else if (!isFaceted) {
     const validRelations = propValues.filter(p => p.type === 'relation' && p.relation?.length > 0);
