@@ -45,7 +45,12 @@ export default async function handler(req, res) {
   const cleanSources = Array.isArray(sources)
     ? sources
         .filter(s => s && s.databaseId && s.databaseId.trim())
-        .map(s => ({ label: (s.label || '').trim() || 'Activity Log', databaseId: s.databaseId.trim() }))
+        .map(s => ({
+          label: (s.label || '').trim() || 'Activity Log',
+          databaseId: s.databaseId.trim(),
+          topicFacetKey: (s.topicFacetKey || '').trim() || null,
+          typeFacetKey: (s.typeFacetKey || '').trim() || null,
+        }))
     : [];
   if (cleanSources.length === 0) {
     return res.status(400).json({ error: 'At least one database is required' });

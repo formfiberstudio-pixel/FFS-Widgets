@@ -51,11 +51,11 @@ export function buildEmbedUrl(tenantId, sourcesFilter) {
 // onContinue, if provided, renders an extra button on the "done" screen for
 // explicitly moving on (used by the first-activation flow, which needs to
 // let the user copy their embed URL before the setup UI disappears).
-export default function ActivationPanel({ embedded = false, onActivated, onContinue, continueLabel = 'Continue', hideSavedViewsList = false, skipAutoLoad = false }) {
+export default function ActivationPanel({ embedded = false, onActivated, onContinue, continueLabel = 'Continue', hideSavedViewsList = false, skipAutoLoad = false, facetCandidates = null }) {
   const [licenseKey, setLicenseKey] = useState('');
   const [notionToken, setNotionToken] = useState('');
   const [specialDaysDatabaseId, setSpecialDaysDatabaseId] = useState('');
-  const [sources, setSources] = useState([{ id: makeId(), label: '', databaseId: '' }]);
+  const [sources, setSources] = useState([{ id: makeId(), label: '', databaseId: '', topicFacetKey: '', typeFacetKey: '' }]);
   const [status, setStatus] = useState('idle'); // idle | submitting | error | done
   const [errorMessage, setErrorMessage] = useState('');
   const [tenantId, setTenantId] = useState('');
@@ -71,7 +71,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
   const [lookupStatus, setLookupStatus] = useState('idle'); // idle | looking | error
   const [autoLoading, setAutoLoading] = useState(false);
 
-  const addSource = () => setSources(prev => [...prev, { id: makeId(), label: '', databaseId: '' }]);
+  const addSource = () => setSources(prev => [...prev, { id: makeId(), label: '', databaseId: '', topicFacetKey: '', typeFacetKey: '' }]);
   const removeSource = (id) => setSources(prev => prev.filter(s => s.id !== id));
   const updateSource = (id, field, value) => setSources(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
 
@@ -94,8 +94,8 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
   // up before the user did anything.
   const applyTenantData = (key, data, { showSummary = false } = {}) => {
     const loadedSources = data.sources.length > 0
-      ? data.sources.map(s => ({ id: makeId(), label: s.label, databaseId: s.databaseId }))
-      : [{ id: makeId(), label: '', databaseId: '' }];
+      ? data.sources.map(s => ({ id: makeId(), label: s.label, databaseId: s.databaseId, topicFacetKey: s.topicFacetKey || '', typeFacetKey: s.typeFacetKey || '' }))
+      : [{ id: makeId(), label: '', databaseId: '', topicFacetKey: '', typeFacetKey: '' }];
 
     setLicenseKey(key);
     setSources(loadedSources);
@@ -181,7 +181,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
           licenseKey,
           notionToken: notionToken || undefined,
           specialDaysDatabaseId,
-          sources: sources.map(s => ({ label: s.label, databaseId: s.databaseId })),
+          sources: sources.map(s => ({ label: s.label, databaseId: s.databaseId, topicFacetKey: s.topicFacetKey, typeFacetKey: s.typeFacetKey })),
           savedViews,
         }),
       });
@@ -225,7 +225,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
           licenseKey,
           notionToken: notionToken || undefined,
           specialDaysDatabaseId,
-          sources: sources.map(s => ({ label: s.label, databaseId: s.databaseId })),
+          sources: sources.map(s => ({ label: s.label, databaseId: s.databaseId, topicFacetKey: s.topicFacetKey, typeFacetKey: s.typeFacetKey })),
           savedViews: updatedViews,
         }),
       });
@@ -249,7 +249,7 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
     setLicenseKey('');
     setNotionToken('');
     setSpecialDaysDatabaseId('');
-    setSources([{ id: makeId(), label: '', databaseId: '' }]);
+    setSources([{ id: makeId(), label: '', databaseId: '', topicFacetKey: '', typeFacetKey: '' }]);
     setSavedViews([]);
     setHasExistingToken(false);
     setTenantId('');
@@ -552,6 +552,41 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                           className="w-full px-2.5 py-1.5 rounded border text-xs outline-none"
                           style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.text }}
                         />
+                        {facetCandidates && (
+                          (facetCandidates[source.label] && facetCandidates[source.label].length > 0) ? (
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5">
+                                <select
+                                  value={source.topicFacetKey}
+                                  onChange={(e) => updateSource(source.id, 'topicFacetKey', e.target.value)}
+                                  className="flex-1 px-2 py-1 rounded border text-[11px] outline-none"
+                                  style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.text }}
+                                >
+                                  <option value="">Topic: Auto (recommended)</option>
+                                  {facetCandidates[source.label].map(f => (
+                                    <option key={f.key} value={f.key}>Topic: {f.label} ({f.type})</option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={source.typeFacetKey}
+                                  onChange={(e) => updateSource(source.id, 'typeFacetKey', e.target.value)}
+                                  className="flex-1 px-2 py-1 rounded border text-[11px] outline-none"
+                                  style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.text }}
+                                >
+                                  <option value="">Type: Auto (recommended)</option>
+                                  {facetCandidates[source.label].map(f => (
+                                    <option key={f.key} value={f.key}>Type: {f.label} ({f.type})</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <p className="text-[10px]" style={{ color: colors.faint }}>
+                                Overrides automatic detection for this database. Leave both on Auto to keep the current behavior.
+                              </p>
+                            </div>
+                          ) : (
+                            <p className="text-[10px]" style={{ color: colors.faint }}>Sync at least once to enable manual topic/type selection here.</p>
+                          )
+                        )}
                       </div>
                       {sources.length > 1 && (
                         <button

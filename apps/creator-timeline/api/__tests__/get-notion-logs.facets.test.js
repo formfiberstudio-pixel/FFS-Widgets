@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectFacetSchema, buildLogFields, detectSwappedRoles, isFacetedSchema } from '../get-notion-logs.js';
+import { detectFacetSchema, buildLogFields, detectSwappedRoles, isFacetedSchema, resolveFacetOverride } from '../get-notion-logs.js';
 
 // Fake relation resolver -- no network involved, since buildLogFields takes
 // getRelationTitle as a parameter rather than closing over a real fetch.
@@ -158,6 +158,103 @@ test('duplicate values within one property are de-duped', async () => {
   const facetSchema = detectFacetSchema(props);
   const result = await buildLogFields(props, facetSchema, true, fakeGetRelationTitle);
   assert.deepEqual(result.facets.cuisine, [{ name: 'Italian', color: 'green' }]);
+});
+
+// A manual override (an owner-picked "Organize by: Topic / Type" choice in
+// Settings) always wins over auto-detection entirely, and can extract
+// topic/type from ANY detected property -- not just a relation/rollup pair
+// -- since extractFacetValues is already generic across all four types.
+test('manual override: topic from a select, type from a relation, bypasses auto-detection entirely', async () => {
+  const props = {
+    Name: { type: 'title', title: [{ plain_text: 'Watered the monstera' }] },
+    Date: { type: 'date', date: { start: '2026-08-01' } },
+    Plant: { type: 'relation', relation: [{ id: 'plant-page-1' }] },
+    Room: { type: 'select', select: { name: 'Greenhouse', color: 'green' } },
+  };
+  const facetSchema = detectFacetSchema(props);
+  const roomKey = facetSchema.find(f => f.name === 'Room').key;
+  const plantKey = facetSchema.find(f => f.name === 'Plant').key;
+  const { overrideTopicProp, overrideTypeProp, hasManualOverride } =
+    resolveFacetOverride(facetSchema, { topicFacetKey: roomKey, typeFacetKey: plantKey });
+  assert.equal(hasManualOverride, true);
+
+  // isFaceted/rolesSwapped passed here are deliberately the OPPOSITE of what
+  // auto-detection would produce, to prove the override branch ignores them.
+  const result = await buildLogFields(props, facetSchema, true, fakeGetRelationTitle, false, {
+    topicProp: overrideTopicProp, typeProp: overrideTypeProp,
+  });
+  assert.equal(result.projectName, 'Greenhouse');
+  assert.equal(result.typeName, 'Monstera');
+  assert.equal(result.typeColor, 'default');
+  assert.equal(result.facets, undefined);
+});
+
+test('manual override: only topicFacetKey set, typeName/typeColor fall back to plain defaults (not auto-detection)', async () => {
+  const props = {
+    Name: { type: 'title', title: [{ plain_text: 'Watered the monstera' }] },
+    Date: { type: 'date', date: { start: '2026-08-01' } },
+    Plant: { type: 'relation', relation: [{ id: 'plant-page-1' }] },
+    Room: { type: 'select', select: { name: 'Greenhouse', color: 'green' } },
+  };
+  const facetSchema = detectFacetSchema(props);
+  const roomKey = facetSchema.find(f => f.name === 'Room').key;
+  const { overrideTopicProp } = resolveFacetOverride(facetSchema, { topicFacetKey: roomKey, typeFacetKey: null });
+
+  const result = await buildLogFields(props, facetSchema, false, fakeGetRelationTitle, false, {
+    topicProp: overrideTopicProp, typeProp: null,
+  });
+  assert.equal(result.projectName, 'Greenhouse');
+  assert.equal(result.typeName, 'Log');
+  assert.equal(result.typeColor, 'default');
+});
+
+test('manual override: only typeFacetKey set, projectName falls back to General', async () => {
+  const props = {
+    Name: { type: 'title', title: [{ plain_text: 'Watered the monstera' }] },
+    Date: { type: 'date', date: { start: '2026-08-01' } },
+    Plant: { type: 'relation', relation: [{ id: 'plant-page-1' }] },
+    Room: { type: 'select', select: { name: 'Greenhouse', color: 'green' } },
+  };
+  const facetSchema = detectFacetSchema(props);
+  const plantKey = facetSchema.find(f => f.name === 'Plant').key;
+  const { overrideTypeProp } = resolveFacetOverride(facetSchema, { topicFacetKey: null, typeFacetKey: plantKey });
+
+  const result = await buildLogFields(props, facetSchema, false, fakeGetRelationTitle, false, {
+    topicProp: null, typeProp: overrideTypeProp,
+  });
+  assert.equal(result.projectName, 'General');
+  assert.equal(result.typeName, 'Monstera');
+  assert.equal(result.typeColor, 'default');
+});
+
+test('manual override: a multi_select picked as topic uses only its first value', async () => {
+  const props = {
+    Name: { type: 'title', title: [{ plain_text: 'Ramen burger' }] },
+    Date: { type: 'date', date: { start: '2026-08-10' } },
+    Cuisine: { type: 'multi_select', multi_select: [{ name: 'Japanese', color: 'red' }, { name: 'American', color: 'blue' }] },
+  };
+  const facetSchema = detectFacetSchema(props);
+  const cuisineKey = facetSchema[0].key;
+  const { overrideTopicProp } = resolveFacetOverride(facetSchema, { topicFacetKey: cuisineKey, typeFacetKey: null });
+
+  const result = await buildLogFields(props, facetSchema, true, fakeGetRelationTitle, false, {
+    topicProp: overrideTopicProp, typeProp: null,
+  });
+  assert.equal(result.projectName, 'Japanese');
+});
+
+test('resolveFacetOverride: an unknown/stale key resolves to no override', () => {
+  const facetSchema = [{ name: 'Plant', type: 'relation', key: 'plant' }];
+  const result = resolveFacetOverride(facetSchema, { topicFacetKey: 'noLongerExists', typeFacetKey: null });
+  assert.equal(result.hasManualOverride, false);
+  assert.equal(result.overrideTopicProp, null);
+  assert.equal(result.overrideTypeProp, null);
+});
+
+test('resolveFacetOverride: both null/absent leaves every existing tenant unaffected', () => {
+  const facetSchema = [{ name: 'Plant', type: 'relation', key: 'plant' }, { name: 'Type', type: 'rollup', key: 'type' }];
+  assert.equal(resolveFacetOverride(facetSchema, null).hasManualOverride, false);
+  assert.equal(resolveFacetOverride(facetSchema, { topicFacetKey: null, typeFacetKey: null }).hasManualOverride, false);
 });
 
 // A tenant's real "Projects" database can wire the Relation and Rollup to

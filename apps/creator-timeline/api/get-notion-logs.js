@@ -149,6 +149,25 @@ export function isFacetedSchema(facetSchema) {
   return !looksLikeProgressTracking;
 }
 
+// Resolves an owner-picked manual override (see ActivationPanel's per-source
+// "Organize by: Topic / Type" pickers) against this source's OWN detected
+// facetSchema, by key. A stale key -- the owner picked a property that the
+// Notion schema has since removed or renamed -- resolves to null rather
+// than crashing, falling back to the plain defaults in buildLogFields.
+export function resolveFacetOverride(facetSchema, override) {
+  const overrideTopicProp = override?.topicFacetKey
+    ? facetSchema.find(f => f.key === override.topicFacetKey) || null
+    : null;
+  const overrideTypeProp = override?.typeFacetKey
+    ? facetSchema.find(f => f.key === override.typeFacetKey) || null
+    : null;
+  return {
+    overrideTopicProp,
+    overrideTypeProp,
+    hasManualOverride: Boolean(overrideTopicProp || overrideTypeProp),
+  };
+}
+
 // Computed once per source (not per page) from every fetched row, since
 // this is a property of the DATABASE's schema, not any individual page.
 export function detectSwappedRoles(allResults, relationPropName, rollupPropName) {
@@ -170,24 +189,43 @@ export function detectSwappedRoles(allResults, relationPropName, rollupPropName)
   return typeNameScore(relationPropName) > typeNameScore(rollupPropName);
 }
 
-// Builds the category fields for one page. Sources with 2 or fewer
-// detected facets go through the ORIGINAL single-value logic, with one
-// addition: rolesSwapped (detected once per source, see
-// detectSwappedRoles above) picks which of the relation/rollup values
-// feeds projectName vs typeName. With rolesSwapped false -- the case for
-// every tenant whose database matches the original relation-is-identity
-// assumption -- this reduces to the original behavior exactly. Sources
-// with 3+ facets get the new `facets` map instead, with legacy
-// Projects/projectType/projectTypeColor synthesized from facets #1/#2 as a
-// safety net for any caller that isn't facet-aware yet.
-export async function buildLogFields(props, facetSchema, isFaceted, getRelationTitle, rolesSwapped = false) {
+// Builds the category fields for one page. An owner-picked manual override
+// (see resolveFacetOverride above) always wins first, regardless of what
+// auto-detection would have produced -- it extracts topic/type via the
+// already-generic extractFacetValues, so any of the owner's chosen
+// properties (relation, rollup, select, or multi_select) works the same
+// way. If only one of topic/type is picked, the other falls back to the
+// plain default rather than mixing in auto-detection -- the override is
+// atomic. With no override, sources with 2 or fewer detected facets go
+// through the ORIGINAL single-value logic, with one addition: rolesSwapped
+// (detected once per source, see detectSwappedRoles above) picks which of
+// the relation/rollup values feeds projectName vs typeName. With
+// rolesSwapped false -- the case for every tenant whose database matches
+// the original relation-is-identity assumption -- this reduces to the
+// original behavior exactly. Sources with 3+ facets get the new `facets`
+// map instead, with legacy Projects/projectType/projectTypeColor
+// synthesized from facets #1/#2 as a safety net for any caller that isn't
+// facet-aware yet.
+export async function buildLogFields(props, facetSchema, isFaceted, getRelationTitle, rolesSwapped = false, override = null) {
   const propValues = Object.values(props);
   let projectName = 'General';
   let typeName = 'Log';
   let typeColor = 'default';
   let facets;
 
-  if (!isFaceted) {
+  if (override) {
+    const topicVals = override.topicProp
+      ? await extractFacetValues(props[override.topicProp.name], override.topicProp.type, getRelationTitle)
+      : [];
+    const typeVals = override.typeProp
+      ? await extractFacetValues(props[override.typeProp.name], override.typeProp.type, getRelationTitle)
+      : [];
+    if (topicVals[0]) projectName = topicVals[0].name;
+    if (typeVals[0]) {
+      typeName = typeVals[0].name;
+      typeColor = typeVals[0].color;
+    }
+  } else if (!isFaceted) {
     const validRelations = propValues.filter(p => p.type === 'relation' && p.relation?.length > 0);
     const validRollups = propValues.filter(p => p.type === 'rollup' && p.rollup?.array?.length > 0);
 
@@ -228,7 +266,7 @@ export async function buildLogFields(props, facetSchema, isFaceted, getRelationT
 // shape, tagged with which configured source (database) they came from so
 // the frontend can group entries from different databases (e.g. a project
 // tracker and a plant care journal) into their own sidebar sections.
-async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZone) {
+async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZone, facetOverride = null) {
   console.log(`[Diagnostic] Attempting to fetch Database ID: ${databaseId} (source: ${sourceLabel})`);
 
   // Notion caps a single query at 100 rows — without following has_more/
@@ -266,14 +304,26 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
   // is a property of the DATABASE, not of any individual row -- detect it
   // once from the first row rather than per-page.
   const facetSchema = detectFacetSchema(allResults[0]?.properties);
-  const isFaceted = isFacetedSchema(facetSchema);
 
-  // Which literal property is the Relation vs the Rollup, for the
-  // swapped-roles check below -- only meaningful for a 2-facet source.
-  const schemaSampleProps = allResults[0]?.properties || {};
-  const relationPropName = Object.entries(schemaSampleProps).find(([, v]) => v.type === 'relation')?.[0];
-  const rollupPropName = Object.entries(schemaSampleProps).find(([, v]) => v.type === 'rollup')?.[0];
-  const rolesSwapped = !isFaceted && detectSwappedRoles(allResults, relationPropName, rollupPropName);
+  // An owner-picked manual override (see resolveFacetOverride) always wins
+  // over auto-detection entirely, forcing this source into tree-mode
+  // rendering using whichever properties were explicitly chosen.
+  const { overrideTopicProp, overrideTypeProp, hasManualOverride } = resolveFacetOverride(facetSchema, facetOverride);
+
+  let isFaceted;
+  let rolesSwapped = false;
+  if (hasManualOverride) {
+    isFaceted = false;
+  } else {
+    isFaceted = isFacetedSchema(facetSchema);
+
+    // Which literal property is the Relation vs the Rollup, for the
+    // swapped-roles check below -- only meaningful for a 2-facet source.
+    const schemaSampleProps = allResults[0]?.properties || {};
+    const relationPropName = Object.entries(schemaSampleProps).find(([, v]) => v.type === 'relation')?.[0];
+    const rollupPropName = Object.entries(schemaSampleProps).find(([, v]) => v.type === 'rollup')?.[0];
+    rolesSwapped = !isFaceted && detectSwappedRoles(allResults, relationPropName, rollupPropName);
+  }
 
   // Many rows share the same related project page, so without this we'd
   // re-fetch that same relation (and hit Notion's rate limit) once per
@@ -339,7 +389,10 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
       const titleProp = propValues.find(p => p.type === 'title');
       const title = titleProp?.title?.[0]?.plain_text || 'Untitled Log';
 
-      const { projectName, typeName, typeColor, facets } = await buildLogFields(props, facetSchema, isFaceted, getRelationTitle, rolesSwapped);
+      const { projectName, typeName, typeColor, facets } = await buildLogFields(
+        props, facetSchema, isFaceted, getRelationTitle, rolesSwapped,
+        hasManualOverride ? { topicProp: overrideTopicProp, typeProp: overrideTypeProp } : null
+      );
 
       // --- DEEP FETCH SAFEGUARD ---
       let imageUrl = null;
@@ -394,6 +447,12 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
   return {
     logs: formattedLogs.filter(log => log !== null),
     facetSchema: isFaceted ? facetSchema.map(({ name, type, key }) => ({ key, label: name, type })) : [],
+    // Unlike facetSchema (gated by isFaceted, consumed by src/facets.js's
+    // faceted-vs-tree frontend logic), this is always the full candidate
+    // list -- it's what lets the owner-facing "Organize by" picker in
+    // ActivationPanel see every pickable property for a source, even one
+    // currently rendered as a tree.
+    facetCandidates: facetSchema.map(({ name, type, key }) => ({ key, label: name, type })),
   };
 }
 
@@ -468,7 +527,10 @@ export default async function handler(req, res) {
 
   try {
     const perSourceResults = await Promise.all(
-      sources.map(s => fetchDatabaseLogs(s.databaseId, s.label || 'Activity Log', headers, targetTimeZone))
+      sources.map(s => fetchDatabaseLogs(s.databaseId, s.label || 'Activity Log', headers, targetTimeZone, {
+        topicFacetKey: s.topicFacetKey || null,
+        typeFacetKey: s.typeFacetKey || null,
+      }))
     );
     const validLogs = perSourceResults.flatMap(r => r.logs);
 
@@ -476,14 +538,16 @@ export default async function handler(req, res) {
     // property order) is the same for every log entry from that source --
     // ship it once per source rather than duplicating it onto every row.
     const facetSchemas = {};
+    const facetCandidates = {};
     perSourceResults.forEach((r, i) => {
       const label = sources[i].label || 'Activity Log';
       if (r.facetSchema.length > 0) facetSchemas[label] = r.facetSchema;
+      if (r.facetCandidates.length > 0) facetCandidates[label] = r.facetCandidates;
     });
 
     console.log(`[Diagnostic] Successfully returning ${validLogs.length} valid logs to frontend across ${sources.length} database(s) for tenant ${tenantId}.`);
 
-    return res.status(200).json({ success: true, data: validLogs, savedViews: tenant.savedViews || [], facetSchemas });
+    return res.status(200).json({ success: true, data: validLogs, savedViews: tenant.savedViews || [], facetSchemas, facetCandidates });
 
   } catch (error) {
     console.error('[Diagnostic] Fatal API Error:', error.message);

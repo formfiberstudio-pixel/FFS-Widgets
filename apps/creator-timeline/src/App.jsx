@@ -887,6 +887,7 @@ function App() {
   // --- FACETED SOURCE STATE (sources with 3+ independent tag dimensions,
   // e.g. a food log's Establishment/Cuisine/Meal Type -- see src/facets.js) ---
   const [facetSchemas, setFacetSchemas] = useState({}); // { [source]: [{key,label,type}] }, from the API response
+  const [facetCandidates, setFacetCandidates] = useState({}); // { [source]: [{key,label,type}] }, always populated per source once synced -- feeds the owner-facing "Organize by" picker in Settings > Connection (unlike facetSchemas, not gated by isFaceted)
   const [colorFacetBySource, setColorFacetBySource] = useState(() => {
     const saved = localStorage.getItem('notionWidgetColorFacetBySource');
     return saved ? JSON.parse(saved) : {}; // { [source]: facetKey } -- a viewer display preference, not tenant config
@@ -1130,6 +1131,7 @@ function App() {
           setSpecialDays(cached.specialDays || []);
           setSavedViews(cached.savedViews || []);
           setFacetSchemas(cached.facetSchemas || {});
+          setFacetCandidates(cached.facetCandidates || {});
           generateProjectColorMap(filterTreeLogs(cached.data, cached.facetSchemas || {}));
           paintedFromCache = true;
           hasFreshCache = typeof cached.cachedAt === 'number' && (Date.now() - cached.cachedAt) < CACHE_TTL_MS;
@@ -1173,6 +1175,7 @@ function App() {
         setSpecialDays(result.specialDays || []);
         setSavedViews(result.savedViews || []);
         setFacetSchemas(result.facetSchemas || {});
+        setFacetCandidates(result.facetCandidates || {});
         generateProjectColorMap(filterTreeLogs(result.data || [], result.facetSchemas || {}));
         try {
           const cacheKey = `${NOTION_CACHE_KEY}:${tenant}:${sourcesFilterArg ? sourcesFilterArg.join(',') : 'all'}`;
@@ -1181,6 +1184,7 @@ function App() {
             specialDays: result.specialDays || [],
             savedViews: result.savedViews || [],
             facetSchemas: result.facetSchemas || {},
+            facetCandidates: result.facetCandidates || {},
             cachedAt: Date.now(),
           }));
         } catch (err) {
@@ -2569,6 +2573,7 @@ function App() {
                       <ActivationPanel
                         embedded
                         hideSavedViewsList
+                        facetCandidates={facetCandidates}
                         onActivated={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
                       />
                     </div>
