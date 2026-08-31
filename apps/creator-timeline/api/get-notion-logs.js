@@ -390,6 +390,14 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
     rolesSwapped = !isFaceted && await detectSwappedRoles(allResults, relationPropName, rollupPropName, getRelationTitle);
   }
 
+  // One-shot cross-check: if the database-query response's override
+  // property looks empty, fetch that exact page directly via
+  // pages.retrieve to see if it disagrees -- Notion's query endpoint is
+  // documented to sometimes return incomplete relation/rollup values that
+  // the single-page endpoint computes fully. Fires at most once per
+  // source's sync so it doesn't multiply request volume.
+  let crossCheckDone = false;
+
   const formattedLogs = await Promise.all(allResults.map(async (page) => {
     try {
       const props = page.properties;
@@ -428,6 +436,33 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
         props, facetSchema, isFaceted, getRelationTitle, rolesSwapped,
         hasManualOverride ? { topicProp: overrideTopicProp, typeProp: overrideTypeProp } : null
       );
+
+      if (hasManualOverride && !crossCheckDone) {
+        const looksEmpty = (prop) => {
+          if (!prop) return false;
+          const v = props[prop.name];
+          if (prop.type === 'relation') return !(v?.relation?.length);
+          if (prop.type === 'rollup') return !(v?.rollup?.array?.length);
+          return false;
+        };
+        if (looksEmpty(overrideTopicProp) || looksEmpty(overrideTypeProp)) {
+          crossCheckDone = true;
+          try {
+            const pageRes = await fetch(`https://api.notion.com/v1/pages/${page.id}`, { method: 'GET', headers });
+            if (pageRes.ok) {
+              const pageData = await pageRes.json();
+              console.warn(`[Diagnostic] pages.retrieve cross-check for page ${page.id} (query endpoint reported empty):`, JSON.stringify({
+                topic: overrideTopicProp ? pageData.properties?.[overrideTopicProp.name] : undefined,
+                type: overrideTypeProp ? pageData.properties?.[overrideTypeProp.name] : undefined,
+              }));
+            } else {
+              console.warn(`[Diagnostic] Cross-check fetch failed with status ${pageRes.status}`);
+            }
+          } catch (err) {
+            console.warn('[Diagnostic] Cross-check fetch errored:', err.message);
+          }
+        }
+      }
 
       // --- DEEP FETCH SAFEGUARD ---
       // Cached first, keyed by this exact page's last_edited_time (already
