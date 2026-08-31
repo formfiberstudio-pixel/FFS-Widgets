@@ -85,15 +85,83 @@ export async function extractFacetValues(propVal, type, getRelationTitle) {
   return raw.filter(v => (seen.has(v.name) ? false : (seen.add(v.name), true)));
 }
 
+// A "progress tracking" source (Plants, Projects) always has exactly one
+// relation (the entity being tracked -- a plant, a project) and one rollup
+// (that entity's type/category, pulled through some other relation on the
+// linked page). The code has always assumed relation-is-the-entity,
+// rollup-is-its-type; a tenant can wire their Notion database the other
+// way around (the entity as a Rollup, its type/category as a Relation) and
+// still land on a source with exactly one of each. detectSwappedRoles
+// below catches that case: an entity dimension always has at least as many
+// distinct values across a database as its type does (many projects share
+// few categories, never the reverse), so counting distinct values across
+// every row tells us which property is actually which, regardless of
+// which Notion field type each was implemented as. With too few rows to
+// trust that count, it falls back to whether either property's own name
+// reads as "type"/"category" vs "project"/"plant"/"name".
+const TYPE_NAME_HINTS = ['type', 'category', 'categories', 'genre', 'tag', 'status', 'kind'];
+const IDENTITY_NAME_HINTS = ['name', 'project', 'plant', 'title', 'client'];
+
+function typeNameScore(propName) {
+  const lower = propName.toLowerCase();
+  if (TYPE_NAME_HINTS.some(hint => lower.includes(hint))) return 1;
+  if (IDENTITY_NAME_HINTS.some(hint => lower.includes(hint))) return -1;
+  return 0;
+}
+
+// Rollup -> {name, color} for the ROLLUP SAFEGUARD, factored out so the
+// same extraction can serve either role (category, or -- when roles are
+// detected as swapped for this tenant -- identity).
+function extractRollupFirstValue(prop) {
+  if (!prop || prop.type !== 'rollup' || !prop.rollup?.array?.length) return null;
+  const firstItem = prop.rollup.array[0];
+  if (firstItem.type === 'select' && firstItem.select) {
+    return { name: firstItem.select.name, color: firstItem.select.color };
+  }
+  if (firstItem.type === 'multi_select' && firstItem.multi_select.length > 0) {
+    return { name: firstItem.multi_select[0].name, color: firstItem.multi_select[0].color };
+  }
+  if (firstItem.type === 'title' && firstItem.title.length > 0) {
+    return { name: firstItem.title[0].plain_text, color: 'default' };
+  }
+  if (firstItem.type === 'rich_text' && firstItem.rich_text.length > 0) {
+    return { name: firstItem.rich_text[0].plain_text, color: 'default' };
+  }
+  return null;
+}
+
+// Computed once per source (not per page) from every fetched row, since
+// this is a property of the DATABASE's schema, not any individual page.
+export function detectSwappedRoles(allResults, relationPropName, rollupPropName) {
+  if (!relationPropName || !rollupPropName) return false;
+
+  if (allResults.length >= 4) {
+    const relationIds = new Set();
+    const rollupNames = new Set();
+    for (const page of allResults) {
+      const relId = page.properties?.[relationPropName]?.relation?.[0]?.id;
+      if (relId) relationIds.add(relId);
+      const rollupVal = extractRollupFirstValue(page.properties?.[rollupPropName]);
+      if (rollupVal) rollupNames.add(rollupVal.name);
+    }
+    if (rollupNames.size !== relationIds.size) return rollupNames.size > relationIds.size;
+  }
+
+  // Too few rows to trust cardinality, or a tie -- fall back to naming.
+  return typeNameScore(relationPropName) > typeNameScore(rollupPropName);
+}
+
 // Builds the category fields for one page. Sources with 2 or fewer
-// detected facets go through the ORIGINAL single-value logic verbatim --
-// this is the entire compatibility guarantee for existing Plants/Projects
-// tenants: the exact same code executes, not a rewrite that merely
-// intends to match it. Sources with 3+ facets get the new `facets` map
-// instead, with legacy Projects/projectType/projectTypeColor synthesized
-// from facets #1/#2 as a safety net for any caller that isn't
-// facet-aware yet.
-export async function buildLogFields(props, facetSchema, isFaceted, getRelationTitle) {
+// detected facets go through the ORIGINAL single-value logic, with one
+// addition: rolesSwapped (detected once per source, see
+// detectSwappedRoles above) picks which of the relation/rollup values
+// feeds projectName vs typeName. With rolesSwapped false -- the case for
+// every tenant whose database matches the original relation-is-identity
+// assumption -- this reduces to the original behavior exactly. Sources
+// with 3+ facets get the new `facets` map instead, with legacy
+// Projects/projectType/projectTypeColor synthesized from facets #1/#2 as a
+// safety net for any caller that isn't facet-aware yet.
+export async function buildLogFields(props, facetSchema, isFaceted, getRelationTitle, rolesSwapped = false) {
   const propValues = Object.values(props);
   let projectName = 'General';
   let typeName = 'Log';
@@ -101,32 +169,25 @@ export async function buildLogFields(props, facetSchema, isFaceted, getRelationT
   let facets;
 
   if (!isFaceted) {
-    // --- RELATION SAFEGUARD ---
-    let projectNameLocal = 'General';
     const validRelations = propValues.filter(p => p.type === 'relation' && p.relation?.length > 0);
-
-    if (validRelations.length > 0) {
-      const relatedPageId = validRelations[0].relation[0].id;
-      projectNameLocal = await getRelationTitle(relatedPageId);
-    }
-    projectName = projectNameLocal;
-
-    // --- ROLLUP SAFEGUARD ---
     const validRollups = propValues.filter(p => p.type === 'rollup' && p.rollup?.array?.length > 0);
 
-    if (validRollups.length > 0) {
-      const firstItem = validRollups[0].rollup.array[0];
-      if (firstItem.type === 'select' && firstItem.select) {
-        typeName = firstItem.select.name;
-        typeColor = firstItem.select.color;
-      } else if (firstItem.type === 'multi_select' && firstItem.multi_select.length > 0) {
-        typeName = firstItem.multi_select[0].name;
-        typeColor = firstItem.multi_select[0].color;
-      } else if (firstItem.type === 'title' && firstItem.title.length > 0) {
-        typeName = firstItem.title[0].plain_text;
-      } else if (firstItem.type === 'rich_text' && firstItem.rich_text.length > 0) {
-        typeName = firstItem.rich_text[0].plain_text;
-      }
+    const relationValue = validRelations.length > 0
+      ? await getRelationTitle(validRelations[0].relation[0].id)
+      : null;
+    // Relations carry no native Notion color -- if a relation ends up in
+    // the category role, its type badge just renders in the neutral gray.
+    const rollupValue = validRollups.length > 0 ? extractRollupFirstValue(validRollups[0]) : null;
+
+    const identityValue = rolesSwapped ? (rollupValue?.name ?? null) : relationValue;
+    const categoryValue = rolesSwapped
+      ? (relationValue ? { name: relationValue, color: 'default' } : null)
+      : rollupValue;
+
+    if (identityValue) projectName = identityValue;
+    if (categoryValue) {
+      typeName = categoryValue.name;
+      typeColor = categoryValue.color;
     }
   } else {
     facets = {};
@@ -187,6 +248,13 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
   // once from the first row rather than per-page.
   const facetSchema = detectFacetSchema(allResults[0]?.properties);
   const isFaceted = facetSchema.length >= 3;
+
+  // Which literal property is the Relation vs the Rollup, for the
+  // swapped-roles check below -- only meaningful for a 2-facet source.
+  const schemaSampleProps = allResults[0]?.properties || {};
+  const relationPropName = Object.entries(schemaSampleProps).find(([, v]) => v.type === 'relation')?.[0];
+  const rollupPropName = Object.entries(schemaSampleProps).find(([, v]) => v.type === 'rollup')?.[0];
+  const rolesSwapped = !isFaceted && detectSwappedRoles(allResults, relationPropName, rollupPropName);
 
   // Many rows share the same related project page, so without this we'd
   // re-fetch that same relation (and hit Notion's rate limit) once per
@@ -252,7 +320,7 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
       const titleProp = propValues.find(p => p.type === 'title');
       const title = titleProp?.title?.[0]?.plain_text || 'Untitled Log';
 
-      const { projectName, typeName, typeColor, facets } = await buildLogFields(props, facetSchema, isFaceted, getRelationTitle);
+      const { projectName, typeName, typeColor, facets } = await buildLogFields(props, facetSchema, isFaceted, getRelationTitle, rolesSwapped);
 
       // --- DEEP FETCH SAFEGUARD ---
       let imageUrl = null;

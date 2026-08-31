@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectFacetSchema, buildLogFields } from '../get-notion-logs.js';
+import { detectFacetSchema, buildLogFields, detectSwappedRoles } from '../get-notion-logs.js';
 
 // Fake relation resolver -- no network involved, since buildLogFields takes
 // getRelationTitle as a parameter rather than closing over a real fetch.
@@ -117,4 +117,70 @@ test('duplicate values within one property are de-duped', async () => {
   const facetSchema = detectFacetSchema(props);
   const result = await buildLogFields(props, facetSchema, true, fakeGetRelationTitle);
   assert.deepEqual(result.facets.cuisine, [{ name: 'Italian', color: 'green' }]);
+});
+
+// A tenant's real "Projects" database can wire the Relation and Rollup to
+// the opposite roles from the norm -- the Relation holding a project's
+// type/category (few distinct values reused across many rows) and the
+// Rollup holding the project's own identity (a near-distinct value per
+// row). detectSwappedRoles catches this from the data itself: an identity
+// dimension has more distinct values across a database than a type
+// dimension ever does.
+function makeProgressPage(relationId, rollupName) {
+  return {
+    properties: {
+      'Field A': { type: 'relation', relation: [{ id: relationId }] },
+      'Field B': { type: 'rollup', rollup: { array: [{ type: 'select', select: { name: rollupName, color: 'pink' } }] } },
+    },
+  };
+}
+
+test('detectSwappedRoles: rollup with more distinct values than the relation is treated as the identity', () => {
+  // 6 rows, only 2 distinct relation ids ("type"-like), 6 distinct rollup
+  // names ("identity"-like) -- exactly the shape from the reported bug.
+  const pages = [
+    makeProgressPage('type-web', 'Branding'),
+    makeProgressPage('type-web', "Creator's Calendar App"),
+    makeProgressPage('type-3d', 'Greenhouse for Sprouts'),
+    makeProgressPage('type-3d', 'Hanok Kit'),
+    makeProgressPage('type-3d', 'Kokedama 01'),
+    makeProgressPage('type-web', 'Life Log'),
+  ];
+  assert.equal(detectSwappedRoles(pages, 'Field A', 'Field B'), true);
+});
+
+test('detectSwappedRoles: relation with more distinct values than the rollup stays unswapped', () => {
+  // The normal shape: many distinct relation ids (one per project), one
+  // rollup value ("type") reused across several rows.
+  const pages = [
+    makeProgressPage('sweater-1', 'Knitting'),
+    makeProgressPage('sweater-2', 'Knitting'),
+    makeProgressPage('scarf-1', 'Knitting'),
+    makeProgressPage('hat-1', 'Knitting'),
+  ];
+  assert.equal(detectSwappedRoles(pages, 'Field A', 'Field B'), false);
+});
+
+test('detectSwappedRoles: too few rows to trust cardinality falls back to property naming', () => {
+  const pages = [makeProgressPage('a', 'x'), makeProgressPage('b', 'y')];
+  // Relation named "Type", rollup named "Project" -- naming says swap.
+  assert.equal(detectSwappedRoles(pages, 'Type', 'Project'), true);
+  // Relation named "Project", rollup named "Type" -- naming says don't.
+  assert.equal(detectSwappedRoles(pages, 'Project', 'Type'), false);
+});
+
+test('buildLogFields: rolesSwapped routes the rollup value to projectName and the relation to typeName', async () => {
+  const props = {
+    Name: { type: 'title', title: [{ plain_text: 'Progress update' }] },
+    Date: { type: 'date', date: { start: '2026-08-20' } },
+    'Field A': { type: 'relation', relation: [{ id: 'type-web' }] },
+    'Field B': { type: 'rollup', rollup: { array: [{ type: 'select', select: { name: 'Branding', color: 'pink' } }] } },
+  };
+  const getRelationTitle = (id) => Promise.resolve(id === 'type-web' ? 'Gen / Web' : 'General');
+
+  const facetSchema = detectFacetSchema(props);
+  const result = await buildLogFields(props, facetSchema, false, getRelationTitle, true);
+  assert.equal(result.projectName, 'Branding');
+  assert.equal(result.typeName, 'Gen / Web');
+  assert.equal(result.typeColor, 'default');
 });
