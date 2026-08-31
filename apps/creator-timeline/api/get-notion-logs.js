@@ -3,6 +3,8 @@ import { decryptSecret } from './_lib/tokenCrypto.js';
 import { getTenant, saveTenant, LICENSE_REVERIFY_MS } from './_lib/tenantStore.js';
 import { verifyGumroadLicense } from './_lib/gumroad.js';
 
+// force-rebuild marker: Vercel's change-detection skipped an earlier deploy
+
 // Route Notion's images (often multi-MB originals straight from a phone)
 // through our own resize proxy so the calendar grid decodes/paints small
 // thumbnails instead of full-resolution photos. Only rewrite hosts the
