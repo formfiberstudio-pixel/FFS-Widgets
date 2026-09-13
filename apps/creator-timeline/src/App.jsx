@@ -244,6 +244,14 @@ const IconIsolate = () => (
   </svg>
 );
 
+const IconGallery = () => (
+  <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2"/>
+    <circle cx="8.5" cy="8.5" r="1.5"/>
+    <path d="M21 15l-5-5L5 21"/>
+  </svg>
+);
+
 // -------------------------------------------------------------
 // BUILT-IN THEME PRESETS
 // -------------------------------------------------------------
@@ -749,8 +757,16 @@ function App() {
   const [viewMode, setViewMode] = useState('year'); 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [selectedProjectFilters, setSelectedProjectFilters] = useState([]); 
-  const [selectedLogModal, setSelectedLogModal] = useState(null); 
-  
+  const [selectedLogModal, setSelectedLogModal] = useState(null);
+  // Which single project's photo gallery is showing in place of the
+  // calendar canvas (viewMode === 'gallery') -- source is carried alongside
+  // the title since two different sources could otherwise name a project
+  // the same thing.
+  const [galleryTarget, setGalleryTarget] = useState(null);
+  // Whichever calendar view was showing before the gallery replaced it, so
+  // the "back" button returns there instead of always resetting to Year.
+  const [preGalleryViewMode, setPreGalleryViewMode] = useState('year');
+
   const [thumbnailOverrides, setThumbnailOverrides] = useState(() => {
     const saved = localStorage.getItem('notionWidgetThumbnails');
     return saved ? JSON.parse(saved) : {};
@@ -1753,7 +1769,22 @@ function App() {
       {/* HEADER */}
       <header className="shrink-0 mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
-          {viewMode === 'month' ? (
+          {viewMode === 'gallery' ? (
+            <div className="leading-none">
+              <button
+                onClick={() => setViewMode(preGalleryViewMode)}
+                title="Back to calendar"
+                className="flex items-center gap-1.5 font-bold cursor-pointer hover:opacity-80 transition-opacity mb-1"
+                style={{ fontSize: '0.9rem', color: 'var(--theme-primary)' }}
+              >
+                <span>←</span>
+                <span>Back to Calendar</span>
+              </button>
+              <div className="font-black uppercase tracking-wide" style={{ fontSize: '1.6rem' }}>
+                {galleryTarget?.title}
+              </div>
+            </div>
+          ) : viewMode === 'month' ? (
             <div className="leading-none">
               <button
                 onClick={() => setViewMode('year')}
@@ -1845,16 +1876,20 @@ function App() {
             <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--theme-primary)' }} />Today
           </button>
 
-          <div className="flex items-center p-0.5 rounded-lg border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
-            <button onClick={() => setViewMode('year')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
-            <button onClick={() => setViewMode('month')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
-            <button onClick={() => setViewMode('week')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
-          </div>
+          {viewMode !== 'gallery' && (
+            <div className="flex items-center p-0.5 rounded-lg border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
+              <button onClick={() => setViewMode('year')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
+              <button onClick={() => setViewMode('month')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
+              <button onClick={() => setViewMode('week')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
+            </div>
+          )}
 
-          <div className="flex items-center gap-1">
-            <button onClick={handlePrev} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">← Prev</button>
-            <button onClick={handleNext} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">Next →</button>
-          </div>
+          {viewMode !== 'gallery' && (
+            <div className="flex items-center gap-1">
+              <button onClick={handlePrev} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">← Prev</button>
+              <button onClick={handleNext} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">Next →</button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -2013,7 +2048,19 @@ function App() {
                                       }`}
                                     >
                                       <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20 shadow-sm" style={{ backgroundColor: projectDotHex }} />
-                                      <span className="truncate">{p.title}</span>
+                                      <span className="truncate flex-1">{p.title}</span>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (viewMode !== 'gallery') setPreGalleryViewMode(viewMode);
+                                          setGalleryTarget({ title: p.title, source });
+                                          setViewMode('gallery');
+                                        }}
+                                        title={`View "${p.title}" photo gallery`}
+                                        className="shrink-0 p-1 rounded cursor-pointer opacity-50 hover:opacity-100 hover:scale-110 transition-all"
+                                      >
+                                        <IconGallery />
+                                      </button>
                                     </div>
                                   );
                                 })}
@@ -2052,7 +2099,65 @@ function App() {
           style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
           className="flex-1 h-full min-h-0 min-w-0 border rounded-xl shadow-sm p-4 overflow-hidden flex flex-col relative transition-colors"
         >
-          
+
+          {/* GALLERY VIEW -- replaces the calendar grid with every photo
+              logged for one project (see each project row's gallery icon
+              in the sidebar), in place of Month/Week/Year. */}
+          {viewMode === 'gallery' && galleryTarget && (() => {
+            const galleryLogs = (Array.isArray(timelineLogs) ? timelineLogs : [])
+              .filter(log => log.source === galleryTarget.source && (log.Projects || 'Untitled Project') === galleryTarget.title && log.imageUrl)
+              .sort((a, b) =>
+                new Date(Number(a.year), Number(a.monthNumber) - 1, Number(a.dayNumber)) -
+                new Date(Number(b.year), Number(b.monthNumber) - 1, Number(b.dayNumber))
+              );
+
+            return (
+              <div className="flex flex-col h-full w-full min-h-0">
+                <div className="flex items-center justify-between mb-3 shrink-0">
+                  <span className="text-sm opacity-60">{galleryLogs.length} photo{galleryLogs.length === 1 ? '' : 's'}</span>
+                </div>
+                <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+                  {galleryLogs.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-sm italic opacity-50">
+                      No photos logged for this project yet.
+                    </div>
+                  ) : (
+                    <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
+                      {galleryLogs.map((log) => {
+                        const dateObj = new Date(Number(log.year), Number(log.monthNumber) - 1, Number(log.dayNumber));
+                        const httpsUrl = log.url || `https://www.notion.so/${log.id.replace(/-/g, '')}`;
+                        const desktopUrl = httpsUrl.replace('https://', 'notion://');
+                        const notionPageUrl = desktopUrl.includes('?') ? `${desktopUrl}&pvs=4` : `${desktopUrl}?pvs=4`;
+
+                        return (
+                          <a
+                            key={log.id}
+                            href={notionPageUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open in Notion"
+                            style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
+                            className="group flex flex-col rounded-lg border overflow-hidden shadow-sm transition-all hover:border-[var(--theme-primary)] hover:shadow-md"
+                          >
+                            <div className="aspect-square w-full overflow-hidden" style={{ backgroundColor: 'var(--theme-card)' }}>
+                              <img src={log.imageUrl} alt="" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
+                            </div>
+                            <div className="p-2.5">
+                              <div className="text-[11px] font-bold opacity-60">
+                                {dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                              </div>
+                              <div className="text-sm font-semibold truncate">{log.title}</div>
+                            </div>
+                          </a>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* A. MONTH VIEW */}
           {viewMode === 'month' && (
             <div className="flex flex-col h-full w-full min-h-0">
