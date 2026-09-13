@@ -98,29 +98,46 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     setStep('uploading');
     setUploadProgress({ done: 0, total: photos.length });
     const failed = [];
+    let doneCount = 0;
 
-    for (let i = 0; i < photos.length; i++) {
-      const photo = photos[i];
-      try {
-        const imageBase64 = await resizeImageForUpload(photo.file);
-        const formattedDate = new Date(photo.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-        const response = await fetch('/api/backlog-photo', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tenantId,
-            referenceLogId: project.referenceLogId,
-            title: `${project.title} — ${formattedDate}`,
-            dateTaken: photo.date,
-            imageBase64,
-          }),
-        });
-        const result = await response.json();
-        if (!result.success) throw new Error(result.error || 'Upload failed');
-      } catch (err) {
-        failed.push({ name: photo.file.name, error: err.message });
+    // Photos backlogged for the same date land on ONE page (multiple image
+    // blocks) instead of one page each -- group first, then within each
+    // date group upload the first photo in "create" mode and chain every
+    // photo after it onto the page that call returns via `pageId` (see
+    // backlog-photo.js). If the first photo in a group fails, the next one
+    // just falls back to creating its own page rather than the whole
+    // group silently vanishing.
+    const groups = new Map();
+    photos.forEach((photo) => {
+      if (!groups.has(photo.date)) groups.set(photo.date, []);
+      groups.get(photo.date).push(photo);
+    });
+
+    for (const [date, groupPhotos] of groups) {
+      let pageId = null;
+      const formattedDate = new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+      for (const photo of groupPhotos) {
+        try {
+          const imageBase64 = await resizeImageForUpload(photo.file);
+          const body = pageId
+            ? { tenantId, pageId, imageBase64 }
+            : { tenantId, referenceLogId: project.referenceLogId, title: `${project.title} — ${formattedDate}`, dateTaken: date, imageBase64 };
+
+          const response = await fetch('/api/backlog-photo', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const result = await response.json();
+          if (!result.success) throw new Error(result.error || 'Upload failed');
+          if (!pageId) pageId = result.pageId;
+        } catch (err) {
+          failed.push({ name: photo.file.name, error: err.message });
+        }
+        doneCount++;
+        setUploadProgress({ done: doneCount, total: photos.length });
       }
-      setUploadProgress({ done: i + 1, total: photos.length });
     }
 
     setUploadResults({ succeeded: photos.length - failed.length, failed });

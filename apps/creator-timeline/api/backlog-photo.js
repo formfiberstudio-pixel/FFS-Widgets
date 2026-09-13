@@ -10,7 +10,7 @@ import { uploadImageToNotion } from './_lib/notionUpload.js';
 // it's talking to.
 const NOTION_VERSION = '2026-03-11';
 
-// Creates one new log entry from one backlogged photo, in whatever
+// Creates a log entry from one or more backlogged photos, in whatever
 // database/property-shape the caller's existing entries already use --
 // rather than requiring the frontend (or this endpoint) to know a
 // tenant's database id or which property holds the project relation, it
@@ -21,15 +21,24 @@ const NOTION_VERSION = '2026-03-11';
 // endpoint ever having to resolve a project name to a page id itself.
 // Any rollup that displays that project's type/category is computed by
 // Notion from the relation automatically, so it never needs setting here.
+//
+// Photos backlogged for the same project+date belong on one page, not
+// one page each -- the caller uploads the first photo of a date without
+// `pageId` (create mode) and every subsequent photo for that same date
+// WITH the pageId that call returned (append mode), which skips straight
+// to adding another image block rather than re-deriving the database/
+// properties all over again.
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, referenceLogId, title, dateTaken, imageBase64 } = req.body || {};
+  const { tenantId, referenceLogId, pageId, title, dateTaken, imageBase64 } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
-  if (!referenceLogId) return res.status(400).json({ error: 'Missing referenceLogId' });
-  if (!dateTaken || isNaN(new Date(dateTaken).getTime())) return res.status(400).json({ error: 'Missing or invalid dateTaken' });
   if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
+  if (!pageId) {
+    if (!referenceLogId) return res.status(400).json({ error: 'Missing referenceLogId' });
+    if (!dateTaken || isNaN(new Date(dateTaken).getTime())) return res.status(400).json({ error: 'Missing or invalid dateTaken' });
+  }
 
   let tenant;
   try {
@@ -73,6 +82,26 @@ export default async function handler(req, res) {
   };
 
   try {
+    const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, '').replace(/[\r\n\s]/g, '');
+    const isPng = cleanBase64.startsWith('iVBORw');
+    const contentType = isPng ? 'image/png' : 'image/jpeg';
+    const filename = `backlog_${Date.now()}.${isPng ? 'png' : 'jpg'}`;
+    const buffer = Buffer.from(cleanBase64, 'base64');
+
+    const fileUploadId = await uploadImageToNotion(buffer, contentType, filename, notionToken, NOTION_VERSION);
+    const imageBlock = { object: 'block', type: 'image', image: { type: 'file_upload', file_upload: { id: fileUploadId } } };
+
+    if (pageId) {
+      const appendRes = await notionFetch(`https://api.notion.com/v1/blocks/${pageId}/children`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ children: [imageBlock] }),
+      });
+      const appendData = await appendRes.json();
+      if (appendData.object === 'error') return res.status(400).json({ error: appendData.message });
+      return res.status(200).json({ success: true, pageId });
+    }
+
     const refRes = await notionFetch(`https://api.notion.com/v1/pages/${referenceLogId}`, { method: 'GET', headers });
     if (!refRes.ok) {
       const errData = await refRes.json().catch(() => ({}));
@@ -94,15 +123,6 @@ export default async function handler(req, res) {
         properties[propName] = { relation: propVal.relation.map((r) => ({ id: r.id })) };
       }
     }
-
-    const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, '').replace(/[\r\n\s]/g, '');
-    const isPng = cleanBase64.startsWith('iVBORw');
-    const contentType = isPng ? 'image/png' : 'image/jpeg';
-    const filename = `backlog_${Date.now()}.${isPng ? 'png' : 'jpg'}`;
-    const buffer = Buffer.from(cleanBase64, 'base64');
-
-    const fileUploadId = await uploadImageToNotion(buffer, contentType, filename, notionToken, NOTION_VERSION);
-    const imageBlock = { object: 'block', type: 'image', image: { type: 'file_upload', file_upload: { id: fileUploadId } } };
 
     const createRes = await notionFetch('https://api.notion.com/v1/pages', {
       method: 'POST',
