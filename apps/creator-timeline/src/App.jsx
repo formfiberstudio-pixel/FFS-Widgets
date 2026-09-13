@@ -1151,7 +1151,7 @@ function App() {
   // share-target.js 303-redirects here with ?shareToken=... once Android's
   // Share sheet has handed it some photos -- there's no live JS state to
   // hand them to directly (this is a fresh tab), so they're picked up
-  // once via get-shared-photos.js and converted back into real File
+  // once via share-target.js's GET branch and converted back into real File
   // objects the Import panel can treat exactly like a manual file-picker
   // selection (EXIF-derived date included, via the server-extracted
   // capturedAt -- see share-target.js for why it can't just be re-read
@@ -1167,7 +1167,7 @@ function App() {
     const cleanedSearch = params.toString();
     window.history.replaceState({}, '', `${window.location.pathname}${cleanedSearch ? `?${cleanedSearch}` : ''}`);
 
-    fetch(`/api/get-shared-photos?token=${encodeURIComponent(shareToken)}`)
+    fetch(`/api/share-target?token=${encodeURIComponent(shareToken)}`)
       .then((r) => r.json())
       .then(({ photos }) => {
         if (!Array.isArray(photos) || photos.length === 0) return;

@@ -2,15 +2,18 @@ import Busboy from 'busboy';
 import sharp from 'sharp';
 import exifr from 'exifr';
 import crypto from 'node:crypto';
-import { saveSharedPhotos } from './_lib/sharedPhotoStore.js';
+import { saveSharedPhotos, getSharedPhotos, deleteSharedPhotos } from './_lib/sharedPhotoStore.js';
 
 // Registered as this tenant's PWA share_target action (see manifest.js) --
 // Android's Share sheet POSTs whatever photos the user picked here as
 // multipart/form-data. There's no React app alive to hand them to yet
 // (this request opens a brand new tab), so the only option is: read the
 // files, stash them, and 303-redirect into the app with a token it can
-// fetch them by (see get-shared-photos.js). Vercel doesn't apply its own
-// bodyParser here since it's disabled below -- Busboy reads the raw
+// fetch them by. The GET branch below is that fetch-back-by-token step --
+// kept in this same file (rather than its own route) purely to stay under
+// Vercel Hobby's 12-serverless-function-per-deployment ceiling; the two
+// have nothing else in common. Vercel doesn't apply its own bodyParser to
+// the POST branch since it's disabled below -- Busboy reads the raw
 // multipart stream directly.
 export const config = {
   api: {
@@ -41,6 +44,26 @@ function redirect(res, location) {
 }
 
 export default async function handler(req, res) {
+  if (req.method === 'GET') {
+    // One-time pickup for whatever the POST branch below just stashed --
+    // deleted immediately after being read so a refresh of the landing
+    // page doesn't re-import the same photos a second time.
+    const { token } = req.query;
+    if (!token || typeof token !== 'string') return res.status(400).json({ error: 'Missing token' });
+
+    let photos;
+    try {
+      photos = await getSharedPhotos(token);
+    } catch (err) {
+      console.error('[share-target] Failed to read shared photos:', err.message);
+      return res.status(500).json({ error: 'Could not load the shared photos.' });
+    }
+    if (!photos) return res.status(404).json({ error: 'These shared photos have expired or were already imported.' });
+
+    deleteSharedPhotos(token).catch((err) => console.error('[share-target] Cleanup failed (non-fatal):', err.message));
+    return res.status(200).json({ photos });
+  }
+
   const tenantId = req.query.tenant;
   if (req.method !== 'POST' || !tenantId) {
     return redirect(res, '/');
