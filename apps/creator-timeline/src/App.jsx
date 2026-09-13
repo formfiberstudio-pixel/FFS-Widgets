@@ -16,6 +16,8 @@ import {
   isDimmedByOtherIsolate,
 } from './facets.js';
 import FacetedSidebarGroup from './FacetedSidebarGroup.jsx';
+import GalleryMiniCalendar from './GalleryMiniCalendar.jsx';
+import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -249,6 +251,14 @@ const IconGallery = () => (
     <rect x="3" y="3" width="18" height="18" rx="2"/>
     <circle cx="8.5" cy="8.5" r="1.5"/>
     <path d="M21 15l-5-5L5 21"/>
+  </svg>
+);
+
+const IconUpload = () => (
+  <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+    <path d="M17 8l-5-5-5 5"/>
+    <line x1="12" y1="3" x2="12" y2="15"/>
   </svg>
 );
 
@@ -766,6 +776,9 @@ function App() {
   // Whichever calendar view was showing before the gallery replaced it, so
   // the "back" button returns there instead of always resetting to Year.
   const [preGalleryViewMode, setPreGalleryViewMode] = useState('year');
+  // Shared between the gallery's photo grid and its mini-calendar side
+  // panel so hovering either highlights the other.
+  const [hoveredGalleryLogId, setHoveredGalleryLogId] = useState(null);
 
   const [thumbnailOverrides, setThumbnailOverrides] = useState(() => {
     const saved = localStorage.getItem('notionWidgetThumbnails');
@@ -1545,6 +1558,26 @@ function App() {
     return projects;
   };
 
+  // Every tree-mode project across all time (not scoped to one year, unlike
+  // getYearProjects) -- for the photo-backlog importer's project picker,
+  // which needs to find a project regardless of which year its photos
+  // predate. referenceLogId is one of that project's own existing log
+  // entries; the backlog endpoint reads it back to learn which database
+  // and which exact relation value to reuse for the new entry, so nothing
+  // here needs to resolve a project name to a Notion page id itself.
+  const getAllTreeProjects = () => {
+    if (!Array.isArray(timelineLogs)) return [];
+    const logs = filterTreeLogs(timelineLogs, facetSchemas);
+    const seen = new Map();
+    logs.forEach(log => {
+      const title = log.Projects || 'Untitled Project';
+      const source = log.source || 'Activity Log';
+      const key = source + '::' + title;
+      if (!seen.has(key)) seen.set(key, { title, source, referenceLogId: log.id });
+    });
+    return Array.from(seen.values()).sort((a, b) => a.source.localeCompare(b.source) || a.title.localeCompare(b.title));
+  };
+
   // Sidebar hierarchy is Database (source) > Category (type) > Project, one
   // level deeper than before now that logs can come from more than one
   // Notion database. collapsedTypes/collapsedSources are keyed by the full
@@ -1784,6 +1817,21 @@ function App() {
                 {galleryTarget?.title}
               </div>
             </div>
+          ) : viewMode === 'import' ? (
+            <div className="leading-none">
+              <button
+                onClick={() => setViewMode(preGalleryViewMode)}
+                title="Back to calendar"
+                className="flex items-center gap-1.5 font-bold cursor-pointer hover:opacity-80 transition-opacity mb-1"
+                style={{ fontSize: '0.9rem', color: 'var(--theme-primary)' }}
+              >
+                <span>←</span>
+                <span>Back to Calendar</span>
+              </button>
+              <div className="font-black uppercase tracking-wide" style={{ fontSize: '1.6rem' }}>
+                Import Photos
+              </div>
+            </div>
           ) : viewMode === 'month' ? (
             <div className="leading-none">
               <button
@@ -1865,6 +1913,20 @@ function App() {
           </button>
 
           <button
+            onClick={() => {
+              if (viewMode !== 'gallery' && viewMode !== 'import') setPreGalleryViewMode(viewMode);
+              setViewMode('import');
+            }}
+            disabled={isDemoMode || !tenantId}
+            title={isDemoMode ? 'Import is disabled in this demo' : 'Backlog photos from your device, dated from each photo\'s own EXIF data'}
+            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+            className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <IconUpload />
+            <span>Import Photos</span>
+          </button>
+
+          <button
             onClick={() => setCurrentDate(today)}
             style={{
               backgroundColor: 'var(--theme-card)',
@@ -1876,7 +1938,7 @@ function App() {
             <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--theme-primary)' }} />Today
           </button>
 
-          {viewMode !== 'gallery' && (
+          {viewMode !== 'gallery' && viewMode !== 'import' && (
             <div className="flex items-center p-0.5 rounded-lg border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
               <button onClick={() => setViewMode('year')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
               <button onClick={() => setViewMode('month')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
@@ -1884,7 +1946,7 @@ function App() {
             </div>
           )}
 
-          {viewMode !== 'gallery' && (
+          {viewMode !== 'gallery' && viewMode !== 'import' && (
             <div className="flex items-center gap-1">
               <button onClick={handlePrev} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">← Prev</button>
               <button onClick={handleNext} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">Next →</button>
@@ -2052,7 +2114,7 @@ function App() {
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          if (viewMode !== 'gallery') setPreGalleryViewMode(viewMode);
+                                          if (viewMode !== 'gallery' && viewMode !== 'import') setPreGalleryViewMode(viewMode);
                                           setGalleryTarget({ title: p.title, source });
                                           setViewMode('gallery');
                                         }}
@@ -2100,6 +2162,19 @@ function App() {
           className="flex-1 h-full min-h-0 min-w-0 border rounded-xl shadow-sm p-4 overflow-hidden flex flex-col relative transition-colors"
         >
 
+          {/* IMPORT VIEW -- backlog a batch of device photos into one
+              project's log, dating each from its own EXIF data (with a
+              manual fallback when a photo has none). See the header's
+              "Import Photos" button. */}
+          {viewMode === 'import' && (
+            <ImportPhotosPanel
+              allProjects={getAllTreeProjects()}
+              tenantId={tenantId}
+              onClose={() => setViewMode(preGalleryViewMode)}
+              onUploaded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
+            />
+          )}
+
           {/* GALLERY VIEW -- replaces the calendar grid with every photo
               logged for one project (see each project row's gallery icon
               in the sidebar), in place of Month/Week/Year. */}
@@ -2112,48 +2187,66 @@ function App() {
               );
 
             return (
-              <div className="flex flex-col h-full w-full min-h-0">
-                <div className="flex items-center justify-between mb-3 shrink-0">
-                  <span className="text-sm opacity-60">{galleryLogs.length} photo{galleryLogs.length === 1 ? '' : 's'}</span>
-                </div>
-                <div className="flex-1 overflow-y-auto min-h-0 pr-1">
-                  {galleryLogs.length === 0 ? (
-                    <div className="h-full flex items-center justify-center text-sm italic opacity-50">
-                      No photos logged for this project yet.
-                    </div>
-                  ) : (
-                    <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
-                      {galleryLogs.map((log) => {
-                        const dateObj = new Date(Number(log.year), Number(log.monthNumber) - 1, Number(log.dayNumber));
-                        const httpsUrl = log.url || `https://www.notion.so/${log.id.replace(/-/g, '')}`;
-                        const desktopUrl = httpsUrl.replace('https://', 'notion://');
-                        const notionPageUrl = desktopUrl.includes('?') ? `${desktopUrl}&pvs=4` : `${desktopUrl}?pvs=4`;
+              <div className="flex h-full w-full min-h-0 gap-4">
+                <div className="flex flex-col flex-1 min-w-0 h-full min-h-0">
+                  <div className="flex items-center justify-between mb-3 shrink-0">
+                    <span className="text-sm opacity-60">{galleryLogs.length} photo{galleryLogs.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+                    {galleryLogs.length === 0 ? (
+                      <div className="h-full flex items-center justify-center text-sm italic opacity-50">
+                        No photos logged for this project yet.
+                      </div>
+                    ) : (
+                      <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
+                        {galleryLogs.map((log) => {
+                          const dateObj = new Date(Number(log.year), Number(log.monthNumber) - 1, Number(log.dayNumber));
+                          const httpsUrl = log.url || `https://www.notion.so/${log.id.replace(/-/g, '')}`;
+                          const desktopUrl = httpsUrl.replace('https://', 'notion://');
+                          const notionPageUrl = desktopUrl.includes('?') ? `${desktopUrl}&pvs=4` : `${desktopUrl}?pvs=4`;
+                          const isHovered = log.id === hoveredGalleryLogId;
 
-                        return (
-                          <a
-                            key={log.id}
-                            href={notionPageUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            title="Open in Notion"
-                            style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
-                            className="group flex flex-col rounded-lg border overflow-hidden shadow-sm transition-all hover:border-[var(--theme-primary)] hover:shadow-md"
-                          >
-                            <div className="aspect-square w-full overflow-hidden" style={{ backgroundColor: 'var(--theme-card)' }}>
-                              <img src={log.imageUrl} alt="" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
-                            </div>
-                            <div className="p-2.5">
-                              <div className="text-[11px] font-bold opacity-60">
-                                {dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                          return (
+                            <a
+                              key={log.id}
+                              href={notionPageUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title="Open in Notion"
+                              onMouseEnter={() => setHoveredGalleryLogId(log.id)}
+                              onMouseLeave={() => setHoveredGalleryLogId(null)}
+                              style={{
+                                backgroundColor: 'var(--theme-bg)',
+                                borderColor: isHovered ? 'var(--theme-secondary)' : 'var(--theme-border)',
+                              }}
+                              className={`group flex flex-col rounded-lg border overflow-hidden shadow-sm transition-all hover:border-[var(--theme-primary)] hover:shadow-md ${isHovered ? 'ring-2 ring-[var(--theme-secondary)] scale-[1.02]' : ''}`}
+                            >
+                              <div className="aspect-square w-full overflow-hidden" style={{ backgroundColor: 'var(--theme-card)' }}>
+                                <img src={log.imageUrl} alt="" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
                               </div>
-                              <div className="text-sm font-semibold truncate">{log.title}</div>
-                            </div>
-                          </a>
-                        );
-                      })}
-                    </div>
-                  )}
+                              <div className="p-2.5">
+                                <div className="text-[11px] font-bold opacity-60">
+                                  {dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                </div>
+                                <div className="text-sm font-semibold truncate">{log.title}</div>
+                              </div>
+                            </a>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
+
+                {galleryLogs.length > 0 && (
+                  <div className="w-[380px] shrink-0 h-full min-h-0 overflow-y-auto pr-1 border-l pl-4" style={{ borderColor: 'var(--theme-border)' }}>
+                    <GalleryMiniCalendar
+                      logs={galleryLogs}
+                      hoveredLogId={hoveredGalleryLogId}
+                      onHoverLog={setHoveredGalleryLogId}
+                    />
+                  </div>
+                )}
               </div>
             );
           })()}
