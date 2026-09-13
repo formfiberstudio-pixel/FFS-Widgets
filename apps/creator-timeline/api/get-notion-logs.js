@@ -68,6 +68,8 @@ const MAX_BLOCK_SEARCH_DEPTH = 3;
 async function findImageAndTextInBlocks(blockId, headers, depth = 0) {
   let rawImageUrl = null;
   let pageContent = '';
+  let pageContentBlockId = null;
+  let pageContentBlockType = null;
   const childIdsToDescend = [];
 
   let cursor;
@@ -77,7 +79,7 @@ async function findImageAndTextInBlocks(blockId, headers, depth = 0) {
       `https://api.notion.com/v1/blocks/${blockId}/children?page_size=100${cursor ? `&start_cursor=${cursor}` : ''}`,
       { method: 'GET', headers }
     );
-    if (!res.ok) return { rawImageUrl, pageContent, ok: false, status: res.status };
+    if (!res.ok) return { rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType, ok: false, status: res.status };
     const data = await res.json();
 
     for (const b of data.results) {
@@ -88,6 +90,12 @@ async function findImageAndTextInBlocks(blockId, headers, depth = 0) {
         const blockTypeData = b[b.type];
         if (blockTypeData?.rich_text?.length) {
           pageContent = blockTypeData.rich_text.map(t => t.plain_text).join('');
+          // The id/type are what let an edit be written back to this exact
+          // block later (see api/backlog-photo.js's updateNote action) --
+          // captured here since this is the only place that ever resolves
+          // which block a log's note text actually lives in.
+          pageContentBlockId = b.id;
+          pageContentBlockType = b.type;
         }
       }
       if (b.has_children && depth < MAX_BLOCK_SEARCH_DEPTH && CONTAINER_BLOCK_TYPES.has(b.type)) {
@@ -101,12 +109,16 @@ async function findImageAndTextInBlocks(blockId, headers, depth = 0) {
   for (const childId of childIdsToDescend) {
     if (rawImageUrl && pageContent) break;
     const nested = await findImageAndTextInBlocks(childId, headers, depth + 1);
-    if (!nested.ok) return { rawImageUrl, pageContent, ok: false, status: nested.status };
+    if (!nested.ok) return { rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType, ok: false, status: nested.status };
     if (!rawImageUrl) rawImageUrl = nested.rawImageUrl;
-    if (!pageContent) pageContent = nested.pageContent;
+    if (!pageContent) {
+      pageContent = nested.pageContent;
+      pageContentBlockId = nested.pageContentBlockId;
+      pageContentBlockType = nested.pageContentBlockType;
+    }
   }
 
-  return { rawImageUrl, pageContent, ok: true };
+  return { rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType, ok: true };
 }
 
 // Auto-detects which Notion property types on a page could serve as a
@@ -566,12 +578,16 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
       // notionCache.js for the freshness bound this relies on).
       let rawImageUrl = null;
       let pageContent = '';
+      let pageContentBlockId = null;
+      let pageContentBlockType = null;
 
       const cachedBlockData = await getCachedBlockData(page.id, page.last_edited_time);
       if (cachedBlockData) {
         cacheStats.blockHits++;
         rawImageUrl = cachedBlockData.rawImageUrl;
         pageContent = cachedBlockData.pageContent;
+        pageContentBlockId = cachedBlockData.pageContentBlockId ?? null;
+        pageContentBlockType = cachedBlockData.pageContentBlockType ?? null;
       } else {
         cacheStats.blockMisses++;
         try {
@@ -579,13 +595,15 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
           if (result.ok) {
             rawImageUrl = result.rawImageUrl;
             pageContent = result.pageContent;
+            pageContentBlockId = result.pageContentBlockId;
+            pageContentBlockType = result.pageContentBlockType;
 
             // Only a successful fetch is trustworthy enough to cache for up
             // to 90 days -- caching on a failed request (a stray 429, a
             // transient 5xx) would memoize "no photo" as if it were the
             // real answer, permanently hiding a photo that's actually
             // there until the page happens to be edited again.
-            await setCachedBlockData(page.id, page.last_edited_time, rawImageUrl, pageContent);
+            await setCachedBlockData(page.id, page.last_edited_time, rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType);
           } else {
             console.warn(`[Diagnostic] Failed to fetch blocks for page ${page.id}: status ${result.status}`);
           }
@@ -614,7 +632,9 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
         projectTypeColor: typeColor,
         ...(facets ? { facets } : {}),
         imageUrl,
-        pageContent
+        pageContent,
+        pageContentBlockId,
+        pageContentBlockType
       };
     } catch (rowError) {
       console.error(`[Diagnostic] Skipped a row due to error:`, rowError.message);

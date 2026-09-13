@@ -40,16 +40,16 @@ function relationTitleKey(pageId) {
   return `notionRelTitle:${pageId}`;
 }
 
-// Bumped once: pages synced under the old block-fetch logic (flat,
-// top-level-only, single page of children) may have gotten cached with an
-// image that was actually there but unreachable by that scan (nested in a
-// toggle/column, or past the first 25 blocks). Changing the key orphans
-// every entry written under the old logic so the next sync re-fetches
-// each page fresh with the new recursive/paginated search instead of
-// trusting a result that old code could get wrong. The orphaned v1 entries
-// just age out on their existing TTL; no explicit cleanup needed.
+// Bumped twice now: v1 -> v2 for the recursive/paginated block search
+// (see get-notion-logs.js), v2 -> v3 because entries cached before the
+// writable-note feature don't carry pageContentBlockId/Type at all --
+// without them, editing a note back to Notion has no block to target
+// until the page is edited some other way to naturally invalidate the
+// old entry. Bumping forces one more full resync so every entry has them
+// immediately. Orphaned older-version entries just age out on their
+// existing TTL; no explicit cleanup needed.
 function blockDataKey(pageId) {
-  return `notionBlocks:v2:${pageId}`;
+  return `notionBlocks:v3:${pageId}`;
 }
 
 export async function getCachedRelationTitle(pageId) {
@@ -69,27 +69,32 @@ export async function setCachedRelationTitle(pageId, title) {
   }
 }
 
-// Returns { rawImageUrl, pageContent } only if the page hasn't been edited
-// since this was cached AND (there was no image to begin with, or the
-// cached image's signed URL is still within its safety window) --
-// otherwise null, meaning "fetch the blocks fresh."
+// Returns { rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType}
+// only if the page hasn't been edited since this was cached AND (there was
+// no image to begin with, or the cached image's signed URL is still within
+// its safety window) -- otherwise null, meaning "fetch the blocks fresh."
 export async function getCachedBlockData(pageId, lastEditedTime) {
   try {
     const cached = await redis.get(blockDataKey(pageId));
     if (!cached || cached.lastEditedTime !== lastEditedTime) return null;
     if (cached.rawImageUrl && (Date.now() - cached.imageCachedAt) >= IMAGE_URL_FRESH_MS) return null;
-    return { rawImageUrl: cached.rawImageUrl, pageContent: cached.pageContent };
+    return {
+      rawImageUrl: cached.rawImageUrl,
+      pageContent: cached.pageContent,
+      pageContentBlockId: cached.pageContentBlockId ?? null,
+      pageContentBlockType: cached.pageContentBlockType ?? null,
+    };
   } catch (err) {
     console.warn('[notionCache] block data read failed, fetching fresh:', err.message);
     return null;
   }
 }
 
-export async function setCachedBlockData(pageId, lastEditedTime, rawImageUrl, pageContent) {
+export async function setCachedBlockData(pageId, lastEditedTime, rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType) {
   try {
     await redis.set(
       blockDataKey(pageId),
-      { lastEditedTime, rawImageUrl, pageContent, imageCachedAt: Date.now() },
+      { lastEditedTime, rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType, imageCachedAt: Date.now() },
       { ex: BLOCK_CACHE_TTL_SECONDS }
     );
   } catch (err) {

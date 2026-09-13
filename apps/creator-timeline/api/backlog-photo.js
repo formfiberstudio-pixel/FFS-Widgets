@@ -28,16 +28,28 @@ const NOTION_VERSION = '2026-03-11';
 // WITH the pageId that call returned (append mode), which skips straight
 // to adding another image block rather than re-deriving the database/
 // properties all over again.
+//
+// Also handles action: 'updateNote' -- writing a log entry's text note
+// back to Notion (see App.jsx's day-view note editor). Folded into this
+// file rather than its own route purely to stay under Vercel Hobby's
+// 12-serverless-function ceiling; it shares nothing with the photo path
+// except the tenant/license/token boilerplate below.
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, referenceLogId, pageId, title, dateTaken, imageBase64 } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, dateTaken, text, imageBase64 } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
-  if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
-  if (!pageId) {
-    if (!referenceLogId) return res.status(400).json({ error: 'Missing referenceLogId' });
-    if (!dateTaken || isNaN(new Date(dateTaken).getTime())) return res.status(400).json({ error: 'Missing or invalid dateTaken' });
+
+  if (action === 'updateNote') {
+    if (!pageId) return res.status(400).json({ error: 'Missing pageId' });
+    if (typeof text !== 'string') return res.status(400).json({ error: 'Missing text' });
+  } else {
+    if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
+    if (!pageId) {
+      if (!referenceLogId) return res.status(400).json({ error: 'Missing referenceLogId' });
+      if (!dateTaken || isNaN(new Date(dateTaken).getTime())) return res.status(400).json({ error: 'Missing or invalid dateTaken' });
+    }
   }
 
   let tenant;
@@ -80,6 +92,44 @@ export default async function handler(req, res) {
     'Notion-Version': NOTION_VERSION,
     'Content-Type': 'application/json',
   };
+
+  if (action === 'updateNote') {
+    try {
+      // blockId/blockType come from the sync (see get-notion-logs.js's
+      // findImageAndTextInBlocks) -- they're only null when the entry had
+      // no text block at all yet, in which case this appends a fresh
+      // paragraph rather than trying to PATCH a block that doesn't exist.
+      if (blockId && blockType) {
+        const updateRes = await notionFetch(`https://api.notion.com/v1/blocks/${blockId}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ [blockType]: { rich_text: text ? [{ text: { content: text } }] : [] } }),
+        });
+        const updateData = await updateRes.json();
+        if (updateData.object === 'error') return res.status(400).json({ error: updateData.message });
+        return res.status(200).json({ success: true, blockId, blockType });
+      }
+
+      if (!text) {
+        // Nothing existed and nothing was typed -- no-op rather than
+        // creating an empty paragraph block for no reason.
+        return res.status(200).json({ success: true, blockId: null, blockType: null });
+      }
+
+      const appendRes = await notionFetch(`https://api.notion.com/v1/blocks/${pageId}/children`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ children: [{ object: 'block', type: 'paragraph', paragraph: { rich_text: [{ text: { content: text } }] } }] }),
+      });
+      const appendData = await appendRes.json();
+      if (appendData.object === 'error') return res.status(400).json({ error: appendData.message });
+      const newBlockId = appendData.results?.[0]?.id || null;
+      return res.status(200).json({ success: true, blockId: newBlockId, blockType: newBlockId ? 'paragraph' : null });
+    } catch (err) {
+      console.error('[backlog-photo] updateNote failed:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
 
   try {
     const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, '').replace(/[\r\n\s]/g, '');

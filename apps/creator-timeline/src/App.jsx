@@ -18,6 +18,7 @@ import {
 import FacetedSidebarGroup from './FacetedSidebarGroup.jsx';
 import GalleryMiniCalendar from './GalleryMiniCalendar.jsx';
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
+import LogNoteEditor from './LogNoteEditor.jsx';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -1302,6 +1303,16 @@ function App() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Keeps a note edit visible everywhere that log shows up (not just the
+  // modal it was typed in) without forcing a full resync just to pick up
+  // one saved sentence -- backlog-photo.js's updateNote already wrote it
+  // to Notion; this just mirrors that same result into local state.
+  const handleNoteSaved = (logId, newText, newBlockId, newBlockType) => {
+    setTimelineLogs(prev => prev.map(l => (
+      l.id === logId ? { ...l, pageContent: newText, pageContentBlockId: newBlockId, pageContentBlockType: newBlockType } : l
+    )));
   };
 
   // Deleting a saved view only prunes a label/bookmark over already-visible
@@ -3469,13 +3480,7 @@ function App() {
                             </a>
                           </div>
 
-                          {log.pageContent && (
-                            <div className="text-xs p-3 rounded border leading-normal whitespace-pre-wrap flex-1 overflow-hidden" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
-                              <div className="line-clamp-[12] lg:line-clamp-[16] 2xl:line-clamp-[22] text-ellipsis">
-                                {log.pageContent}
-                              </div>
-                            </div>
-                          )}
+                          <LogNoteEditor log={log} tenantId={tenantId} onSaved={handleNoteSaved} />
                         </div>
                       );
                     })
