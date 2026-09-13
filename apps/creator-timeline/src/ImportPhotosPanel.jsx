@@ -39,7 +39,7 @@ function toDateInputValue(date) {
   return new Date(d.getTime() - offset * 60000).toISOString().split('T')[0];
 }
 
-export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded }) {
+export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos }) {
   const [project, setProject] = useState(null);
   const [photos, setPhotos] = useState([]);
   const [step, setStep] = useState('select-project'); // select-project | review | uploading | done
@@ -54,12 +54,17 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     return () => photos.forEach((p) => URL.revokeObjectURL(p.previewUrl));
   }, []);
 
-  const handleFiles = async (fileList) => {
-    const files = Array.from(fileList).filter((f) => f.type.startsWith('image/'));
-    const newPhotos = await Promise.all(files.map(async (file) => {
-      const previewUrl = URL.createObjectURL(file);
-      let date = new Date();
-      let hasExif = false;
+  const photoFromFile = async (file, exifOverrideDate) => {
+    const previewUrl = URL.createObjectURL(file);
+    let date = new Date();
+    let hasExif = false;
+    if (exifOverrideDate) {
+      // Already extracted server-side (see share-target.js) from the
+      // original, full-EXIF bytes -- re-reading EXIF from this same file
+      // client-side would just repeat that same lookup.
+      date = new Date(exifOverrideDate);
+      hasExif = true;
+    } else {
       try {
         const exif = await exifr.parse(file, { pick: ['DateTimeOriginal', 'CreateDate'] });
         const exifDate = exif?.DateTimeOriginal || exif?.CreateDate;
@@ -71,16 +76,34 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         // No EXIF, or a format exifr can't read (e.g. some HEIC/PNG paths)
         // -- falls back to today, left for the user to fix below.
       }
-      return {
-        id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
-        file,
-        previewUrl,
-        date: toDateInputValue(date),
-        hasExif,
-      };
-    }));
+    }
+    return {
+      id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
+      file,
+      previewUrl,
+      date: toDateInputValue(date),
+      hasExif,
+    };
+  };
+
+  const handleFiles = async (fileList) => {
+    const files = Array.from(fileList).filter((f) => f.type.startsWith('image/'));
+    const newPhotos = await Promise.all(files.map((file) => photoFromFile(file)));
     setPhotos((prev) => [...prev, ...newPhotos]);
   };
+
+  // Photos that arrived via the Android share-target landing (App.jsx) are
+  // waiting on `sharedPhotos` until a project is picked -- pick them up
+  // the moment the review screen for that project opens, exactly once.
+  useEffect(() => {
+    if (step !== 'review' || !sharedPhotos || sharedPhotos.length === 0) return;
+    (async () => {
+      const newPhotos = await Promise.all(sharedPhotos.map(({ file, capturedAt }) => photoFromFile(file, capturedAt)));
+      setPhotos((prev) => [...prev, ...newPhotos]);
+      onConsumedSharedPhotos();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, sharedPhotos]);
 
   const updatePhotoDate = (id, newDate) => {
     setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, date: newDate, hasExif: false } : p)));
@@ -201,7 +224,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   if (step === 'review') {
     return (
       <div className="flex flex-col h-full w-full min-h-0">
-        <div className="flex items-center justify-between mb-4 shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4 shrink-0">
           <div>
             <button onClick={() => setStep('select-project')} className="text-xs font-semibold cursor-pointer hover:opacity-70" style={{ color: 'var(--theme-primary)' }}>
               ‹ Change Project
@@ -212,7 +235,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
             onClick={startUpload}
             disabled={photos.length === 0}
             style={{ backgroundColor: 'var(--theme-primary)' }}
-            className="px-4 py-2 text-sm font-bold text-white rounded-lg cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+            className="w-full sm:w-auto px-4 py-2.5 sm:py-2 text-sm font-bold text-white rounded-lg cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
           >
             Upload {photos.length} Photo{photos.length === 1 ? '' : 's'}
           </button>
@@ -256,7 +279,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                     <button
                       onClick={() => removePhoto(photo.id)}
                       title="Remove"
-                      className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/60 text-white text-sm flex items-center justify-center cursor-pointer hover:bg-black/80"
+                      className="absolute top-1 right-1 w-8 h-8 rounded-full bg-black/60 text-white text-lg flex items-center justify-center cursor-pointer hover:bg-black/80"
                     >
                       ×
                     </button>

@@ -779,6 +779,14 @@ function App() {
   // Shared between the gallery's photo grid and its mini-calendar side
   // panel so hovering either highlights the other.
   const [hoveredGalleryLogId, setHoveredGalleryLogId] = useState(null);
+  // Photos handed off by the Android share-target landing effect below,
+  // waiting for the Import panel to pick them up once a project is chosen.
+  const [pendingSharedPhotos, setPendingSharedPhotos] = useState(null);
+  // One shared direction for BOTH the gallery's photo grid and its mini-
+  // calendar's year ordering -- letting them disagree (grid oldest-first
+  // while the calendar showed newest-first, the original bug) made it
+  // hard to tell the two views were even showing the same photos.
+  const [galleryNewestFirst, setGalleryNewestFirst] = useState(false);
 
   const [thumbnailOverrides, setThumbnailOverrides] = useState(() => {
     const saved = localStorage.getItem('notionWidgetThumbnails');
@@ -1136,6 +1144,49 @@ function App() {
       return next;
     });
   };
+
+  // -------------------------------------------------------------
+  // ANDROID SHARE-TARGET LANDING
+  // -------------------------------------------------------------
+  // share-target.js 303-redirects here with ?shareToken=... once Android's
+  // Share sheet has handed it some photos -- there's no live JS state to
+  // hand them to directly (this is a fresh tab), so they're picked up
+  // once via get-shared-photos.js and converted back into real File
+  // objects the Import panel can treat exactly like a manual file-picker
+  // selection (EXIF-derived date included, via the server-extracted
+  // capturedAt -- see share-target.js for why it can't just be re-read
+  // from the compressed copy stored here).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const shareToken = params.get('shareToken');
+    if (!shareToken) return;
+
+    // One-time token -- drop it from the address bar immediately so a
+    // later refresh of this tab doesn't try to redeem it again.
+    params.delete('shareToken');
+    const cleanedSearch = params.toString();
+    window.history.replaceState({}, '', `${window.location.pathname}${cleanedSearch ? `?${cleanedSearch}` : ''}`);
+
+    fetch(`/api/get-shared-photos?token=${encodeURIComponent(shareToken)}`)
+      .then((r) => r.json())
+      .then(({ photos }) => {
+        if (!Array.isArray(photos) || photos.length === 0) return;
+        const files = photos.map((p) => {
+          const byteChars = atob(p.base64);
+          const bytes = new Uint8Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+          const file = new File([bytes], p.filename, { type: p.mimeType });
+          return { file, capturedAt: p.capturedAt };
+        });
+        setPendingSharedPhotos(files);
+        setPreGalleryViewMode('year');
+        setViewMode('import');
+      })
+      .catch(() => {
+        // Expired/already-consumed token, or a network hiccup -- the
+        // Import panel still works fine via its normal file picker.
+      });
+  }, []);
 
   // -------------------------------------------------------------
   // API FETCHING & DYNAMIC DOT COLOR MAPPING LOGIC
@@ -1972,8 +2023,10 @@ function App() {
       {/* MAIN WORKSPACE SPLIT */}
       <div className="flex-1 flex min-h-0 min-w-0 gap-6">
         
-        {/* SIDEBAR WITH DRAG RESIZE */}
-        {isSidebarOpen && (
+        {/* SIDEBAR WITH DRAG RESIZE -- hidden during Import, which has its
+            own project picker and benefits more from the full width,
+            especially on a phone-sized screen landing here via a share. */}
+        {isSidebarOpen && viewMode !== 'import' && (
           <aside 
             style={{ width: `${sidebarWidth}px`, borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
             className="shrink-0 h-full flex flex-col p-4 rounded-xl border shadow-sm relative"
@@ -2172,6 +2225,8 @@ function App() {
               tenantId={tenantId}
               onClose={() => setViewMode(preGalleryViewMode)}
               onUploaded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
+              sharedPhotos={pendingSharedPhotos}
+              onConsumedSharedPhotos={() => setPendingSharedPhotos(null)}
             />
           )}
 
@@ -2179,18 +2234,27 @@ function App() {
               logged for one project (see each project row's gallery icon
               in the sidebar), in place of Month/Week/Year. */}
           {viewMode === 'gallery' && galleryTarget && (() => {
+            const sortSign = galleryNewestFirst ? -1 : 1;
             const galleryLogs = (Array.isArray(timelineLogs) ? timelineLogs : [])
               .filter(log => log.source === galleryTarget.source && (log.Projects || 'Untitled Project') === galleryTarget.title && log.imageUrl)
-              .sort((a, b) =>
+              .sort((a, b) => sortSign * (
                 new Date(Number(a.year), Number(a.monthNumber) - 1, Number(a.dayNumber)) -
                 new Date(Number(b.year), Number(b.monthNumber) - 1, Number(b.dayNumber))
-              );
+              ));
 
             return (
               <div className="flex h-full w-full min-h-0 gap-4">
                 <div className="flex flex-col flex-1 min-w-0 h-full min-h-0">
                   <div className="flex items-center justify-between mb-3 shrink-0">
                     <span className="text-sm opacity-60">{galleryLogs.length} photo{galleryLogs.length === 1 ? '' : 's'}</span>
+                    <button
+                      onClick={() => setGalleryNewestFirst((v) => !v)}
+                      title={galleryNewestFirst ? 'Showing newest first -- click to show oldest first' : 'Showing oldest first -- click to show newest first'}
+                      className="flex items-center gap-1.5 text-xs font-semibold cursor-pointer opacity-60 hover:opacity-100 transition-opacity"
+                    >
+                      <span>{galleryNewestFirst ? 'Newest first' : 'Oldest first'}</span>
+                      <span className="transition-transform" style={{ display: 'inline-block', transform: galleryNewestFirst ? 'rotate(180deg)' : 'none' }}>↓</span>
+                    </button>
                   </div>
                   <div className="flex-1 overflow-y-auto min-h-0 pr-1">
                     {galleryLogs.length === 0 ? (
@@ -2244,6 +2308,7 @@ function App() {
                       logs={galleryLogs}
                       hoveredLogId={hoveredGalleryLogId}
                       onHoverLog={setHoveredGalleryLogId}
+                      newestFirst={galleryNewestFirst}
                     />
                   </div>
                 )}

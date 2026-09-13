@@ -67,7 +67,7 @@ function MonthBlock({ year, monthIndex, logsByDay, hoveredLogId, onHoverLog }) {
   );
 }
 
-export default function GalleryMiniCalendar({ logs, hoveredLogId, onHoverLog }) {
+export default function GalleryMiniCalendar({ logs, hoveredLogId, onHoverLog, newestFirst }) {
   const byYear = {};
   logs.forEach((log) => {
     const y = Number(log.year);
@@ -79,7 +79,11 @@ export default function GalleryMiniCalendar({ logs, hoveredLogId, onHoverLog }) 
     // mini calendar only needs one representative photo per dot.
     if (!byYear[y][m][d]) byYear[y][m][d] = log;
   });
-  const years = Object.keys(byYear).map(Number).sort((a, b) => b - a);
+  // Matches whichever direction the photo grid next to this panel is
+  // currently sorted in (see App.jsx's shared galleryNewestFirst toggle) --
+  // the two disagreeing on chronological direction was the actual
+  // confusion this was built to fix.
+  const years = Object.keys(byYear).map(Number).sort((a, b) => (newestFirst ? b - a : a - b));
 
   if (years.length === 0) {
     return <div className="text-xs italic opacity-50 p-3">No dated entries yet.</div>;

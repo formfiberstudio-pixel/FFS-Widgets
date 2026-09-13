@@ -4,7 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#F8FAFC" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>Creator Timeline</title>
+    <script>
+      // The manifest has to be generated per-tenant (start_url and the
+      // Share Target action both need to point at THIS tenant's own URL,
+      // see api/manifest.js) -- there's no server-side templating for a
+      // static index.html, so the link is added here instead, as early as
+      // possible, from whatever ?tenant= is already in the address bar.
+      (function () {
+        var tenant = new URLSearchParams(window.location.search).get('tenant');
+        var link = document.createElement('link');
+        link.rel = 'manifest';
+        link.href = tenant ? '/api/manifest?tenant=' + encodeURIComponent(tenant) : '/api/manifest';
+        document.head.appendChild(link);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
