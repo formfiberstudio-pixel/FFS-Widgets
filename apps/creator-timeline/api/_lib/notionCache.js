@@ -40,8 +40,16 @@ function relationTitleKey(pageId) {
   return `notionRelTitle:${pageId}`;
 }
 
+// Bumped once: pages synced under the old block-fetch logic (flat,
+// top-level-only, single page of children) may have gotten cached with an
+// image that was actually there but unreachable by that scan (nested in a
+// toggle/column, or past the first 25 blocks). Changing the key orphans
+// every entry written under the old logic so the next sync re-fetches
+// each page fresh with the new recursive/paginated search instead of
+// trusting a result that old code could get wrong. The orphaned v1 entries
+// just age out on their existing TTL; no explicit cleanup needed.
 function blockDataKey(pageId) {
-  return `notionBlocks:${pageId}`;
+  return `notionBlocks:v2:${pageId}`;
 }
 
 export async function getCachedRelationTitle(pageId) {

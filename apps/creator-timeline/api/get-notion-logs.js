@@ -3,6 +3,13 @@ import { decryptSecret } from './_lib/tokenCrypto.js';
 import { getTenant, saveTenant, LICENSE_REVERIFY_MS } from './_lib/tenantStore.js';
 import { verifyGumroadLicense } from './_lib/gumroad.js';
 import { getCachedRelationTitle, setCachedRelationTitle, getCachedBlockData, setCachedBlockData } from './_lib/notionCache.js';
+import { notionFetch, mapWithConcurrency } from './_lib/notionFetch.js';
+
+// Notion's own rate limit is an average of ~3 requests/second per
+// integration -- this bounds how many rows' relation/block/cross-check
+// fetches run at once so a large database's sync fans out in waves instead
+// of firing every row's requests in the same instant (see notionFetch.js).
+const ROW_FETCH_CONCURRENCY = 3;
 
 // force-rebuild marker: Vercel's change-detection skipped an earlier deploy
 
@@ -15,6 +22,91 @@ import { getCachedRelationTitle, setCachedRelationTitle, getCachedBlockData, set
 function toThumbnailUrl(rawUrl) {
   if (!rawUrl || !isThumbnailableUrl(rawUrl)) return rawUrl;
   return `/api/image-thumb?url=${encodeURIComponent(rawUrl)}&w=640`;
+}
+
+// A photo can reach a Notion page two ways that never touch the page BODY
+// (and so are invisible to the blocks/children fetch below): attached via
+// a "Files & media" property on the row itself, or set as the page's
+// cover. Both are already present in the database-query response we have
+// in hand -- no extra Notion request -- so they're checked as a free
+// fallback for sources (e.g. a project tracker) that attach photos this
+// way instead of pasting an inline image into the body.
+function extractPagePropertyImage(props) {
+  const filesProp = Object.values(props).find(p => p.type === 'files' && p.files?.length > 0);
+  if (!filesProp) return null;
+  const file = filesProp.files[0];
+  return file.file?.url || file.external?.url || null;
+}
+
+function getPageCoverUrl(page) {
+  if (!page.cover) return null;
+  return page.cover.file?.url || page.cover.external?.url || null;
+}
+
+// Block types that can hold their own children where a photo commonly
+// ends up tucked away (a "Photos" toggle, a two-column layout, a callout)
+// -- worth descending into. Left out: things like paragraphs/headings,
+// which can technically have children (a sub-bullet) but are never where
+// someone drops an image.
+const CONTAINER_BLOCK_TYPES = new Set([
+  'toggle', 'column_list', 'column', 'synced_block', 'callout', 'quote',
+  'bulleted_list_item', 'numbered_list_item', 'to_do', 'template',
+]);
+
+// Most journal-style entries put a photo at most a level or two deep --
+// bounding recursion keeps a pathological page from costing one Notion
+// request per nested block for no benefit.
+const MAX_BLOCK_SEARCH_DEPTH = 3;
+
+// The Notion blocks endpoint only ever returns a block's DIRECT children,
+// capped at one page of results -- a photo pasted inside a toggle, column,
+// or callout (all common ways to keep a log entry tidy) is invisible to a
+// single flat page_size=25 call. This walks every page of a block's
+// children (following has_more/next_cursor) and recurses into any child
+// that can itself hold content, stopping as soon as both an image and a
+// text excerpt have been found.
+async function findImageAndTextInBlocks(blockId, headers, depth = 0) {
+  let rawImageUrl = null;
+  let pageContent = '';
+  const childIdsToDescend = [];
+
+  let cursor;
+  let hasMore = true;
+  while (hasMore) {
+    const res = await notionFetch(
+      `https://api.notion.com/v1/blocks/${blockId}/children?page_size=100${cursor ? `&start_cursor=${cursor}` : ''}`,
+      { method: 'GET', headers }
+    );
+    if (!res.ok) return { rawImageUrl, pageContent, ok: false, status: res.status };
+    const data = await res.json();
+
+    for (const b of data.results) {
+      if (!rawImageUrl && b.type === 'image') {
+        rawImageUrl = b.image.type === 'external' ? b.image.external.url : b.image.file.url;
+      }
+      if (!pageContent) {
+        const blockTypeData = b[b.type];
+        if (blockTypeData?.rich_text?.length) {
+          pageContent = blockTypeData.rich_text.map(t => t.plain_text).join('');
+        }
+      }
+      if (b.has_children && depth < MAX_BLOCK_SEARCH_DEPTH && CONTAINER_BLOCK_TYPES.has(b.type)) {
+        childIdsToDescend.push(b.id);
+      }
+    }
+    hasMore = data.has_more;
+    cursor = data.next_cursor;
+  }
+
+  for (const childId of childIdsToDescend) {
+    if (rawImageUrl && pageContent) break;
+    const nested = await findImageAndTextInBlocks(childId, headers, depth + 1);
+    if (!nested.ok) return { rawImageUrl, pageContent, ok: false, status: nested.status };
+    if (!rawImageUrl) rawImageUrl = nested.rawImageUrl;
+    if (!pageContent) pageContent = nested.pageContent;
+  }
+
+  return { rawImageUrl, pageContent, ok: true };
 }
 
 // Auto-detects which Notion property types on a page could serve as a
@@ -294,7 +386,7 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
   let startCursor = undefined;
 
   while (hasMore) {
-    const response = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
+    const response = await notionFetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -348,7 +440,7 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
         if (cachedTitle) { cacheStats.relationHits++; return cachedTitle; }
         cacheStats.relationMisses++;
         try {
-          const relRes = await fetch(`https://api.notion.com/v1/pages/${relatedPageId}`, { method: 'GET', headers });
+          const relRes = await notionFetch(`https://api.notion.com/v1/pages/${relatedPageId}`, { method: 'GET', headers });
           if (relRes.ok) {
             const relData = await relRes.json();
             const relTitleProp = Object.values(relData.properties).find(p => p.type === 'title');
@@ -398,7 +490,7 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
   // source's sync so it doesn't multiply request volume.
   let crossCheckDone = false;
 
-  const formattedLogs = await Promise.all(allResults.map(async (page) => {
+  const formattedLogs = await mapWithConcurrency(allResults, ROW_FETCH_CONCURRENCY, async (page) => {
     try {
       const props = page.properties;
       const propValues = Object.values(props);
@@ -448,7 +540,7 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
         if (looksEmpty(overrideTopicProp) || looksEmpty(overrideTypeProp)) {
           crossCheckDone = true;
           try {
-            const pageRes = await fetch(`https://api.notion.com/v1/pages/${page.id}`, { method: 'GET', headers });
+            const pageRes = await notionFetch(`https://api.notion.com/v1/pages/${page.id}`, { method: 'GET', headers });
             if (pageRes.ok) {
               const pageData = await pageRes.json();
               console.warn(`[Diagnostic] pages.retrieve cross-check for page ${page.id} (query endpoint reported empty):`, JSON.stringify({
@@ -483,30 +575,29 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
       } else {
         cacheStats.blockMisses++;
         try {
-          const blockRes = await fetch(`https://api.notion.com/v1/blocks/${page.id}/children?page_size=25`, {
-            method: 'GET',
-            headers
-          });
+          const result = await findImageAndTextInBlocks(page.id, headers);
+          if (result.ok) {
+            rawImageUrl = result.rawImageUrl;
+            pageContent = result.pageContent;
 
-          if (blockRes.ok) {
-            const blockData = await blockRes.json();
-            const imgBlock = blockData.results.find(b => b.type === 'image');
-            if (imgBlock) {
-              rawImageUrl = imgBlock.image.type === 'external' ? imgBlock.image.external.url : imgBlock.image.file.url;
-            }
-
-            for (const b of blockData.results) {
-              const blockTypeData = b[b.type];
-              if (blockTypeData && blockTypeData.rich_text && blockTypeData.rich_text.length > 0) {
-                pageContent = blockTypeData.rich_text.map(t => t.plain_text).join('');
-                break;
-              }
-            }
+            // Only a successful fetch is trustworthy enough to cache for up
+            // to 90 days -- caching on a failed request (a stray 429, a
+            // transient 5xx) would memoize "no photo" as if it were the
+            // real answer, permanently hiding a photo that's actually
+            // there until the page happens to be edited again.
+            await setCachedBlockData(page.id, page.last_edited_time, rawImageUrl, pageContent);
+          } else {
+            console.warn(`[Diagnostic] Failed to fetch blocks for page ${page.id}: status ${result.status}`);
           }
         } catch (err) {
-          console.warn(`[Diagnostic] Failed to fetch blocks for page ${page.id}`);
+          console.warn(`[Diagnostic] Failed to fetch blocks for page ${page.id}: ${err.message}`);
         }
-        await setCachedBlockData(page.id, page.last_edited_time, rawImageUrl, pageContent);
+      }
+
+      // Falls back to a Files & media property or the page cover only when
+      // the body itself had no image -- see extractPagePropertyImage above.
+      if (!rawImageUrl) {
+        rawImageUrl = extractPagePropertyImage(props) || getPageCoverUrl(page);
       }
 
       const imageUrl = toThumbnailUrl(rawImageUrl);
@@ -529,7 +620,7 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
       console.error(`[Diagnostic] Skipped a row due to error:`, rowError.message);
       return null;
     }
-  }));
+  });
 
   const skippedRequests = cacheStats.relationHits + cacheStats.blockHits;
   console.log(`[Diagnostic] (${sourceLabel}) Cache: ${cacheStats.relationHits}/${cacheStats.relationHits + cacheStats.relationMisses} relation titles, ${cacheStats.blockHits}/${cacheStats.blockHits + cacheStats.blockMisses} page blocks served from cache (${skippedRequests} Notion requests skipped).`);
