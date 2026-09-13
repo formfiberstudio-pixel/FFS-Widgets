@@ -1,0 +1,18 @@
+# Vercel CLI uploads the raw working tree from wherever `vercel deploy` is
+# run (needed here since each app's Root Directory is set relative to this
+# monorepo root) -- unlike git, it doesn't stop at submodule boundaries or
+# know to skip old reference material, so anything large and unrelated to
+# an actual app build has to be excluded explicitly.
+
+# Old travel-log source media (a git submodule, several GB of video/photos)
+# -- never needed to build any of the deployed apps.
+archive/
+
+# Reference PDFs kept at the repo root, not part of any app's build.
+*.pdf
+
+# Installed locally per-workspace; each Vercel project runs its own
+# install command remotely instead of using what's on disk here.
+node_modules/
+packages/*/node_modules/
+apps/*/node_modules/
