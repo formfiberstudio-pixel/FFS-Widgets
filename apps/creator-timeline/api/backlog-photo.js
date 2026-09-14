@@ -168,7 +168,16 @@ export default async function handler(req, res) {
       if (propVal.type === 'title') {
         properties[propName] = { title: [{ text: { content: String(title || 'Backlogged Photo') } }] };
       } else if (propVal.type === 'date') {
-        properties[propName] = { date: { start: new Date(dateTaken).toISOString() } };
+        // dateTaken is already a bare YYYY-MM-DD (straight from the review
+        // screen's <input type="date">) -- send it through as-is rather
+        // than round-tripping it via new Date(...).toISOString(), which
+        // turns it into a UTC-midnight timestamp. get-notion-logs.js reads
+        // a plain date-only property with pure string splitting and zero
+        // timezone conversion specifically to avoid this class of bug;
+        // handing Notion a full timestamp instead of a bare date defeats
+        // that and reintroduces exactly the day-shift it was written to
+        // prevent.
+        properties[propName] = { date: { start: dateTaken } };
       } else if (propVal.type === 'relation' && propVal.relation?.length > 0) {
         properties[propName] = { relation: propVal.relation.map((r) => ({ id: r.id })) };
       }
