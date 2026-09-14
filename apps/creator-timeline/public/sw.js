@@ -32,10 +32,14 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  // mode 'navigate' is what marks this as the real top-level POST the
-  // share sheet triggered -- this file's OWN outgoing fetch() call below
-  // is never 'navigate', so that relay can never re-enter this branch.
-  if (req.method === 'POST' && req.mode === 'navigate' && new URL(req.url).pathname === SHARE_TARGET_PATH) {
+  if (req.method !== 'POST' || req.headers.has('X-SW-Relay')) return;
+  let pathname;
+  try {
+    pathname = new URL(req.url).pathname;
+  } catch (err) {
+    return;
+  }
+  if (pathname === SHARE_TARGET_PATH) {
     event.respondWith(handleShareTarget(req));
   }
 });
@@ -66,43 +70,73 @@ async function extractCapturedAt(file) {
   return '';
 }
 
+// This whole pipeline runs once, unattended, on a device this can't be
+// tested against directly -- rather than swallowing every failure into
+// the same silent "land on the bare calendar" outcome, each exit carries
+// a specific reason back through the redirect (see App.jsx's shareError
+// handling) so a real failure is diagnosable from what the user sees
+// instead of from guesswork.
 async function handleShareTarget(request) {
   const url = new URL(request.url);
   const tenant = url.searchParams.get('tenant') || '';
-  const fallbackUrl = `/?tenant=${encodeURIComponent(tenant)}`;
+  const fallback = (reason) => {
+    const target = new URL('/', url.origin);
+    target.searchParams.set('tenant', tenant);
+    if (reason) target.searchParams.set('shareError', String(reason).slice(0, 200));
+    return Response.redirect(target.toString(), 303);
+  };
 
+  let formData;
   try {
-    const formData = await request.formData();
-    const files = formData.getAll('photos').filter((f) => f && typeof f === 'object' && f.type && f.type.startsWith('image/'));
-    if (files.length === 0) return Response.redirect(fallbackUrl, 303);
+    formData = await request.formData();
+  } catch (err) {
+    return fallback(`form-parse: ${err.message}`);
+  }
 
-    // Indexed field names (photo_0/capturedAt_0, photo_1/capturedAt_1, ...)
-    // so the backend can pair each photo with its own date without
-    // depending on multipart field arrival order.
-    const outForm = new FormData();
-    let idx = 0;
-    for (const file of files) {
-      try {
-        const [resized, capturedAt] = await Promise.all([resizeImage(file), extractCapturedAt(file)]);
-        outForm.append(`photo_${idx}`, resized, file.name || 'photo.jpg');
-        outForm.append(`capturedAt_${idx}`, capturedAt);
-        idx++;
-      } catch (err) {
-        // One unreadable/corrupt photo shouldn't sink the rest of the share.
-      }
+  const files = formData.getAll('photos').filter((f) => f && typeof f === 'object' && f.type && f.type.startsWith('image/'));
+  if (files.length === 0) return fallback('no-image-files-in-share');
+
+  // Indexed field names (photo_0/capturedAt_0, photo_1/capturedAt_1, ...)
+  // so the backend can pair each photo with its own date without
+  // depending on multipart field arrival order.
+  const outForm = new FormData();
+  const skipReasons = [];
+  let idx = 0;
+  for (const file of files) {
+    try {
+      const [resized, capturedAt] = await Promise.all([resizeImage(file), extractCapturedAt(file)]);
+      outForm.append(`photo_${idx}`, resized, file.name || 'photo.jpg');
+      outForm.append(`capturedAt_${idx}`, capturedAt);
+      idx++;
+    } catch (err) {
+      // One unreadable/corrupt photo shouldn't sink the rest of the share.
+      skipReasons.push(err.message);
     }
-    if (idx === 0) return Response.redirect(fallbackUrl, 303);
+  }
+  if (idx === 0) return fallback(`resize-failed: ${skipReasons.join('; ').slice(0, 150)}`);
 
-    const relayRes = await fetch(url.toString(), {
+  let relayRes;
+  try {
+    relayRes = await fetch(url.toString(), {
       method: 'POST',
       body: outForm,
       headers: { 'X-SW-Relay': '1' },
     });
-    const data = await relayRes.json().catch(() => null);
-    if (!data?.shareToken) return Response.redirect(fallbackUrl, 303);
-
-    return Response.redirect(`/?tenant=${encodeURIComponent(tenant)}&shareToken=${encodeURIComponent(data.shareToken)}`, 303);
   } catch (err) {
-    return Response.redirect(fallbackUrl, 303);
+    return fallback(`relay-fetch: ${err.message}`);
   }
+  if (!relayRes.ok) return fallback(`relay-status-${relayRes.status}`);
+
+  let data;
+  try {
+    data = await relayRes.json();
+  } catch (err) {
+    return fallback(`relay-json: ${err.message}`);
+  }
+  if (!data?.shareToken) return fallback(`relay-no-token: ${JSON.stringify(data).slice(0, 100)}`);
+
+  const success = new URL('/', url.origin);
+  success.searchParams.set('tenant', tenant);
+  success.searchParams.set('shareToken', data.shareToken);
+  return Response.redirect(success.toString(), 303);
 }

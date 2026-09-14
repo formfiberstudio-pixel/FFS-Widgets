@@ -783,6 +783,11 @@ function App() {
   // Photos handed off by the Android share-target landing effect below,
   // waiting for the Import panel to pick them up once a project is chosen.
   const [pendingSharedPhotos, setPendingSharedPhotos] = useState(null);
+  // Set when sw.js's share_target interception failed partway through --
+  // kept separate from fetchError since the normal sync effect
+  // unconditionally clears that one on every load, which would stomp this
+  // message before it was ever seen.
+  const [shareErrorMsg, setShareErrorMsg] = useState(null);
   // One shared direction for BOTH the gallery's photo grid and its mini-
   // calendar's year ordering -- letting them disagree (grid oldest-first
   // while the calendar showed newest-first, the original bug) made it
@@ -1160,13 +1165,21 @@ function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const shareToken = params.get('shareToken');
-    if (!shareToken) return;
+    const shareError = params.get('shareError');
 
-    // One-time token -- drop it from the address bar immediately so a
-    // later refresh of this tab doesn't try to redeem it again.
+    if (!shareToken && !shareError) return;
+
+    // One-time token/error -- drop it from the address bar immediately so
+    // a later refresh of this tab doesn't try to redeem or re-show it.
     params.delete('shareToken');
+    params.delete('shareError');
     const cleanedSearch = params.toString();
     window.history.replaceState({}, '', `${window.location.pathname}${cleanedSearch ? `?${cleanedSearch}` : ''}`);
+
+    if (shareError) {
+      setShareErrorMsg(shareError);
+      return;
+    }
 
     fetch(`/api/share-target?token=${encodeURIComponent(shareToken)}`)
       .then((r) => r.json())
@@ -2028,6 +2041,13 @@ function App() {
         <div className="mb-4 p-3 shrink-0 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm flex justify-between items-center">
           <span>⚠️ {fetchError}</span>
           <button onClick={() => fetchLogsFromNotion(tenantId, sourceFilter)} className="underline font-bold">Retry</button>
+        </div>
+      )}
+
+      {shareErrorMsg && (
+        <div className="mb-4 p-3 shrink-0 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm flex justify-between items-center">
+          <span>⚠️ Photo share didn't come through: {shareErrorMsg}</span>
+          <button onClick={() => setShareErrorMsg(null)} className="underline font-bold">Dismiss</button>
         </div>
       )}
 
