@@ -2596,13 +2596,21 @@ function App() {
           </aside>
         )}
 
-        {/* CALENDAR CANVAS */}
+        {/* CALENDAR CANVAS -- no card frame (border/shadow/rounding/padding)
+            on mobile: it was a second layer of inset on top of the root
+            container's own padding, purely decorative, and eating width
+            a phone doesn't have to spare. The root's padding still keeps
+            content off the physical screen edge. */}
         <main
           ref={calendarRef}
           onTouchStart={handleCalendarTouchStart}
           onTouchEnd={handleCalendarTouchEnd}
-          style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-          className="flex-1 h-full min-h-0 min-w-0 border rounded-xl shadow-sm p-4 overflow-hidden flex flex-col relative transition-colors"
+          style={{
+            borderRadius: isMobile ? 0 : `${cardRadius}px`,
+            backgroundColor: isMobile ? 'transparent' : 'var(--theme-card)',
+            borderColor: 'var(--theme-border)',
+          }}
+          className={`flex-1 h-full min-h-0 min-w-0 overflow-hidden flex flex-col relative transition-colors ${isMobile ? '' : 'border rounded-xl shadow-sm p-4'}`}
         >
 
           {/* IMPORT VIEW -- backlog a batch of device photos into one
@@ -2747,6 +2755,13 @@ function App() {
               }
             }
             const showSourceHeaders = visibleBySource.size > 1;
+            // Which database the currently-highlighted pill belongs to, if
+            // any -- lets the "Go to Project Gallery" button below target
+            // the right one without the panel needing to know a project's
+            // source ahead of tapping it (two databases can share a name).
+            const highlightedProjectSource = hoveredProjectTitle
+              ? Array.from(visibleBySource.entries()).find(([, projects]) => projects.has(hoveredProjectTitle))?.[0]
+              : null;
 
             return (
               /* Continuous vertical scroll (see mobileMonthWeeks) instead of
@@ -2907,6 +2922,24 @@ function App() {
                     </div>
                   )}
                 </div>
+
+                {/* Only appears once a pill is tapped -- jumps straight to
+                    that project's own photo gallery, same destination the
+                    sidebar's gallery icon opens on desktop. */}
+                {hoveredProjectTitle && highlightedProjectSource && (
+                  <button
+                    onClick={() => {
+                      setPreGalleryViewMode(viewMode);
+                      setGalleryTarget({ title: hoveredProjectTitle, source: highlightedProjectSource });
+                      setViewMode('gallery');
+                    }}
+                    style={{ backgroundColor: 'var(--theme-primary)' }}
+                    className="shrink-0 mt-2 w-full py-2.5 rounded-lg text-white text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <span>Go to "{hoveredProjectTitle}" Gallery</span>
+                    <span>→</span>
+                  </button>
+                )}
               </div>
             );
           })()}
@@ -3213,6 +3246,13 @@ function App() {
               }
             }
             const showSourceHeaders = visibleBySource.size > 1;
+            // Which database the currently-highlighted pill belongs to, if
+            // any -- lets the "Go to Project Gallery" button below target
+            // the right one without the panel needing to know a project's
+            // source ahead of tapping it (two databases can share a name).
+            const highlightedProjectSource = hoveredProjectTitle
+              ? Array.from(visibleBySource.entries()).find(([, projects]) => projects.has(hoveredProjectTitle))?.[0]
+              : null;
 
             return (
               <div className="flex flex-col h-full w-full min-h-0">
@@ -3321,6 +3361,21 @@ function App() {
                     </div>
                   )}
                 </div>
+
+                {hoveredProjectTitle && highlightedProjectSource && (
+                  <button
+                    onClick={() => {
+                      setPreGalleryViewMode(viewMode);
+                      setGalleryTarget({ title: hoveredProjectTitle, source: highlightedProjectSource });
+                      setViewMode('gallery');
+                    }}
+                    style={{ backgroundColor: 'var(--theme-primary)' }}
+                    className="shrink-0 mt-2 w-full py-2.5 rounded-lg text-white text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <span>Go to "{hoveredProjectTitle}" Gallery</span>
+                    <span>→</span>
+                  </button>
+                )}
               </div>
             );
           })()}
@@ -4172,10 +4227,15 @@ function App() {
         };
 
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-6 sm:p-8 bg-black/70 backdrop-blur-sm" onClick={() => setSelectedLogModal(null)}>
-            <div 
+          // Full-screen on mobile instead of a centered dialog over a
+          // dimmed backdrop -- a phone doesn't have the spare space for
+          // "floating card with margin around it" the way a desktop window
+          // does, and there's nothing behind it worth seeing through a
+          // backdrop blur anyway.
+          <div className={`fixed inset-0 z-50 flex items-center justify-center ${isMobile ? '' : 'p-6 sm:p-8 bg-black/70 backdrop-blur-sm'}`} onClick={() => setSelectedLogModal(null)}>
+            <div
               style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-              className="w-[90%] max-w-[1300px] h-[85%] max-h-[850px] rounded-2xl flex flex-col overflow-hidden shadow-2xl border" 
+              className={isMobile ? 'w-full h-full flex flex-col overflow-hidden' : 'w-[90%] max-w-[1300px] h-[85%] max-h-[850px] rounded-2xl flex flex-col overflow-hidden shadow-2xl border'}
               onClick={(e) => e.stopPropagation()}
             >
               <div className="px-6 py-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
