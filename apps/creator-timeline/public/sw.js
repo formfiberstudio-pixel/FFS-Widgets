@@ -86,12 +86,28 @@ async function handleShareTarget(request) {
     return Response.redirect(target.toString(), 303);
   };
 
+  // "Failed to fetch" reading the body here (rather than anywhere else in
+  // this function) points at the underlying request stream itself, not
+  // at anything this code does with it -- most likely Chrome racing ahead
+  // of Android still resolving the shared file's content:// URI. Reading
+  // a body (even a failed read) permanently "disturbs" that Request, so
+  // every attempt reads from a FRESH clone of the still-untouched
+  // original rather than retrying the same one, which would just throw
+  // "already used" on attempt 2 and mask the real error.
+  const contentLength = request.headers.get('content-length') || 'unknown';
   let formData;
-  try {
-    formData = await request.formData();
-  } catch (err) {
-    return fallback(`form-parse: ${err.message}`);
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 400 * attempt));
+    try {
+      formData = await request.clone().formData();
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
   }
+  if (lastErr) return fallback(`form-parse(len=${contentLength}): ${lastErr.message}`);
 
   const files = formData.getAll('photos').filter((f) => f && typeof f === 'object' && f.type && f.type.startsWith('image/'));
   if (files.length === 0) return fallback('no-image-files-in-share');
