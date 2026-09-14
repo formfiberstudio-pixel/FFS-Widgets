@@ -15,6 +15,15 @@ import { saveSharedPhotos, getSharedPhotos, deleteSharedPhotos } from './_lib/sh
 // have nothing else in common. Vercel doesn't apply its own bodyParser to
 // the POST branch since it's disabled below -- Busboy reads the raw
 // multipart stream directly.
+//
+// Vercel hard-caps a Serverless Function's request body at ~4.5MB,
+// enforced before this code ever runs -- a real phone photo routinely
+// exceeds that on its own. sw.js intercepts the actual share_target
+// navigation client-side and relays already-downsized photos here
+// instead (marked by the X-SW-Relay header, with indexed photo_N/
+// capturedAt_N fields), so the sharp/exifr work below only ever runs as
+// a fallback for the rare case a share slips through before the service
+// worker has taken control (see sw.js's install/activate handlers).
 export const config = {
   api: {
     bodyParser: false,
@@ -25,14 +34,16 @@ function parseMultipart(req) {
   return new Promise((resolve, reject) => {
     const busboy = Busboy({ headers: req.headers });
     const files = [];
+    const fields = {};
+    busboy.on('field', (name, val) => { fields[name] = val; });
     busboy.on('file', (name, file, info) => {
       const chunks = [];
       file.on('data', (chunk) => chunks.push(chunk));
       file.on('end', () => {
-        files.push({ filename: info.filename || 'photo.jpg', mimeType: info.mimeType || 'image/jpeg', buffer: Buffer.concat(chunks) });
+        files.push({ fieldname: name, filename: info.filename || 'photo.jpg', mimeType: info.mimeType || 'image/jpeg', buffer: Buffer.concat(chunks) });
       });
     });
-    busboy.on('finish', () => resolve({ files }));
+    busboy.on('finish', () => resolve({ files, fields }));
     busboy.on('error', reject);
     req.pipe(busboy);
   });
@@ -69,18 +80,41 @@ export default async function handler(req, res) {
     return redirect(res, '/');
   }
 
+  const isSwRelay = req.headers['x-sw-relay'] === '1';
+
   try {
-    const { files } = await parseMultipart(req);
-    const imageFiles = files.filter((f) => f.mimeType.startsWith('image/'));
+    const { files, fields } = await parseMultipart(req);
+
+    let imageFiles;
+    if (isSwRelay) {
+      // Already downsized and dated client-side (see sw.js) -- pair each
+      // photo_N back up with its own capturedAt_N rather than assuming
+      // any particular multipart field arrival order.
+      imageFiles = files
+        .filter((f) => f.fieldname.startsWith('photo_'))
+        .map((f) => ({ ...f, capturedAt: fields[`capturedAt_${f.fieldname.slice('photo_'.length)}`] || null }));
+    } else {
+      imageFiles = files.filter((f) => f.mimeType.startsWith('image/')).map((f) => ({ ...f, capturedAt: null }));
+    }
+
     if (imageFiles.length === 0) {
+      if (isSwRelay) return res.status(200).json({ success: false });
       return redirect(res, `/?tenant=${tenantId}`);
     }
 
-    // The date this feature exists to capture only survives on the
-    // ORIGINAL bytes -- read it here, before sharp's re-encode below
-    // strips EXIF, so the app doesn't need the compressed copy to still
-    // carry it.
     const processed = await Promise.all(imageFiles.map(async (f) => {
+      if (isSwRelay) {
+        // sw.js already resized this to a JPEG and read its EXIF date
+        // before that re-encode stripped it -- nothing left to do here.
+        return { filename: f.filename, mimeType: 'image/jpeg', base64: f.buffer.toString('base64'), capturedAt: f.capturedAt };
+      }
+
+      // Fallback path: a raw, still full-size original, only reachable
+      // when the share wasn't intercepted by the service worker (e.g.
+      // right after install, before it's taken control -- see sw.js).
+      // The date this feature exists to capture only survives on these
+      // ORIGINAL bytes -- read it here, before sharp's re-encode below
+      // strips EXIF.
       let capturedAt = null;
       try {
         const exif = await exifr.parse(f.buffer, { pick: ['DateTimeOriginal', 'CreateDate'] });
@@ -103,9 +137,11 @@ export default async function handler(req, res) {
     const token = crypto.randomBytes(12).toString('hex');
     await saveSharedPhotos(token, processed);
 
+    if (isSwRelay) return res.status(200).json({ success: true, shareToken: token });
     return redirect(res, `/?tenant=${tenantId}&shareToken=${token}`);
   } catch (err) {
     console.error('[share-target] Failed:', err.message);
+    if (isSwRelay) return res.status(500).json({ success: false, error: err.message });
     return redirect(res, `/?tenant=${tenantId}`);
   }
 }
