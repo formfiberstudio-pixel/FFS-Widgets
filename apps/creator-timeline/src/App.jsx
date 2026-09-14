@@ -762,11 +762,23 @@ function WeekDayColumn({
 // -------------------------------------------------------------
 // MAIN APP COMPONENT
 // -------------------------------------------------------------
+const MOBILE_BREAKPOINT = 640;
+
 function App() {
   const today = new Date();
   const [currentDate, setCurrentDate] = useState(today);
-  const [viewMode, setViewMode] = useState('year'); 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [viewMode, setViewMode] = useState('year');
+  // The sidebar sits beside the calendar on desktop, but on a phone there
+  // isn't room for both -- it opens as a full-screen overlay instead (see
+  // the <aside> below), so it starts closed there rather than eating half
+  // the calendar's width on first load.
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < MOBILE_BREAKPOINT);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= MOBILE_BREAKPOINT);
   const [selectedProjectFilters, setSelectedProjectFilters] = useState([]); 
   const [selectedLogModal, setSelectedLogModal] = useState(null);
   // Which single project's photo gallery is showing in place of the
@@ -1956,12 +1968,17 @@ function App() {
           <p className="text-sm mt-2 opacity-60">Driven by Figma Tokens & Notion Data.</p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Hidden on narrow screens while importing -- the Import panel
               needs the room, and none of these four do anything useful
               mid-import on a phone (Back to Calendar covers navigating
-              away). Still shown at sm+ and in every other view. */}
-          <div className={`${viewMode === 'import' ? 'hidden sm:flex' : 'flex'} items-center gap-2`}>
+              away). Still shown at sm+ and in every other view. Wraps onto
+              its own row(s) rather than squeezing on a phone -- there just
+              isn't room for all of Sync/Settings/Projects/Import Photos,
+              Today, the Year/Month/Week switch, and Prev/Next on one line
+              at 375px, and shrinking them illegibly is worse than a
+              second row. */}
+          <div className={`${viewMode === 'import' ? 'hidden sm:flex' : 'flex'} flex-wrap items-center gap-2`}>
             <button
               onClick={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
               disabled={isLoading || !tenantId}
@@ -2062,20 +2079,50 @@ function App() {
         
         {/* SIDEBAR WITH DRAG RESIZE -- hidden during Import, which has its
             own project picker and benefits more from the full width,
-            especially on a phone-sized screen landing here via a share. */}
+            especially on a phone-sized screen landing here via a share.
+            On a phone there's no room for it beside the calendar, so it
+            opens as a full-screen overlay (with a backdrop to dismiss)
+            instead of a resizable column that would otherwise squeeze
+            every calendar grid down to unreadable widths. */}
+        {isSidebarOpen && viewMode !== 'import' && isMobile && (
+          <div
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 z-40 bg-black/50"
+          />
+        )}
         {isSidebarOpen && viewMode !== 'import' && (
-          <aside 
-            style={{ width: `${sidebarWidth}px`, borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-            className="shrink-0 h-full flex flex-col p-4 rounded-xl border shadow-sm relative"
+          <aside
+            style={{
+              width: isMobile ? undefined : `${sidebarWidth}px`,
+              borderRadius: isMobile ? 0 : `${cardRadius}px`,
+              backgroundColor: 'var(--theme-card)',
+              borderColor: 'var(--theme-border)',
+            }}
+            className={
+              isMobile
+                ? 'fixed inset-y-0 left-0 z-50 w-[88vw] max-w-sm h-full flex flex-col p-4 border-r shadow-xl'
+                : 'shrink-0 h-full flex flex-col p-4 rounded-xl border shadow-sm relative'
+            }
           >
-            {/* SIDEBAR RESIZE HANDLE */}
-            <div 
+            {isMobile && (
+              <button
+                onClick={() => setIsSidebarOpen(false)}
+                aria-label="Close project list"
+                style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
+                className="absolute top-3 right-3 w-8 h-8 rounded-full border flex items-center justify-center text-base cursor-pointer z-10"
+              >
+                ✕
+              </button>
+            )}
+            {/* SIDEBAR RESIZE HANDLE -- desktop only, dragging doesn't apply
+                to the mobile overlay's fixed width. */}
+            {!isMobile && <div
               onMouseDown={handleMouseDownSidebarResize}
               className="absolute top-0 right-0 w-2.5 h-full cursor-col-resize z-30 group flex items-center justify-center"
               title="Click & Drag to resize sidebar width"
             >
               <div className="w-0.5 h-8 rounded-full bg-[var(--theme-border)] group-hover:bg-[var(--theme-primary)] transition-colors" />
-            </div>
+            </div>}
 
             <div className="mb-3 shrink-0">
               <div className="flex items-center justify-between mb-2">
@@ -2280,8 +2327,19 @@ function App() {
               ));
 
             return (
-              <div className="flex h-full w-full min-h-0 gap-4">
-                <div className="flex flex-col flex-1 min-w-0 h-full min-h-0">
+              // The mini-calendar is a fixed 380px side panel on desktop --
+              // there's no room for that beside the photo grid on a phone,
+              // so it drops below the grid instead (both scrolling together
+              // in one column) rather than squeezing the grid down to a
+              // sliver and the calendar down to an unreadable strip.
+              <div className={`flex ${isMobile ? 'flex-col overflow-y-auto' : ''} h-full w-full min-h-0 gap-4`}>
+                {/* flex-1/min-h-0 only make sense against the desktop row's
+                    fixed-height parent -- on mobile this sits in a column
+                    that scrolls as a whole, so it's sized to its own
+                    content instead (flex-1's flex-basis:0% was collapsing
+                    it to 0 height here, since the calendar panel below
+                    doesn't shrink and there's no fixed height to share). */}
+                <div className={isMobile ? 'flex flex-col min-w-0 shrink-0' : 'flex flex-col flex-1 min-w-0 min-h-0 h-full'}>
                   <div className="flex items-center justify-between mb-3 shrink-0">
                     <span className="text-sm opacity-60">{galleryLogs.length} photo{galleryLogs.length === 1 ? '' : 's'}</span>
                     <button
@@ -2293,13 +2351,13 @@ function App() {
                       <span className="transition-transform" style={{ display: 'inline-block', transform: galleryNewestFirst ? 'rotate(180deg)' : 'none' }}>↓</span>
                     </button>
                   </div>
-                  <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+                  <div className={isMobile ? 'pr-1' : 'flex-1 overflow-y-auto min-h-0 pr-1'}>
                     {galleryLogs.length === 0 ? (
                       <div className="h-full flex items-center justify-center text-sm italic opacity-50">
                         No photos logged for this project yet.
                       </div>
                     ) : (
-                      <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
+                      <div className="grid gap-4" style={{ gridTemplateColumns: isMobile ? 'repeat(auto-fill, minmax(140px, 1fr))' : 'repeat(auto-fill, minmax(200px, 1fr))' }}>
                         {galleryLogs.map((log) => {
                           const dateObj = new Date(Number(log.year), Number(log.monthNumber) - 1, Number(log.dayNumber));
                           const httpsUrl = log.url || `https://www.notion.so/${log.id.replace(/-/g, '')}`;
@@ -2340,7 +2398,14 @@ function App() {
                 </div>
 
                 {galleryLogs.length > 0 && (
-                  <div className="w-[380px] shrink-0 h-full min-h-0 overflow-y-auto pr-1 border-l pl-4" style={{ borderColor: 'var(--theme-border)' }}>
+                  <div
+                    className={
+                      isMobile
+                        ? 'w-full shrink-0 pt-4 border-t'
+                        : 'w-[380px] shrink-0 h-full min-h-0 overflow-y-auto pr-1 border-l pl-4'
+                    }
+                    style={{ borderColor: 'var(--theme-border)' }}
+                  >
                     <GalleryMiniCalendar
                       logs={galleryLogs}
                       hoveredLogId={hoveredGalleryLogId}
@@ -2593,8 +2658,13 @@ function App() {
 
               {activeYearOrientation === 'portrait' ? (
                 /* --- PORTRAIT LAYOUT --- */
-                <div className="flex flex-col h-full w-full min-w-0 min-h-0 mt-8 relative">
-                  <div className="grid grid-cols-[30px_repeat(12,minmax(0,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] items-center mb-2 border-b pb-2 shrink-0" style={{ borderColor: 'var(--theme-border)' }}>
+                // Below sm, 12 month columns are given a real minimum width
+                // (38px) instead of shrinking to fit no matter what -- at
+                // 375px that no longer divides evenly, so the whole grid
+                // scrolls horizontally rather than squeezing every day dot
+                // and month label down past legibility.
+                <div className="flex flex-col h-full w-full min-w-0 min-h-0 mt-8 relative overflow-x-auto sm:overflow-x-visible">
+                  <div className="grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] items-center mb-2 border-b pb-2 shrink-0 min-w-[486px] sm:min-w-0" style={{ borderColor: 'var(--theme-border)' }}>
                     <div className="text-[9px] font-bold uppercase tracking-wider opacity-50 text-center">Day</div>
                     {MONTH_NAMES.map((monthLabel, mIdx) => (
                       <div
@@ -2610,8 +2680,8 @@ function App() {
                     ))}
                   </div>
                   
-                  <div className="flex-1 flex flex-col justify-between min-h-0 min-w-0 relative">
-                    <div className="absolute inset-0 grid grid-cols-[30px_repeat(12,minmax(0,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] pointer-events-none z-0">
+                  <div className="flex-1 flex flex-col justify-between min-h-0 min-w-[486px] sm:min-w-0 relative">
+                    <div className="absolute inset-0 grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] pointer-events-none z-0">
                       <div />
                       {MONTH_NAMES.map((_, mIdx) => (
                         <div key={mIdx} className={`relative h-full flex justify-center transition-colors ${hoveredMonthButtonIndex === mIdx ? 'bg-[var(--theme-primary)]/10 rounded-lg' : ''}`}>
@@ -2628,7 +2698,7 @@ function App() {
                       const isEndOfWeek = rowIndex % 7 === 6 || rowIndex === 36;
                       
                       return (
-                        <div key={rowIndex} className="flex-1 grid grid-cols-[30px_repeat(12,minmax(0,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] items-center min-h-0 border-b border-dashed last:border-0 relative z-10" style={{ borderColor: 'var(--theme-border)' }}>
+                        <div key={rowIndex} className="flex-1 grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] items-center min-h-0 border-b border-dashed last:border-0 relative z-10" style={{ borderColor: 'var(--theme-border)' }}>
                           <div className="h-full flex items-center justify-center">
                              <div className={`w-full text-[8px] sm:text-[9px] font-black tracking-tight py-0.5 text-center rounded ${isWeekendRow ? 'font-bold' : 'opacity-40'}`} style={{ color: isWeekendRow ? 'var(--theme-primary)' : undefined }}>
                                {weekdayStr.slice(0, 2)}
@@ -2705,10 +2775,14 @@ function App() {
                 </div>
               ) : (
                 /* --- LANDSCAPE LAYOUT --- */
-                <div className="flex flex-col h-full w-full min-w-0 min-h-0 mt-8">
-                  <div className="grid grid-cols-[50px_1fr] sm:grid-cols-[65px_1fr] items-center mb-2 border-b pb-2 shrink-0" style={{ borderColor: 'var(--theme-border)' }}>
+                // Same reasoning as the portrait grid above: below sm, 37 day
+                // columns get a real minimum width instead of shrinking to
+                // nothing, and the whole thing scrolls horizontally once
+                // that minimum no longer fits.
+                <div className="flex flex-col h-full w-full min-w-0 min-h-0 mt-8 overflow-x-auto sm:overflow-x-visible">
+                  <div className="grid grid-cols-[50px_1fr] sm:grid-cols-[65px_1fr] items-center mb-2 border-b pb-2 shrink-0 min-w-[568px] sm:min-w-0" style={{ borderColor: 'var(--theme-border)' }}>
                     <div className="text-[9px] font-bold uppercase tracking-wider opacity-50 text-center">Month</div>
-                    <div className="grid gap-0 text-center min-w-0" style={{ gridTemplateColumns: 'repeat(37, minmax(0, 1fr))' }}>
+                    <div className="grid gap-0 text-center min-w-0" style={{ gridTemplateColumns: 'repeat(37, minmax(14px, 1fr))' }}>
                       {Array.from({ length: 37 }).map((_, colIndex) => {
                         const weekdayStr = TIMELINE_WEEKDAYS[colIndex % 7];
                         const isWeekend = weekdayStr === 'SUN' || weekdayStr === 'SAT';
@@ -2717,7 +2791,7 @@ function App() {
                     </div>
                   </div>
                   
-                  <div className="flex-1 flex flex-col justify-between min-h-0 min-w-0">
+                  <div className="flex-1 flex flex-col justify-between min-h-0 min-w-[568px] sm:min-w-0">
                     {MONTH_NAMES.map((monthLabel, mIdx) => {
                       const firstDayOfMonthObj = new Date(year, mIdx, 1);
                       const startOffsetColumn = firstDayOfMonthObj.getDay(); 
@@ -2746,7 +2820,7 @@ function App() {
                             {monthLabel}
                           </div>
                           
-                          <div className="grid items-center relative h-full min-w-0" style={{ gridTemplateColumns: 'repeat(37, minmax(0, 1fr))' }}>
+                          <div className="grid items-center relative h-full min-w-0" style={{ gridTemplateColumns: 'repeat(37, minmax(14px, 1fr))' }}>
                             <div className="absolute left-2 right-2 top-1/2 -translate-y-1/2 h-[1.5px] z-0 pointer-events-none" style={{ backgroundColor: 'var(--theme-border)' }} />
 
                             {Array.from({ length: 37 }).map((_, colIndex) => {
