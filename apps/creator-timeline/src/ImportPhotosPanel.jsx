@@ -85,6 +85,18 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   const [selectedPhotoIds, setSelectedPhotoIds] = useState(() => new Set());
   const [armedProjectKey, setArmedProjectKey] = useState(null);
 
+  // Which source (database) groups are collapsed in the project list --
+  // shared between the project-picker step and the mobile tap-to-assign
+  // list below, since both group the same projects by source the same way.
+  const [collapsedSources, setCollapsedSources] = useState(() => new Set());
+  const toggleSourceCollapse = (source) => {
+    setCollapsedSources((prev) => {
+      const next = new Set(prev);
+      if (next.has(source)) next.delete(source); else next.add(source);
+      return next;
+    });
+  };
+
   // Object URLs are only good until the tab/component goes away -- clean
   // up whatever's still outstanding rather than leaking them.
   useEffect(() => {
@@ -298,24 +310,35 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           Which project should backlogged photos default to? You can assign individual photos to a different project once they're added.
         </p>
         <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-1">
-          {Object.entries(bySource).map(([source, projs]) => (
-            <div key={source}>
-              <div className="text-[10px] font-black uppercase tracking-wider opacity-50 mb-1.5">{source}</div>
-              <div className="space-y-1.5">
-                {projs.map((p) => (
-                  <button
-                    key={projectKeyOf(p)}
-                    onClick={() => { setDefaultProject(p); setStep('review'); }}
-                    style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
-                    className="w-full text-left p-3 rounded-lg border cursor-pointer transition-colors hover:border-[var(--theme-primary)] flex items-center justify-between"
-                  >
-                    <span className="font-semibold text-sm">{p.title}</span>
-                    <span className="text-xs opacity-50">Select →</span>
-                  </button>
-                ))}
+          {Object.entries(bySource).map(([source, projs]) => {
+            const isCollapsed = collapsedSources.has(source);
+            return (
+              <div key={source}>
+                <button
+                  onClick={() => toggleSourceCollapse(source)}
+                  className="w-full flex items-center justify-between cursor-pointer mb-1.5"
+                >
+                  <span className="text-[10px] font-black uppercase tracking-wider opacity-50">{source}</span>
+                  <span className="text-[9px] font-mono opacity-50">{isCollapsed ? '▼' : '▲'}</span>
+                </button>
+                {!isCollapsed && (
+                  <div className="space-y-1.5">
+                    {projs.map((p) => (
+                      <button
+                        key={projectKeyOf(p)}
+                        onClick={() => { setDefaultProject(p); setStep('review'); }}
+                        style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
+                        className="w-full text-left p-3 rounded-lg border cursor-pointer transition-colors hover:border-[var(--theme-primary)] flex items-center justify-between"
+                      >
+                        <span className="font-semibold text-sm">{p.title}</span>
+                        <span className="text-xs opacity-50">Select →</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
           {allProjects.length === 0 && (
             <div className="text-sm italic opacity-50 text-center py-8">
               No projects found yet -- sync your calendar first.
@@ -448,40 +471,62 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
         {/* Vertical project list */}
         <div className="flex-1 overflow-y-auto min-h-0 space-y-3 pr-1">
-          {Object.entries(bySource).map(([source, projs]) => (
-            <div key={source}>
-              <div className="text-[10px] font-black uppercase tracking-wider opacity-50 mb-1.5">{source}</div>
-              <div className="space-y-1.5">
-                {projs.map((p) => {
-                  const key = projectKeyOf(p);
-                  const isArmed = armedProjectKey === key;
-                  const count = countByProjectKey[key] || 0;
-                  return (
-                    <button
-                      key={key}
-                      onClick={() => handleProjectTap(key)}
-                      style={{
-                        backgroundColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-bg)',
-                        borderColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-border)',
-                        color: isArmed ? '#fff' : 'var(--theme-text)',
-                      }}
-                      className="w-full text-left p-3 rounded-lg border cursor-pointer flex items-center justify-between transition-colors"
-                    >
-                      <span className="font-semibold text-sm truncate">{p.title}</span>
-                      {count > 0 && (
-                        <span
-                          className="text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0 ml-2"
-                          style={{ backgroundColor: isArmed ? 'rgba(255,255,255,0.25)' : 'var(--theme-primary)', color: '#fff' }}
+          {Object.entries(bySource).map(([source, projs]) => {
+            const isCollapsed = collapsedSources.has(source);
+            const sourceCount = projs.reduce((sum, p) => sum + (countByProjectKey[projectKeyOf(p)] || 0), 0);
+            return (
+              <div key={source}>
+                <button
+                  onClick={() => toggleSourceCollapse(source)}
+                  className="w-full flex items-center justify-between cursor-pointer mb-1.5"
+                >
+                  <span className="text-[10px] font-black uppercase tracking-wider opacity-50">{source}</span>
+                  <span className="flex items-center gap-1.5">
+                    {isCollapsed && sourceCount > 0 && (
+                      <span
+                        className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                        style={{ backgroundColor: 'var(--theme-primary)', color: '#fff' }}
+                      >
+                        {sourceCount}
+                      </span>
+                    )}
+                    <span className="text-[9px] font-mono opacity-50">{isCollapsed ? '▼' : '▲'}</span>
+                  </span>
+                </button>
+                {!isCollapsed && (
+                  <div className="space-y-1.5">
+                    {projs.map((p) => {
+                      const key = projectKeyOf(p);
+                      const isArmed = armedProjectKey === key;
+                      const count = countByProjectKey[key] || 0;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => handleProjectTap(key)}
+                          style={{
+                            backgroundColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-bg)',
+                            borderColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-border)',
+                            color: isArmed ? '#fff' : 'var(--theme-text)',
+                          }}
+                          className="w-full text-left p-3 rounded-lg border cursor-pointer flex items-center justify-between transition-colors"
                         >
-                          {count}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
+                          <span className="font-semibold text-sm truncate">{p.title}</span>
+                          {count > 0 && (
+                            <span
+                              className="text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0 ml-2"
+                              style={{ backgroundColor: isArmed ? 'rgba(255,255,255,0.25)' : 'var(--theme-primary)', color: '#fff' }}
+                            >
+                              {count}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
           {allProjects.length === 0 && (
             <div className="text-sm italic opacity-50 text-center py-8">
               No projects found yet -- sync your calendar first.
