@@ -51,7 +51,7 @@ const projectKeyOf = (p) => `${p.source}::${p.title}`;
 // used elsewhere for the same narrow/wide split.
 const MOBILE_BREAKPOINT = 640;
 
-export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos }) {
+export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, fixedDateRange }) {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < MOBILE_BREAKPOINT);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
@@ -103,6 +103,11 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     return () => photos.forEach((p) => URL.revokeObjectURL(p.previewUrl));
   }, []);
 
+  // Set (non-null) whenever a photo gets excluded for falling outside
+  // fixedDateRange -- surfaced as a brief notice rather than silently
+  // dropping photos the user explicitly picked.
+  const [skippedOutOfRangeCount, setSkippedOutOfRangeCount] = useState(0);
+
   const photoFromFile = async (file, exifOverrideDate) => {
     const previewUrl = URL.createObjectURL(file);
     let date = new Date();
@@ -126,11 +131,30 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         // -- falls back to today, left for the user to fix below.
       }
     }
+
+    let dateStr = toDateInputValue(date);
+    if (fixedDateRange) {
+      if (fixedDateRange.start === fixedDateRange.end) {
+        // Opened from a single day (Day view) -- every photo goes to that
+        // exact day regardless of its own EXIF date. The point of tapping
+        // "Import Photos" from a specific day is "these represent today,"
+        // not "these happen to have been taken today" -- a screenshot or a
+        // photo with no EXIF at all should still be addable here.
+        dateStr = fixedDateRange.start;
+      } else if (dateStr < fixedDateRange.start || dateStr > fixedDateRange.end) {
+        // Opened from a real range (Week view) -- here the EXIF date IS
+        // the point (which day within the week it belongs to), so a photo
+        // clearly from outside that week is more likely a mis-pick than
+        // something to silently reassign; excluded rather than forced.
+        return null;
+      }
+    }
+
     return {
       id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
       file,
       previewUrl,
-      date: toDateInputValue(date),
+      date: dateStr,
       hasExif,
       projectKey: defaultProject ? projectKeyOf(defaultProject) : '',
     };
@@ -138,7 +162,9 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
   const handleFiles = async (fileList) => {
     const files = Array.from(fileList).filter((f) => f.type.startsWith('image/'));
-    const newPhotos = await Promise.all(files.map((file) => photoFromFile(file)));
+    const results = await Promise.all(files.map((file) => photoFromFile(file)));
+    const newPhotos = results.filter(Boolean);
+    if (fixedDateRange) setSkippedOutOfRangeCount((prev) => prev + (results.length - newPhotos.length));
     setPhotos((prev) => [...prev, ...newPhotos]);
   };
 
@@ -397,6 +423,12 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
             Upload {photos.length}
           </button>
         </div>
+
+        {skippedOutOfRangeCount > 0 && (
+          <div className="shrink-0 mb-2 text-xs italic opacity-60">
+            Skipped {skippedOutOfRangeCount} photo{skippedOutOfRangeCount === 1 ? '' : 's'} taken outside this date range.
+          </div>
+        )}
 
         {/* Horizontal photo strip */}
         <div className="shrink-0 mb-2 -mx-1 px-1 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>

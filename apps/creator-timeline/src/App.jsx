@@ -609,6 +609,18 @@ const getOntarioStatHolidayName = (dateObj) => {
   return null;
 };
 
+// Bare YYYY-MM-DD in LOCAL date semantics -- date.toISOString().split('T')[0]
+// (used elsewhere in this file for thumbnailOverrides keys) converts to UTC
+// first, which shifts the date by one near midnight in any timezone ahead
+// of UTC. Padding by hand since toLocaleDateString's parts aren't
+// zero-padded (would give "2026-9-4" instead of "2026-09-04").
+function toLocalDateInputValue(dateObj) {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 // -------------------------------------------------------------
 // HELPER: CONTINUOUS WEEK LIST FOR THE MOBILE MONTH VIEW
 // -------------------------------------------------------------
@@ -915,18 +927,37 @@ function App() {
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   // Mobile's Month view: a continuously-scrolling list of real weeks
   // (built once, anchored at load time -- see buildContinuousWeeks)
-  // instead of one page per month. mobileVisibleMonthDate tracks whatever
-  // week is nearest the top of that scroll (see handleMonthScroll) purely
-  // to label the header -- it's independent of currentDate so scrolling
-  // this list never disturbs the date other views are showing.
+  // instead of one page per month.
   const mobileMonthWeeks = useMemo(() => buildContinuousWeeks(new Date(), 6, 6), []);
-  const [mobileVisibleMonthDate, setMobileVisibleMonthDate] = useState(() => new Date());
   // Index of whichever week row is snapped to the top of the scroll --
   // with exactly MOBILE_MONTH_VISIBLE_ROWS rows visible and scroll-snap
   // keeping that top row's start aligned to the container, the visible
   // window is always [this index, this index + rows). Drives the
   // "projects logged in the visible weeks" panel below the grid.
   const [mobileMonthVisibleStartIdx, setMobileMonthVisibleStartIdx] = useState(0);
+  // Header label for the visible window -- e.g. "June" when all 4 visible
+  // rows fall in one month, "June, July" when they straddle two (28 days
+  // can span at most two calendar months, since every month is at least
+  // that long). Derived straight from mobileMonthVisibleStartIdx rather
+  // than tracked as its own state, so it's always exactly in sync with
+  // what's actually on screen.
+  const getMobileMonthHeaderLabel = (startIdx) => {
+    const firstDay = mobileMonthWeeks[startIdx]?.[0];
+    const lastRow = mobileMonthWeeks[startIdx + MOBILE_MONTH_VISIBLE_ROWS - 1];
+    const lastDay = lastRow ? lastRow[6] : firstDay;
+    if (!firstDay || !lastDay) return { year: String(new Date().getFullYear()), label: '' };
+    const sameMonth = firstDay.getFullYear() === lastDay.getFullYear() && firstDay.getMonth() === lastDay.getMonth();
+    if (sameMonth) {
+      return { year: String(firstDay.getFullYear()), label: firstDay.toLocaleDateString('en-US', { month: 'long' }) };
+    }
+    const sameYear = firstDay.getFullYear() === lastDay.getFullYear();
+    const startLabel = firstDay.toLocaleDateString('en-US', { month: 'long' });
+    const endLabel = lastDay.toLocaleDateString('en-US', { month: 'long' });
+    return {
+      year: sameYear ? String(firstDay.getFullYear()) : `${firstDay.getFullYear()}–${lastDay.getFullYear()}`,
+      label: `${startLabel}, ${endLabel}`,
+    };
+  };
   // Collapse state for the visible-projects panel's per-database groups --
   // kept separate from the sidebar's collapsedSources so toggling one
   // doesn't also toggle the other; they're the same grouping concept but
@@ -964,6 +995,12 @@ function App() {
   // Whichever calendar view was showing before the gallery replaced it, so
   // the "back" button returns there instead of always resetting to Year.
   const [preGalleryViewMode, setPreGalleryViewMode] = useState('year');
+  // Set when Import Photos is opened from Week or Day view (not the
+  // header's general Import Photos button) -- constrains ImportPhotosPanel
+  // to only that date or date range instead of accepting any date. Bare
+  // YYYY-MM-DD strings, matching how the panel already represents dates
+  // internally (toDateInputValue).
+  const [importDateRange, setImportDateRange] = useState(null);
   // Shared between the gallery's photo grid and its mini-calendar side
   // panel so hovering either highlights the other.
   const [hoveredGalleryLogId, setHoveredGalleryLogId] = useState(null);
@@ -1974,28 +2011,31 @@ function App() {
   }
 
   const handlePrev = () => {
-    if (viewMode === 'month') setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
+    if (viewMode === 'day') { const d = new Date(currentDate); d.setDate(currentDate.getDate() - 1); setCurrentDate(d); }
+    else if (viewMode === 'month') setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
     else if (viewMode === 'week') { const d = new Date(currentDate); d.setDate(currentDate.getDate() - 7); setCurrentDate(d); }
     else setCurrentDate(new Date(currentDate.getFullYear() - 1, currentDate.getMonth(), 1));
   };
 
   const handleNext = () => {
-    if (viewMode === 'month') setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+    if (viewMode === 'day') { const d = new Date(currentDate); d.setDate(currentDate.getDate() + 1); setCurrentDate(d); }
+    else if (viewMode === 'month') setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
     else if (viewMode === 'week') { const d = new Date(currentDate); d.setDate(currentDate.getDate() + 7); setCurrentDate(d); }
     else setCurrentDate(new Date(currentDate.getFullYear() + 1, currentDate.getMonth(), 1));
   };
 
   // Swipe-to-navigate on mobile, replacing the Prev/Next buttons with a
   // left/right flick -- the natural gesture for paging through dates on a
-  // phone. Scoped to Week and Year: both page to the next/prev period with
-  // no horizontal scroll of their own to compete with (neither the dots
-  // nor the blocks Year layout scrolls horizontally any more -- see the
-  // continuous-weeks redesign). Month is excluded: it's a continuous
-  // vertical scroll (see mobileMonthWeeks below) rather than one page per
-  // month, so it has no "next/prev page" for a horizontal swipe to mean.
+  // phone. Scoped to Day, Week and Year: all three page to the next/prev
+  // period with no horizontal scroll of their own to compete with (neither
+  // the dots nor the blocks Year layout scrolls horizontally any more --
+  // see the continuous-weeks redesign). Month is excluded: it's a
+  // continuous vertical scroll (see mobileMonthWeeks below) rather than
+  // one page per month, so it has no "next/prev page" for a horizontal
+  // swipe to mean.
   const swipeStartRef = useRef(null);
   const handleCalendarTouchStart = (e) => {
-    if (!isMobile || (viewMode !== 'week' && viewMode !== 'year')) { swipeStartRef.current = null; return; }
+    if (!isMobile || !['day', 'week', 'year'].includes(viewMode)) { swipeStartRef.current = null; return; }
     const t = e.touches[0];
     swipeStartRef.current = { x: t.clientX, y: t.clientY, time: Date.now() };
   };
@@ -2038,8 +2078,6 @@ function App() {
       const dist = Math.abs(el.getBoundingClientRect().top - containerTop);
       if (dist < closestDist) { closestDist = dist; closestEl = el; closestIdx = idx; }
     });
-    const iso = closestEl?.dataset.midDate;
-    if (iso) setMobileVisibleMonthDate(new Date(iso));
     if (closestIdx >= 0) setMobileMonthVisibleStartIdx(closestIdx);
   };
 
@@ -2060,7 +2098,6 @@ function App() {
     const el = monthWeekRowRefs.current[topRowIdx];
     if (el) el.scrollIntoView({ block: 'start' });
     setMobileMonthVisibleStartIdx(topRowIdx);
-    setMobileVisibleMonthDate(mobileMonthWeeks[topRowIdx][3]);
   };
 
   // The continuous list otherwise opens scrolled to its top (6 months back
@@ -2225,7 +2262,7 @@ function App() {
           ) : viewMode === 'import' ? (
             <div className="leading-none">
               <button
-                onClick={() => setViewMode(preGalleryViewMode)}
+                onClick={() => { setViewMode(preGalleryViewMode); setImportDateRange(null); }}
                 title="Back to calendar"
                 className="flex items-center gap-1.5 font-bold cursor-pointer hover:opacity-80 transition-opacity mb-1"
                 style={{ fontSize: '0.9rem', color: 'var(--theme-primary)' }}
@@ -2236,11 +2273,50 @@ function App() {
               <div className="font-black uppercase tracking-wide" style={{ fontSize: titleGallerySize }}>
                 Import Photos
               </div>
+              {importDateRange && (() => {
+                // Bare YYYY-MM-DD strings parse as UTC midnight per spec --
+                // constructing from the split y/m/d components instead
+                // keeps this in local-date semantics, same fix as the
+                // EXIF-date-off-by-one bugs earlier in this app's history.
+                const parseLocal = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+                const startLabel = parseLocal(importDateRange.start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                const endLabel = parseLocal(importDateRange.end).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                return (
+                  <p className="text-sm mt-1 opacity-60">
+                    Only for {importDateRange.start === importDateRange.end ? startLabel : `${startLabel} – ${endLabel}`}
+                  </p>
+                );
+              })()}
             </div>
           ) : viewMode === 'month' ? (
-            // On mobile this labels whatever month is actually scrolled into
-            // view (mobileVisibleMonthDate), not currentDate -- the list is
-            // continuous, so there's no single "current" month otherwise.
+            // On mobile this labels whatever month(s) are actually
+            // scrolled into view (getMobileMonthHeaderLabel), not
+            // currentDate -- the list is continuous, so there's no single
+            // "current" month otherwise, and the 4 visible rows often
+            // straddle two.
+            <div className="leading-none">
+              {(() => {
+                const { year: mYear, label: mLabel } = isMobile
+                  ? getMobileMonthHeaderLabel(mobileMonthVisibleStartIdx)
+                  : { year: String(currentDate.getFullYear()), label: currentDate.toLocaleDateString('en-US', { month: 'long' }) };
+                return (
+                  <>
+                    <button
+                      onClick={() => setViewMode('year')}
+                      title="Jump to Year view"
+                      className="block font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
+                      style={{ fontSize: titleBigSize, color: 'var(--theme-primary)' }}
+                    >
+                      {mYear}
+                    </button>
+                    <div className="font-black uppercase tracking-wide mt-0.5" style={{ fontSize: titleSubSize }}>
+                      {mLabel}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          ) : viewMode === 'day' ? (
             <div className="leading-none">
               <button
                 onClick={() => setViewMode('year')}
@@ -2248,10 +2324,18 @@ function App() {
                 className="block font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
                 style={{ fontSize: titleBigSize, color: 'var(--theme-primary)' }}
               >
-                {(isMobile ? mobileVisibleMonthDate : currentDate).getFullYear()}
+                {currentDate.getFullYear()}
               </button>
-              <div className="font-black uppercase tracking-wide mt-0.5" style={{ fontSize: titleSubSize }}>
-                {(isMobile ? mobileVisibleMonthDate : currentDate).toLocaleDateString('en-US', { month: 'long' })}
+              <button
+                onClick={() => setViewMode('month')}
+                title="Jump to Month view"
+                className="block font-black uppercase tracking-wide mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
+                style={{ fontSize: titleSubSize }}
+              >
+                {currentDate.toLocaleDateString('en-US', { weekday: 'long' })}
+              </button>
+              <div className="font-black uppercase tracking-wide" style={{ fontSize: titleSubSize }}>
+                {currentDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               </div>
             </div>
           ) : viewMode === 'week' ? (
@@ -2328,6 +2412,7 @@ function App() {
                   <button onClick={() => setViewMode('year')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
                   <button onClick={() => setViewMode('month')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
                   <button onClick={() => setViewMode('week')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
+                  <button onClick={() => setViewMode('day')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'day' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Day</button>
                 </div>
               )}
 
@@ -2746,10 +2831,11 @@ function App() {
             <ImportPhotosPanel
               allProjects={getAllTreeProjects()}
               tenantId={tenantId}
-              onClose={() => setViewMode(preGalleryViewMode)}
+              onClose={() => { setViewMode(preGalleryViewMode); setImportDateRange(null); }}
               onUploaded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
               sharedPhotos={pendingSharedPhotos}
               onConsumedSharedPhotos={() => setPendingSharedPhotos(null)}
+              fixedDateRange={importDateRange}
             />
           )}
 
@@ -3223,6 +3309,20 @@ function App() {
             const totalEntries = filteredEntryDays.reduce((sum, d) => sum + d.logs.length, 0);
             return (
               <div className="flex flex-col h-full w-full min-h-0">
+                <button
+                  onClick={() => {
+                    setPreGalleryViewMode(viewMode);
+                    setImportDateRange({ start: toLocalDateInputValue(startOfWeek), end: toLocalDateInputValue(endOfWeek) });
+                    setViewMode('import');
+                  }}
+                  disabled={isDemoMode || !tenantId}
+                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
+                  className="shrink-0 mb-3 w-full py-2.5 rounded-lg border text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <IconUpload />
+                  <span>Import Photos for This Week</span>
+                </button>
+
                 <div
                   className="flex-1 min-h-0 space-y-2.5 pr-0.5"
                   style={{ overflowY: 'auto', overflowX: 'hidden', scrollSnapType: 'y proximity' }}
@@ -3283,21 +3383,38 @@ function App() {
                   )}
                 </div>
 
-                <VisibleProjectsPanel
-                  title="Logged this week"
-                  emptyMessage="Nothing logged this week."
-                  visibleBySource={visibleBySource}
-                  showSourceHeaders={showSourceHeaders}
-                  collapsedSources={mobilePanelCollapsedSources}
-                  onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
-                  hoveredProjectTitle={hoveredProjectTitle}
-                  onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
-                  onGoToGallery={(title, source) => {
-                    setPreGalleryViewMode(viewMode);
-                    setGalleryTarget({ title, source });
-                    setViewMode('gallery');
-                  }}
-                />
+                {/* Capped height (not flex-1, which used to split the
+                    screen ~50/50 with the entries above it) plus the same
+                    tap-to-collapse handle Month/Year use -- the entries
+                    list is the point of this view, so it keeps priority
+                    for space and this panel scrolls within its own smaller
+                    allowance instead of competing for half the screen. */}
+                <button
+                  onClick={() => setMobilePanelCollapsed((v) => !v)}
+                  className="shrink-0 w-full flex items-center justify-center py-1 cursor-pointer opacity-40 hover:opacity-80"
+                >
+                  <span style={{ fontSize: '10px', transform: mobilePanelCollapsed ? 'rotate(180deg)' : 'none', display: 'inline-block' }}>▾</span>
+                </button>
+
+                {!mobilePanelCollapsed && (
+                  <div className="shrink-0 flex flex-col" style={{ maxHeight: '160px' }}>
+                    <VisibleProjectsPanel
+                      title="Logged this week"
+                      emptyMessage="Nothing logged this week."
+                      visibleBySource={visibleBySource}
+                      showSourceHeaders={showSourceHeaders}
+                      collapsedSources={mobilePanelCollapsedSources}
+                      onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
+                      hoveredProjectTitle={hoveredProjectTitle}
+                      onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
+                      onGoToGallery={(title, source) => {
+                        setPreGalleryViewMode(viewMode);
+                        setGalleryTarget({ title, source });
+                        setViewMode('gallery');
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             );
           })()}
@@ -3376,6 +3493,65 @@ function App() {
               </div>
             </div>
           )}
+
+          {/* DAY VIEW -- mobile only; desktop still uses the day-detail
+              modal a tap on any other view already opens. A dedicated page
+              instead of a modal mainly exists so Import Photos can be
+              scoped to exactly one date (see the button below), the same
+              way Week view scopes it to that week. */}
+          {viewMode === 'day' && isMobile && (() => {
+            const dayLogs = getLogsForDate(currentDate);
+            const dateKey = toLocalDateInputValue(currentDate);
+            return (
+              <div className="flex flex-col h-full w-full min-h-0">
+                <button
+                  onClick={() => {
+                    setPreGalleryViewMode(viewMode);
+                    setImportDateRange({ start: dateKey, end: dateKey });
+                    setViewMode('import');
+                  }}
+                  disabled={isDemoMode || !tenantId}
+                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
+                  className="shrink-0 mb-3 w-full py-2.5 rounded-lg border text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <IconUpload />
+                  <span>Import Photos for This Day</span>
+                </button>
+
+                <div className="flex-1 overflow-y-auto min-h-0 space-y-3 pr-0.5">
+                  {dayLogs.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-sm italic opacity-50">Nothing logged this day.</div>
+                  ) : (
+                    dayLogs.map((log) => {
+                      const displayDotHex = getDisplayDotColor(dayLogs, currentDate);
+                      const pillBackground = getPillBackground(log, displayDotHex);
+                      const httpsUrl = log.url || `https://www.notion.so/${log.id.replace(/-/g, '')}`;
+                      const notionPageUrl = `${httpsUrl.replace('https://', 'notion://')}${httpsUrl.includes('?') ? '&' : '?'}pvs=4`;
+                      return (
+                        <div key={log.id} style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }} className="rounded-xl border overflow-hidden">
+                          {log.imageUrl && (
+                            <img src={log.imageUrl} className="w-full max-h-64 object-cover" alt="" loading="lazy" />
+                          )}
+                          <div className="p-3 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="inline-flex items-center max-w-[70%] font-bold text-white px-2.5 py-0.5 rounded-full leading-none" style={{ background: pillBackground, fontSize: '11px' }}>
+                                <span className="block truncate">{getPillLabel(log)}</span>
+                              </span>
+                              <a href={notionPageUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-bold shrink-0" style={{ color: 'var(--theme-primary)' }}>
+                                Open in Notion ↗
+                              </a>
+                            </div>
+                            <div className="text-sm font-semibold">{log.title || 'Untitled'}</div>
+                            <LogNoteEditor log={log} tenantId={tenantId} onSaved={handleNoteSaved} />
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* C. YEAR VIEW */}
           {viewMode === 'year' && isMobile && (() => {
