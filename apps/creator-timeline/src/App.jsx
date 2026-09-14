@@ -3466,13 +3466,30 @@ function App() {
                               const dotStyle = getDayDotStyling(dateObj, hasLog, displayDotHex, specialDay);
                               const isHighlightedProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
                               const isDimmedByHighlight = hoveredProjectTitle && !isHighlightedProject;
+                              // Weekends/holidays are an outline, not a
+                              // solid fill, even when logged -- a hollow
+                              // ring in the log's own color still shows
+                              // which project it was, just visually sets
+                              // "worked on a day off" apart from ordinary
+                              // weekday activity instead of blending in as
+                              // the same kind of dot.
+                              const isWeekendOrHoliday = dateObj.getDay() === 0 || dateObj.getDay() === 6 || !!specialDay || !!getOntarioStatHolidayName(dateObj);
+                              const outlineColor = hasLog ? dotStyle.bg : dotStyle.border;
                               return (
                                 <div key={i} className="flex items-center justify-center" style={{ aspectRatio: '1' }} onClick={() => handleDayClick(dateObj, logs)}>
                                   <div
-                                    className={`rounded-full w-full h-full transition-all ${isToday(dateObj) ? 'ring-1 ring-inset ring-[var(--theme-primary)]' : ''} ${isHighlightedProject ? 'ring-1 ring-inset ring-[var(--theme-secondary)]' : ''} ${isDimmedByHighlight ? 'grayscale' : ''}`}
+                                    // Smaller than the cell (not w-full/h-full)
+                                    // -- filling the whole cell read as one
+                                    // solid block of color per day, busier
+                                    // than an actual dot; shrinking it gives
+                                    // real gaps between neighbors.
+                                    className={`rounded-full transition-all ${isToday(dateObj) ? 'ring-1 ring-inset ring-[var(--theme-primary)]' : ''} ${isHighlightedProject ? 'ring-1 ring-inset ring-[var(--theme-secondary)]' : ''} ${isDimmedByHighlight ? 'grayscale' : ''}`}
                                     style={{
-                                      background: isToday(dateObj) ? 'var(--theme-primary)' : (hasLog ? dotStyle.bg : dotStyle.border),
-                                      opacity: isDimmedByHighlight ? 0.25 : hasLog ? 1 : 0.4,
+                                      width: '55%',
+                                      height: '55%',
+                                      background: isToday(dateObj) ? 'var(--theme-primary)' : isWeekendOrHoliday ? 'transparent' : (hasLog ? dotStyle.bg : dotStyle.border),
+                                      border: !isToday(dateObj) && isWeekendOrHoliday ? `1.5px solid ${outlineColor}` : undefined,
+                                      opacity: isDimmedByHighlight ? 0.25 : hasLog ? 1 : (isWeekendOrHoliday ? 0.7 : 0.4),
                                     }}
                                   />
                                 </div>
