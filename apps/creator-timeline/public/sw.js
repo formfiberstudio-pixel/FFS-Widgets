@@ -70,6 +70,60 @@ async function extractCapturedAt(file) {
   return '';
 }
 
+function indexOfBytes(haystack, needle, from) {
+  outer: for (let i = from; i <= haystack.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+// A from-scratch multipart/form-data reader, used only as a fallback when
+// request.formData() itself fails on this request (see handleShareTarget)
+// -- reads the raw bytes directly rather than going through Chrome's own
+// multipart parser, to route around whatever that parser specifically
+// trips on for this request instead of just re-hitting the same failure.
+async function parseMultipartManually(request) {
+  const contentType = request.headers.get('content-type') || '';
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!boundaryMatch) throw new Error('no boundary in content-type');
+  const boundary = (boundaryMatch[1] || boundaryMatch[2]).trim();
+
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  const enc = new TextEncoder();
+  const boundaryMarker = enc.encode(`--${boundary}`);
+  const headerEndMarker = enc.encode('\r\n\r\n');
+  const decoder = new TextDecoder();
+
+  const rawParts = [];
+  let pos = indexOfBytes(bytes, boundaryMarker, 0);
+  while (pos !== -1) {
+    let segStart = pos + boundaryMarker.length;
+    const nextPos = indexOfBytes(bytes, boundaryMarker, segStart);
+    if (nextPos === -1) break;
+    if (bytes[segStart] === 13 && bytes[segStart + 1] === 10) segStart += 2; // skip the part's leading \r\n
+    const headerEnd = indexOfBytes(bytes, headerEndMarker, segStart);
+    if (headerEnd !== -1 && headerEnd < nextPos) {
+      let bodyEnd = nextPos;
+      if (bytes[bodyEnd - 2] === 13 && bytes[bodyEnd - 1] === 10) bodyEnd -= 2; // trailing \r\n before next boundary
+      rawParts.push({ headerText: decoder.decode(bytes.slice(segStart, headerEnd)), bodyBytes: bytes.slice(headerEnd + 4, bodyEnd) });
+    }
+    pos = nextPos;
+  }
+
+  return rawParts
+    .map(({ headerText, bodyBytes }) => {
+      const name = headerText.match(/name="([^"]*)"/i)?.[1];
+      const filename = headerText.match(/filename="([^"]*)"/i)?.[1];
+      if (!name || filename === undefined) return null; // only file parts have a filename
+      const type = headerText.match(/Content-Type:\s*([^\r\n]+)/i)?.[1]?.trim() || 'application/octet-stream';
+      return { name, filename: filename || 'photo.jpg', type, blob: new Blob([bodyBytes], { type }) };
+    })
+    .filter(Boolean);
+}
+
 // This whole pipeline runs once, unattended, on a device this can't be
 // tested against directly -- rather than swallowing every failure into
 // the same silent "land on the bare calendar" outcome, each exit carries
@@ -89,12 +143,16 @@ async function handleShareTarget(request) {
   // "Failed to fetch" reading the body here (rather than anywhere else in
   // this function) points at the underlying request stream itself, not
   // at anything this code does with it -- most likely Chrome racing ahead
-  // of Android still resolving the shared file's content:// URI. Reading
-  // a body (even a failed read) permanently "disturbs" that Request, so
-  // every attempt reads from a FRESH clone of the still-untouched
-  // original rather than retrying the same one, which would just throw
-  // "already used" on attempt 2 and mask the real error.
+  // of Android still resolving the shared file's content:// URI, or a
+  // limitation in Chrome's own multipart parser for this particular
+  // request. Reading a body (even a failed read) permanently "disturbs"
+  // that Request, so every attempt reads from a FRESH clone of the still-
+  // untouched original rather than retrying the same one, which would
+  // just throw "already used" on attempt 2 and mask the real error.
   const contentLength = request.headers.get('content-length') || 'unknown';
+  const parseNotes = [];
+  let files = null;
+
   let formData;
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -107,10 +165,27 @@ async function handleShareTarget(request) {
       lastErr = err;
     }
   }
-  if (lastErr) return fallback(`form-parse(len=${contentLength}): ${lastErr.message}`);
 
-  const files = formData.getAll('photos').filter((f) => f && typeof f === 'object' && f.type && f.type.startsWith('image/'));
-  if (files.length === 0) return fallback('no-image-files-in-share');
+  if (!lastErr) {
+    files = formData.getAll('photos')
+      .filter((f) => f && typeof f === 'object' && f.type && f.type.startsWith('image/'))
+      .map((f) => ({ blob: f, filename: f.name || 'photo.jpg' }));
+  } else {
+    parseNotes.push(`formData:${lastErr.message}`);
+    // Route around Chrome's own multipart parser entirely -- reads the
+    // same request's raw bytes and parses them by hand instead.
+    try {
+      files = (await parseMultipartManually(request.clone()))
+        .filter((p) => p.name === 'photos' && p.type.startsWith('image/'))
+        .map((p) => ({ blob: p.blob, filename: p.filename }));
+    } catch (err) {
+      parseNotes.push(`manual:${err.message}`);
+    }
+  }
+
+  if (!files || files.length === 0) {
+    return fallback(`form-parse(len=${contentLength}): ${parseNotes.join(' | ').slice(0, 180)}`);
+  }
 
   // Indexed field names (photo_0/capturedAt_0, photo_1/capturedAt_1, ...)
   // so the backend can pair each photo with its own date without
@@ -120,8 +195,8 @@ async function handleShareTarget(request) {
   let idx = 0;
   for (const file of files) {
     try {
-      const [resized, capturedAt] = await Promise.all([resizeImage(file), extractCapturedAt(file)]);
-      outForm.append(`photo_${idx}`, resized, file.name || 'photo.jpg');
+      const [resized, capturedAt] = await Promise.all([resizeImage(file.blob), extractCapturedAt(file.blob)]);
+      outForm.append(`photo_${idx}`, resized, file.filename);
       outForm.append(`capturedAt_${idx}`, capturedAt);
       idx++;
     } catch (err) {
