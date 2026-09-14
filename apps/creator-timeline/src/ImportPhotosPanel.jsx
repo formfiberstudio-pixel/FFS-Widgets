@@ -134,19 +134,21 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
     let dateStr = toDateInputValue(date);
     if (fixedDateRange) {
-      if (fixedDateRange.start === fixedDateRange.end) {
-        // Opened from a single day (Day view) -- every photo goes to that
-        // exact day regardless of its own EXIF date. The point of tapping
-        // "Import Photos" from a specific day is "these represent today,"
-        // not "these happen to have been taken today" -- a screenshot or a
-        // photo with no EXIF at all should still be addable here.
-        dateStr = fixedDateRange.start;
-      } else if (dateStr < fixedDateRange.start || dateStr > fixedDateRange.end) {
-        // Opened from a real range (Week view) -- here the EXIF date IS
-        // the point (which day within the week it belongs to), so a photo
-        // clearly from outside that week is more likely a mis-pick than
-        // something to silently reassign; excluded rather than forced.
+      if (hasExif && (dateStr < fixedDateRange.start || dateStr > fixedDateRange.end)) {
+        // Has a real EXIF date and it falls outside the requested day/week
+        // -- excluded. The device's own photo picker has no way to filter
+        // itself by date (there's no web API for that), so it always shows
+        // the whole camera roll regardless of where this button was
+        // opened from; this is the actual filtering, applied to whatever
+        // gets picked out of it.
         return null;
+      }
+      if (!hasExif) {
+        // No reliable date of its own (screenshot, or a format exifr can't
+        // read) -- can't judge whether it belongs here, so instead of
+        // rejecting it outright it defaults into the requested window: the
+        // single day for Day view, the first day of the week for Week view.
+        dateStr = fixedDateRange.start;
       }
     }
 
