@@ -946,6 +946,12 @@ function App() {
   useEffect(() => {
     localStorage.setItem('notionWidgetMobileYearLayout', mobileYearLayout);
   }, [mobileYearLayout]);
+  // Shared by mobile Month and Year: collapsing the "visible projects"
+  // panel gives the calendar grid the space back. Year gets there by
+  // swiping (its grid has no scroll gesture of its own to conflict with);
+  // Month gets a tap handle instead, since its grid already owns vertical
+  // touch gestures for paging through weeks.
+  const [mobilePanelCollapsed, setMobilePanelCollapsed] = useState(false);
   const monthScrollContainerRef = useRef(null);
   const monthWeekRowRefs = useRef([]);
   const [selectedProjectFilters, setSelectedProjectFilters] = useState([]);
@@ -2000,12 +2006,20 @@ function App() {
     const t = e.changedTouches[0];
     const dx = t.clientX - start.x;
     const dy = t.clientY - start.y;
-    // Must be a clearly-horizontal flick, big enough and fast enough not to
-    // be a scroll or a tap -- otherwise leave it alone so normal scrolling
-    // and tapping a day cell both keep working.
+    // Must be a clearly-directional flick, big enough and fast enough not
+    // to be a scroll or a tap -- otherwise leave it alone so normal
+    // scrolling and tapping a day cell both keep working.
     if (Date.now() - start.time > 800) return;
-    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    if (dx < 0) handleNext(); else handlePrev();
+    const isHorizontal = Math.abs(dx) >= 60 && Math.abs(dx) >= Math.abs(dy) * 1.5;
+    const isVertical = Math.abs(dy) >= 60 && Math.abs(dy) >= Math.abs(dx) * 1.5;
+    if (isHorizontal) {
+      if (dx < 0) handleNext(); else handlePrev();
+    } else if (isVertical && viewMode === 'year') {
+      // Year's grid (Dots or Blocks) has no vertical scroll of its own to
+      // fight with -- swipe up collapses the "visible projects" panel to
+      // give the grid the space back, swipe down brings it back.
+      setMobilePanelCollapsed(dy < 0);
+    }
   };
 
   // Mobile Month view: tracks which week row is nearest the top of the
@@ -2860,13 +2874,6 @@ function App() {
               }
             }
             const showSourceHeaders = visibleBySource.size > 1;
-            // Which database the currently-highlighted pill belongs to, if
-            // any -- lets the "Go to Project Gallery" button below target
-            // the right one without the panel needing to know a project's
-            // source ahead of tapping it (two databases can share a name).
-            const highlightedProjectSource = hoveredProjectTitle
-              ? Array.from(visibleBySource.entries()).find(([, projects]) => projects.has(hoveredProjectTitle))?.[0]
-              : null;
 
             return (
               /* Continuous vertical scroll (see mobileMonthWeeks) instead of
@@ -2891,10 +2898,16 @@ function App() {
                 <div
                   ref={monthScrollContainerRef}
                   onScroll={handleMonthScroll}
-                  className="flex flex-col shrink-0"
+                  className={mobilePanelCollapsed ? 'flex flex-col flex-1 min-h-0' : 'flex flex-col shrink-0'}
                   style={{
                     gap: `${MOBILE_MONTH_ROW_GAP}px`,
-                    height: `${MOBILE_MONTH_VISIBLE_ROWS * MOBILE_MONTH_ROW_HEIGHT + (MOBILE_MONTH_VISIBLE_ROWS - 1) * MOBILE_MONTH_ROW_GAP}px`,
+                    // Fixed 4-row height normally; once the panel below is
+                    // collapsed, flex-1 (className above) takes over and
+                    // this height is ignored, letting the grid grow into
+                    // whatever space that freed up -- more full 78px rows
+                    // fit automatically, no separate "how many rows" math
+                    // needed for the expanded state.
+                    height: mobilePanelCollapsed ? undefined : `${MOBILE_MONTH_VISIBLE_ROWS * MOBILE_MONTH_ROW_HEIGHT + (MOBILE_MONTH_VISIBLE_ROWS - 1) * MOBILE_MONTH_ROW_GAP}px`,
                     // Explicit hidden (not just "not set") -- the 7-column
                     // grid below should always shrink to fit via
                     // minmax(0,1fr), but forcing this closes off any
@@ -2990,22 +3003,39 @@ function App() {
                   })}
                 </div>
 
-                <VisibleProjectsPanel
-                  title={selectedWeekStartDate ? 'Logged this week' : 'Logged this scroll'}
-                  emptyMessage={selectedWeekStartDate ? 'Nothing logged this week.' : 'Nothing logged in the visible weeks.'}
-                  onClear={selectedWeekStartDate ? () => setSelectedWeekStartDate(null) : null}
-                  visibleBySource={visibleBySource}
-                  showSourceHeaders={showSourceHeaders}
-                  collapsedSources={mobilePanelCollapsedSources}
-                  onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
-                  hoveredProjectTitle={hoveredProjectTitle}
-                  onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
-                  onGoToGallery={(title, source) => {
-                    setPreGalleryViewMode(viewMode);
-                    setGalleryTarget({ title, source });
-                    setViewMode('gallery');
-                  }}
-                />
+                {/* Tap to collapse the panel all the way down and hand its
+                    space to the grid above -- the grid switches from a
+                    fixed 4-row height to flex-1 (see monthScrollContainerRef's
+                    style) so it grows to use whatever that frees up instead
+                    of just leaving blank space. No swipe gesture here
+                    (unlike Year): this grid already owns vertical touch for
+                    paging through weeks, so a second vertical gesture on
+                    the same surface would be ambiguous with it. */}
+                <button
+                  onClick={() => setMobilePanelCollapsed((v) => !v)}
+                  className="shrink-0 w-full flex items-center justify-center py-1 cursor-pointer opacity-40 hover:opacity-80"
+                >
+                  <span style={{ fontSize: '10px', transform: mobilePanelCollapsed ? 'rotate(180deg)' : 'none', display: 'inline-block' }}>▾</span>
+                </button>
+
+                {!mobilePanelCollapsed && (
+                  <VisibleProjectsPanel
+                    title={selectedWeekStartDate ? 'Logged this week' : 'Logged this scroll'}
+                    emptyMessage={selectedWeekStartDate ? 'Nothing logged this week.' : 'Nothing logged in the visible weeks.'}
+                    onClear={selectedWeekStartDate ? () => setSelectedWeekStartDate(null) : null}
+                    visibleBySource={visibleBySource}
+                    showSourceHeaders={showSourceHeaders}
+                    collapsedSources={mobilePanelCollapsedSources}
+                    onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
+                    hoveredProjectTitle={hoveredProjectTitle}
+                    onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
+                    onGoToGallery={(title, source) => {
+                      setPreGalleryViewMode(viewMode);
+                      setGalleryTarget({ title, source });
+                      setViewMode('gallery');
+                    }}
+                  />
+                )}
               </div>
             );
           })()}
@@ -3164,21 +3194,48 @@ function App() {
               const logs = getLogsForDate(slot.dateObj);
               if (logs.length > 0) entryDays.push({ dateObj: slot.dateObj, logs });
             }
-            const totalEntries = entryDays.reduce((sum, d) => sum + d.logs.length, 0);
+            // Projects logged this week, for the panel below -- same
+            // grouped-by-database shape Month/Year use.
+            const visibleBySource = new Map();
+            for (const day of entryDays) {
+              for (const log of day.logs) {
+                const source = log.source || 'Activity Log';
+                const projectKey = log.Projects || 'Untitled Project';
+                if (!visibleBySource.has(source)) visibleBySource.set(source, new Map());
+                const projectsForSource = visibleBySource.get(source);
+                if (projectsForSource.has(projectKey)) continue;
+                projectsForSource.set(projectKey, getPillBackground(log, getDisplayDotColor(day.logs, day.dateObj)));
+              }
+            }
+            const showSourceHeaders = visibleBySource.size > 1;
+            // Unlike Month/Year (which ring the match and dim the rest),
+            // tapping a pill here actually FILTERS -- only that project's
+            // entries stay on screen, days with nothing left after
+            // filtering drop out entirely, rather than just dimming in
+            // place. A week's whole point is picking out what happened on
+            // which day, so hiding the noise reads better here than
+            // highlighting through it.
+            const filteredEntryDays = hoveredProjectTitle
+              ? entryDays
+                  .map((day) => ({ ...day, logs: day.logs.filter((l) => (l.Projects || 'Untitled Project') === hoveredProjectTitle) }))
+                  .filter((day) => day.logs.length > 0)
+              : entryDays;
+            const totalEntries = filteredEntryDays.reduce((sum, d) => sum + d.logs.length, 0);
             return (
               <div className="flex flex-col h-full w-full min-h-0">
-                <div className="flex items-center justify-between mb-3 shrink-0 text-sm font-semibold opacity-70">
-                  <span>{startOfWeek?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – {endOfWeek?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-                  <span>{totalEntries} {totalEntries === 1 ? 'entry' : 'entries'}</span>
-                </div>
-                <div className="flex-1 overflow-y-auto min-h-0 space-y-2.5 pr-0.5">
-                  {entryDays.length === 0 ? (
-                    <div className="h-full flex items-center justify-center text-sm italic opacity-50">No entries this week.</div>
+                <div
+                  className="flex-1 min-h-0 space-y-2.5 pr-0.5"
+                  style={{ overflowY: 'auto', overflowX: 'hidden', scrollSnapType: 'y proximity' }}
+                >
+                  {filteredEntryDays.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-sm italic opacity-50">
+                      {hoveredProjectTitle ? `No "${hoveredProjectTitle}" entries this week.` : 'No entries this week.'}
+                    </div>
                   ) : (
-                    entryDays.map((day) => (
+                    filteredEntryDays.map((day) => (
                       <div
                         key={day.dateObj.toDateString()}
-                        style={{ borderColor: isToday(day.dateObj) ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                        style={{ borderColor: isToday(day.dateObj) ? 'var(--theme-primary)' : 'var(--theme-border)', scrollSnapAlign: 'start' }}
                         // ring-inset here for the same reason as the Month
                         // grid's today-ring: an outset ring/ring-offset
                         // needs a few px of space outside this container to
@@ -3225,6 +3282,22 @@ function App() {
                     ))
                   )}
                 </div>
+
+                <VisibleProjectsPanel
+                  title="Logged this week"
+                  emptyMessage="Nothing logged this week."
+                  visibleBySource={visibleBySource}
+                  showSourceHeaders={showSourceHeaders}
+                  collapsedSources={mobilePanelCollapsedSources}
+                  onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
+                  hoveredProjectTitle={hoveredProjectTitle}
+                  onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
+                  onGoToGallery={(title, source) => {
+                    setPreGalleryViewMode(viewMode);
+                    setGalleryTarget({ title, source });
+                    setViewMode('gallery');
+                  }}
+                />
               </div>
             );
           })()}
@@ -3333,13 +3406,6 @@ function App() {
               }
             }
             const showSourceHeaders = visibleBySource.size > 1;
-            // Which database the currently-highlighted pill belongs to, if
-            // any -- lets the "Go to Project Gallery" button below target
-            // the right one without the panel needing to know a project's
-            // source ahead of tapping it (two databases can share a name).
-            const highlightedProjectSource = hoveredProjectTitle
-              ? Array.from(visibleBySource.entries()).find(([, projects]) => projects.has(hoveredProjectTitle))?.[0]
-              : null;
 
             return (
               <div className="flex flex-col h-full w-full min-h-0">
@@ -3466,15 +3532,16 @@ function App() {
                               const dotStyle = getDayDotStyling(dateObj, hasLog, displayDotHex, specialDay);
                               const isHighlightedProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
                               const isDimmedByHighlight = hoveredProjectTitle && !isHighlightedProject;
-                              // Weekends/holidays are an outline, not a
-                              // solid fill, even when logged -- a hollow
-                              // ring in the log's own color still shows
-                              // which project it was, just visually sets
-                              // "worked on a day off" apart from ordinary
-                              // weekday activity instead of blending in as
-                              // the same kind of dot.
+                              // Weekends/holidays are a hollow outline only
+                              // when NOTHING was logged that day -- an
+                              // actual entry always gets the normal solid
+                              // fill regardless of what day it fell on, so
+                              // logged activity reads the same everywhere
+                              // and only truly-empty rest days look
+                              // visually different (hollow instead of a
+                              // faint filled dot).
                               const isWeekendOrHoliday = dateObj.getDay() === 0 || dateObj.getDay() === 6 || !!specialDay || !!getOntarioStatHolidayName(dateObj);
-                              const outlineColor = hasLog ? dotStyle.bg : dotStyle.border;
+                              const isOutline = !hasLog && isWeekendOrHoliday;
                               return (
                                 <div key={i} className="flex items-center justify-center" style={{ aspectRatio: '1' }} onClick={() => handleDayClick(dateObj, logs)}>
                                   <div
@@ -3487,9 +3554,9 @@ function App() {
                                     style={{
                                       width: '55%',
                                       height: '55%',
-                                      background: isToday(dateObj) ? 'var(--theme-primary)' : isWeekendOrHoliday ? 'transparent' : (hasLog ? dotStyle.bg : dotStyle.border),
-                                      border: !isToday(dateObj) && isWeekendOrHoliday ? `1.5px solid ${outlineColor}` : undefined,
-                                      opacity: isDimmedByHighlight ? 0.25 : hasLog ? 1 : (isWeekendOrHoliday ? 0.7 : 0.4),
+                                      background: isToday(dateObj) ? 'var(--theme-primary)' : isOutline ? 'transparent' : (hasLog ? dotStyle.bg : dotStyle.border),
+                                      border: !isToday(dateObj) && isOutline ? `1.5px solid ${dotStyle.border}` : undefined,
+                                      opacity: isDimmedByHighlight ? 0.25 : hasLog ? 1 : (isOutline ? 0.7 : 0.4),
                                     }}
                                   />
                                 </div>
@@ -3502,21 +3569,33 @@ function App() {
                   </div>
                 )}
 
-                <VisibleProjectsPanel
-                  title="Logged this year"
-                  emptyMessage="Nothing logged yet."
-                  visibleBySource={visibleBySource}
-                  showSourceHeaders={showSourceHeaders}
-                  collapsedSources={mobilePanelCollapsedSources}
-                  onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
-                  hoveredProjectTitle={hoveredProjectTitle}
-                  onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
-                  onGoToGallery={(title, source) => {
-                    setPreGalleryViewMode(viewMode);
-                    setGalleryTarget({ title, source });
-                    setViewMode('gallery');
-                  }}
-                />
+                {/* Tap fallback for the swipe-up/down gesture above --
+                    same toggle, just discoverable without knowing the
+                    gesture exists. */}
+                <button
+                  onClick={() => setMobilePanelCollapsed((v) => !v)}
+                  className="shrink-0 w-full flex items-center justify-center py-1 cursor-pointer opacity-40 hover:opacity-80"
+                >
+                  <span style={{ fontSize: '10px', transform: mobilePanelCollapsed ? 'rotate(180deg)' : 'none', display: 'inline-block' }}>▾</span>
+                </button>
+
+                {!mobilePanelCollapsed && (
+                  <VisibleProjectsPanel
+                    title="Logged this year"
+                    emptyMessage="Nothing logged yet."
+                    visibleBySource={visibleBySource}
+                    showSourceHeaders={showSourceHeaders}
+                    collapsedSources={mobilePanelCollapsedSources}
+                    onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
+                    hoveredProjectTitle={hoveredProjectTitle}
+                    onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
+                    onGoToGallery={(title, source) => {
+                      setPreGalleryViewMode(viewMode);
+                      setGalleryTarget({ title, source });
+                      setViewMode('gallery');
+                    }}
+                  />
+                )}
               </div>
             );
           })()}
