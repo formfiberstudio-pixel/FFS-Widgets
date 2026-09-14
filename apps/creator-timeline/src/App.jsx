@@ -474,6 +474,100 @@ function ClampedTitle({ text, maxLines = 2, className, style }) {
 }
 
 // -------------------------------------------------------------
+// MOBILE "VISIBLE PROJECTS" PANEL -- shared by Month view, and both Year
+// view layouts (dots and blocks). Lists whatever projects are logged in
+// the caller's current window (a scrolled set of weeks, a whole year, a
+// selected week...), grouped by source database with a per-group collapse
+// toggle, and a tap-to-highlight pill per project that rings/dims matching
+// entries wherever the caller renders them (via hoveredProjectTitle,
+// lifted to the caller since the grid the highlight applies to lives
+// outside this component). Kept as one component instead of copy-pasted
+// per view so the three don't drift out of sync with each other.
+// -------------------------------------------------------------
+function VisibleProjectsPanel({
+  title,
+  emptyMessage,
+  onClear,
+  visibleBySource,
+  showSourceHeaders,
+  collapsedSources,
+  onToggleSource,
+  hoveredProjectTitle,
+  onTogglePill,
+  onGoToGallery,
+}) {
+  const highlightedProjectSource = hoveredProjectTitle
+    ? Array.from(visibleBySource.entries()).find(([, projects]) => projects.has(hoveredProjectTitle))?.[0]
+    : null;
+
+  return (
+    <>
+      <div className="flex-1 min-h-0 overflow-y-auto pt-3 mt-1 border-t" style={{ borderColor: 'var(--theme-border)' }}>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] font-bold uppercase tracking-wide opacity-50">{title}</span>
+          {onClear && (
+            <button onClick={onClear} className="text-[10px] font-bold opacity-50 hover:opacity-100 cursor-pointer">Clear</button>
+          )}
+        </div>
+        {visibleBySource.size === 0 ? (
+          <div className="text-xs italic opacity-40">{emptyMessage}</div>
+        ) : (
+          <div className="space-y-2.5">
+            {Array.from(visibleBySource.entries()).map(([source, projects]) => {
+              const isCollapsed = showSourceHeaders && collapsedSources[source] === true;
+              return (
+                <div key={source}>
+                  {showSourceHeaders && (
+                    <button
+                      onClick={() => onToggleSource(source)}
+                      className="flex items-center gap-1 mb-1.5 cursor-pointer"
+                    >
+                      <span className={`text-[9px] transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>▾</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wide opacity-70">{source}</span>
+                    </button>
+                  )}
+                  {!isCollapsed && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {Array.from(projects.entries()).map(([name, bg]) => {
+                        const isActive = hoveredProjectTitle === name;
+                        return (
+                          <button
+                            key={name}
+                            onClick={() => onTogglePill(name)}
+                            className={`inline-flex items-center font-bold text-white px-2.5 py-1 rounded-full leading-none cursor-pointer transition-all ${isActive ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1' : hoveredProjectTitle ? 'opacity-40' : ''}`}
+                            style={{ background: bg, fontSize: '11px' }}
+                          >
+                            {name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Only appears once a pill is tapped -- jumps straight to that
+          project's own photo gallery, same destination the sidebar's
+          gallery icon opens on desktop. */}
+      {hoveredProjectTitle && highlightedProjectSource && (
+        <button
+          onClick={() => onGoToGallery(hoveredProjectTitle, highlightedProjectSource)}
+          style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
+          className="shrink-0 mt-2 w-full py-2.5 rounded-lg border text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5"
+        >
+          <span>Go to "{hoveredProjectTitle}" Gallery</span>
+          <span>→</span>
+        </button>
+      )}
+    </>
+  );
+}
+
+// -------------------------------------------------------------
 // ONTARIO STATUTORY HOLIDAY CALCULATOR
 // -------------------------------------------------------------
 const getOntarioStatHolidayName = (dateObj) => {
@@ -843,6 +937,15 @@ function App() {
   // row in the grid and scopes the panel below to just its projects; a
   // second tap within the same week commits to the Week view instead.
   const [selectedWeekStartDate, setSelectedWeekStartDate] = useState(null);
+  // Mobile Year view has two layouts: 'dots' (months as rows, days 1-31 as
+  // columns) and 'blocks' (12 mini month-calendars, 3 per row, matching
+  // the gallery view's mini-calendar but with project-colored dots instead
+  // of plain day numbers). Persisted since it's a standing preference, not
+  // a one-off state.
+  const [mobileYearLayout, setMobileYearLayout] = useState(() => localStorage.getItem('notionWidgetMobileYearLayout') || 'dots');
+  useEffect(() => {
+    localStorage.setItem('notionWidgetMobileYearLayout', mobileYearLayout);
+  }, [mobileYearLayout]);
   const monthScrollContainerRef = useRef(null);
   const monthWeekRowRefs = useRef([]);
   const [selectedProjectFilters, setSelectedProjectFilters] = useState([]);
@@ -1878,14 +1981,15 @@ function App() {
 
   // Swipe-to-navigate on mobile, replacing the Prev/Next buttons with a
   // left/right flick -- the natural gesture for paging through dates on a
-  // phone. Scoped to Week only: the Year grid already uses horizontal
-  // touch-scroll to browse its own months, and Month is now a continuous
+  // phone. Scoped to Week and Year: both page to the next/prev period with
+  // no horizontal scroll of their own to compete with (neither the dots
+  // nor the blocks Year layout scrolls horizontally any more -- see the
+  // continuous-weeks redesign). Month is excluded: it's a continuous
   // vertical scroll (see mobileMonthWeeks below) rather than one page per
-  // month, so neither has a "next/prev page" for a horizontal swipe to
-  // mean anything -- layering one on top would just fight the scroll.
+  // month, so it has no "next/prev page" for a horizontal swipe to mean.
   const swipeStartRef = useRef(null);
   const handleCalendarTouchStart = (e) => {
-    if (!isMobile || viewMode !== 'week') { swipeStartRef.current = null; return; }
+    if (!isMobile || (viewMode !== 'week' && viewMode !== 'year')) { swipeStartRef.current = null; return; }
     const t = e.touches[0];
     swipeStartRef.current = { x: t.clientX, y: t.clientY, time: Date.now() };
   };
@@ -1925,29 +2029,36 @@ function App() {
     if (closestIdx >= 0) setMobileMonthVisibleStartIdx(closestIdx);
   };
 
-  // Scrolls the continuous list back to the row containing `today` --
-  // used by the mobile Today button, which can't just setCurrentDate the
-  // way other views do since this list doesn't re-render around
-  // currentDate (see buildContinuousWeeks's fixed anchor).
-  const scrollMobileMonthToToday = () => {
-    const todayIso = new Date().toDateString();
-    const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === todayIso));
+  // Scrolls the continuous list so targetDate's week becomes the LAST
+  // (bottom) of the MOBILE_MONTH_VISIBLE_ROWS visible rows, not the first
+  // -- landing on a date should show the weeks leading up to it (the
+  // recent past), not that week plus three empty ones stretching into the
+  // future. Achieved by scrolling to the row MOBILE_MONTH_VISIBLE_ROWS-1
+  // rows BEFORE the target with block:'start' (matching every row's own
+  // scroll-snap-align:'start') rather than scrolling to the target row
+  // itself with block:'end', which wouldn't land on a snap point and
+  // would immediately re-settle somewhere else.
+  const scrollMobileMonthToDate = (targetDate) => {
+    const targetIso = targetDate.toDateString();
+    const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === targetIso));
     if (idx < 0) return;
-    // 'start' rather than 'center' -- matches the scroll-snap grid (each
-    // row snaps to the container's top edge), so today's row lands as the
-    // first of the visible rows instead of settling one snap-step off.
-    const el = monthWeekRowRefs.current[idx];
+    const topRowIdx = Math.max(0, idx - (MOBILE_MONTH_VISIBLE_ROWS - 1));
+    const el = monthWeekRowRefs.current[topRowIdx];
     if (el) el.scrollIntoView({ block: 'start' });
-    setMobileMonthVisibleStartIdx(idx);
-    setMobileVisibleMonthDate(mobileMonthWeeks[idx][3]);
+    setMobileMonthVisibleStartIdx(topRowIdx);
+    setMobileVisibleMonthDate(mobileMonthWeeks[topRowIdx][3]);
   };
 
   // The continuous list otherwise opens scrolled to its top (6 months back
-  // -- see buildContinuousWeeks), not to today. Jump to today each time
-  // Month view is entered fresh, same as the old per-month view always
-  // showing currentDate's month on entry.
+  // -- see buildContinuousWeeks), not to whatever's relevant. Re-align to
+  // currentDate every time Month view is entered -- from Year (tapping a
+  // month), from Week (swiped to some date, then switching scales), or
+  // fresh (currentDate defaults to today) -- so every path into Month
+  // view lands consistently on whatever date was last in view elsewhere,
+  // the same way the old per-month view always showed currentDate's month
+  // on entry regardless of how you got there.
   useEffect(() => {
-    if (isMobile && viewMode === 'month') scrollMobileMonthToToday();
+    if (isMobile && viewMode === 'month') scrollMobileMonthToDate(currentDate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, isMobile]);
 
@@ -2209,7 +2320,7 @@ function App() {
               <div className="flex items-center gap-1.5 shrink-0">
                 {viewMode !== 'gallery' && (
                   <button
-                    onClick={() => { if (viewMode === 'month') scrollMobileMonthToToday(); else setCurrentDate(today); }}
+                    onClick={() => { if (viewMode === 'month') scrollMobileMonthToDate(today); else setCurrentDate(today); }}
                     title="Jump to today"
                     style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)' }}
                     className="w-7 h-7 rounded-full border flex items-center justify-center cursor-pointer"
@@ -2641,19 +2752,12 @@ function App() {
               ));
 
             return (
-              // The mini-calendar is a fixed 380px side panel on desktop --
-              // there's no room for that beside the photo grid on a phone,
-              // so it drops below the grid instead (both scrolling together
-              // in one column) rather than squeezing the grid down to a
-              // sliver and the calendar down to an unreadable strip.
-              <div className={`flex ${isMobile ? 'flex-col overflow-y-auto' : ''} h-full w-full min-h-0 gap-4`}>
-                {/* flex-1/min-h-0 only make sense against the desktop row's
-                    fixed-height parent -- on mobile this sits in a column
-                    that scrolls as a whole, so it's sized to its own
-                    content instead (flex-1's flex-basis:0% was collapsing
-                    it to 0 height here, since the calendar panel below
-                    doesn't shrink and there's no fixed height to share). */}
-                <div className={isMobile ? 'flex flex-col min-w-0 shrink-0' : 'flex flex-col flex-1 min-w-0 min-h-0 h-full'}>
+              // No mini-calendar to share space with on mobile any more
+              // (see the note by GalleryMiniCalendar's usage below), so
+              // this is just a single fill-and-scroll column on every
+              // screen size now -- no mobile/desktop split needed here.
+              <div className="flex h-full w-full min-h-0 gap-4">
+                <div className="flex flex-col flex-1 min-w-0 min-h-0 h-full">
                   <div className="flex items-center justify-between mb-3 shrink-0">
                     <span className="text-sm opacity-60">{galleryLogs.length} photo{galleryLogs.length === 1 ? '' : 's'}</span>
                     <button
@@ -2665,7 +2769,7 @@ function App() {
                       <span className="transition-transform" style={{ display: 'inline-block', transform: galleryNewestFirst ? 'rotate(180deg)' : 'none' }}>↓</span>
                     </button>
                   </div>
-                  <div className={isMobile ? 'pr-1' : 'flex-1 overflow-y-auto min-h-0 pr-1'}>
+                  <div className="flex-1 overflow-y-auto min-h-0 pr-1">
                     {galleryLogs.length === 0 ? (
                       <div className="h-full flex items-center justify-center text-sm italic opacity-50">
                         No photos logged for this project yet.
@@ -2711,13 +2815,14 @@ function App() {
                   </div>
                 </div>
 
-                {galleryLogs.length > 0 && (
+                {/* Mini-calendar sidebar is desktop-only -- on mobile it's
+                    a redundant habit-tracker-style grid squeezed under the
+                    photo list, and the Year view's own "blocks" layout now
+                    covers the same at-a-glance purpose without repeating it
+                    inside every single project's gallery. */}
+                {galleryLogs.length > 0 && !isMobile && (
                   <div
-                    className={
-                      isMobile
-                        ? 'w-full shrink-0 pt-4 border-t'
-                        : 'w-[380px] shrink-0 h-full min-h-0 overflow-y-auto pr-1 border-l pl-4'
-                    }
+                    className="w-[380px] shrink-0 h-full min-h-0 overflow-y-auto pr-1 border-l pl-4"
                     style={{ borderColor: 'var(--theme-border)' }}
                   >
                     <GalleryMiniCalendar
@@ -2790,6 +2895,13 @@ function App() {
                   style={{
                     gap: `${MOBILE_MONTH_ROW_GAP}px`,
                     height: `${MOBILE_MONTH_VISIBLE_ROWS * MOBILE_MONTH_ROW_HEIGHT + (MOBILE_MONTH_VISIBLE_ROWS - 1) * MOBILE_MONTH_ROW_GAP}px`,
+                    // Explicit hidden (not just "not set") -- the 7-column
+                    // grid below should always shrink to fit via
+                    // minmax(0,1fr), but forcing this closes off any
+                    // device/browser-specific grid-sizing quirk from ever
+                    // showing up as a horizontal scrollbar instead of just
+                    // clipping cleanly.
+                    overflowX: 'hidden',
                     overflowY: 'auto',
                     scrollSnapType: 'y mandatory',
                   }}
@@ -2832,7 +2944,17 @@ function App() {
                             key={dIdx}
                             onClick={() => handleMonthDayTap(dateObj)}
                             style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-bg)', borderColor: isHighlightedProject ? 'var(--theme-secondary)' : isSelectedWeek ? 'var(--theme-primary)' : 'var(--theme-border)' }}
-                            className={`h-full w-full relative overflow-hidden border cursor-pointer transition-all ${isHighlightedProject ? 'ring-2 ring-[var(--theme-secondary)] z-20' : isSelectedWeek ? 'ring-1 ring-[var(--theme-primary)] z-10' : isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''}`}
+                            // ring-inset (not ring-offset) throughout -- an
+                            // outset ring/offset needs a few px of space
+                            // outside the cell to render into, which the
+                            // scroll-snap container's own top/bottom edge
+                            // doesn't have when today's row is the first or
+                            // last of the 4 visible: the ring got clipped
+                            // right where it mattered most. Inset draws
+                            // inside the cell's own already-visible bounds,
+                            // so there's nothing left to clip regardless of
+                            // scroll position.
+                            className={`h-full w-full relative overflow-hidden border cursor-pointer transition-all ${isHighlightedProject ? 'ring-2 ring-inset ring-[var(--theme-secondary)] z-20' : isSelectedWeek ? 'ring-1 ring-inset ring-[var(--theme-primary)] z-10' : isToday(dateObj) ? 'ring-2 ring-inset ring-[var(--theme-primary)] z-10' : ''}`}
                           >
                             {hasLog && primaryLog?.imageUrl && (
                               <img
@@ -2868,78 +2990,22 @@ function App() {
                   })}
                 </div>
 
-                {/* PROJECTS LOGGED IN THE VISIBLE WEEKS -- fills the space
-                    freed up by capping the grid to MOBILE_MONTH_VISIBLE_ROWS,
-                    grouped by source database (collapsible per group, own
-                    state from the sidebar's). Tapping a pill sets
-                    hoveredProjectTitle -- the same state desktop's mouse
-                    hover uses -- to ring/dim matching entries in the grid
-                    above; tapping it again clears the highlight. */}
-                <div className="flex-1 min-h-0 overflow-y-auto pt-3 mt-1 border-t" style={{ borderColor: 'var(--theme-border)' }}>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wide opacity-50">{selectedWeekStartDate ? 'Logged this week' : 'Logged this scroll'}</span>
-                    {selectedWeekStartDate && (
-                      <button onClick={() => setSelectedWeekStartDate(null)} className="text-[10px] font-bold opacity-50 hover:opacity-100 cursor-pointer">Clear</button>
-                    )}
-                  </div>
-                  {visibleBySource.size === 0 ? (
-                    <div className="text-xs italic opacity-40">{selectedWeekStartDate ? 'Nothing logged this week.' : 'Nothing logged in the visible weeks.'}</div>
-                  ) : (
-                    <div className="space-y-2.5">
-                      {Array.from(visibleBySource.entries()).map(([source, projects]) => {
-                        const isCollapsed = showSourceHeaders && mobilePanelCollapsedSources[source] === true;
-                        return (
-                          <div key={source}>
-                            {showSourceHeaders && (
-                              <button
-                                onClick={() => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
-                                className="flex items-center gap-1 mb-1.5 cursor-pointer"
-                              >
-                                <span className={`text-[9px] transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>▾</span>
-                                <span className="text-[10px] font-bold uppercase tracking-wide opacity-70">{source}</span>
-                              </button>
-                            )}
-                            {!isCollapsed && (
-                              <div className="flex flex-wrap gap-1.5">
-                                {Array.from(projects.entries()).map(([name, bg]) => {
-                                  const isActive = hoveredProjectTitle === name;
-                                  return (
-                                    <button
-                                      key={name}
-                                      onClick={() => setHoveredProjectTitle(isActive ? null : name)}
-                                      className={`inline-flex items-center font-bold text-white px-2.5 py-1 rounded-full leading-none cursor-pointer transition-all ${isActive ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1' : hoveredProjectTitle ? 'opacity-40' : ''}`}
-                                      style={{ background: bg, fontSize: '11px' }}
-                                    >
-                                      {name}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* Only appears once a pill is tapped -- jumps straight to
-                    that project's own photo gallery, same destination the
-                    sidebar's gallery icon opens on desktop. */}
-                {hoveredProjectTitle && highlightedProjectSource && (
-                  <button
-                    onClick={() => {
-                      setPreGalleryViewMode(viewMode);
-                      setGalleryTarget({ title: hoveredProjectTitle, source: highlightedProjectSource });
-                      setViewMode('gallery');
-                    }}
-                    style={{ backgroundColor: 'var(--theme-primary)' }}
-                    className="shrink-0 mt-2 w-full py-2.5 rounded-lg text-white text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5"
-                  >
-                    <span>Go to "{hoveredProjectTitle}" Gallery</span>
-                    <span>→</span>
-                  </button>
-                )}
+                <VisibleProjectsPanel
+                  title={selectedWeekStartDate ? 'Logged this week' : 'Logged this scroll'}
+                  emptyMessage={selectedWeekStartDate ? 'Nothing logged this week.' : 'Nothing logged in the visible weeks.'}
+                  onClear={selectedWeekStartDate ? () => setSelectedWeekStartDate(null) : null}
+                  visibleBySource={visibleBySource}
+                  showSourceHeaders={showSourceHeaders}
+                  collapsedSources={mobilePanelCollapsedSources}
+                  onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
+                  hoveredProjectTitle={hoveredProjectTitle}
+                  onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
+                  onGoToGallery={(title, source) => {
+                    setPreGalleryViewMode(viewMode);
+                    setGalleryTarget({ title, source });
+                    setViewMode('gallery');
+                  }}
+                />
               </div>
             );
           })()}
@@ -3086,56 +3152,77 @@ function App() {
           {viewMode === 'week' && isMobile && (() => {
             // Mobile: a scrollable gallery of this week's actual entries
             // instead of the desktop's 7-column grid, which has no room to
-            // be anything but cramped at phone width. One card per logged
-            // entry (not per day), chronological, tapping a card opens the
-            // same day-detail modal every other view uses.
-            const weekEntries = [];
+            // be anything but cramped at phone width. Grouped by day (not
+            // one card per entry) so multiple same-day entries share a
+            // single bordered/ringed container instead of each getting its
+            // own -- reads as "these are all from one day" instead of a
+            // handful of separately-highlighted boxes that happen to be
+            // adjacent. Tapping an entry opens the same day-detail modal
+            // every other view uses.
+            const entryDays = [];
             for (const slot of slots) {
               const logs = getLogsForDate(slot.dateObj);
-              for (const log of logs) weekEntries.push({ dateObj: slot.dateObj, log, dayLogs: logs });
+              if (logs.length > 0) entryDays.push({ dateObj: slot.dateObj, logs });
             }
+            const totalEntries = entryDays.reduce((sum, d) => sum + d.logs.length, 0);
             return (
               <div className="flex flex-col h-full w-full min-h-0">
                 <div className="flex items-center justify-between mb-3 shrink-0 text-sm font-semibold opacity-70">
                   <span>{startOfWeek?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – {endOfWeek?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-                  <span>{weekEntries.length} {weekEntries.length === 1 ? 'entry' : 'entries'}</span>
+                  <span>{totalEntries} {totalEntries === 1 ? 'entry' : 'entries'}</span>
                 </div>
                 <div className="flex-1 overflow-y-auto min-h-0 space-y-2.5 pr-0.5">
-                  {weekEntries.length === 0 ? (
+                  {entryDays.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-sm italic opacity-50">No entries this week.</div>
                   ) : (
-                    weekEntries.map((entry, idx) => {
-                      const displayDotHex = getDisplayDotColor(entry.dayLogs, entry.dateObj);
-                      const pillBackground = getPillBackground(entry.log, displayDotHex);
-                      return (
-                        <div
-                          key={entry.log.id || idx}
-                          onClick={() => setSelectedLogModal({ dateObj: entry.dateObj, logs: entry.dayLogs })}
-                          style={{ backgroundColor: 'var(--theme-bg)', borderColor: isToday(entry.dateObj) ? 'var(--theme-primary)' : 'var(--theme-border)' }}
-                          className={`flex items-center gap-3 p-2.5 rounded-xl border cursor-pointer ${isToday(entry.dateObj) ? 'ring-1 ring-[var(--theme-primary)]' : ''}`}
-                        >
-                          <div className="w-16 h-16 rounded-lg overflow-hidden shrink-0 flex items-center justify-center font-bold text-lg" style={{ backgroundColor: 'var(--theme-card)' }}>
-                            {entry.log.imageUrl ? (
-                              <img src={entry.log.imageUrl} className="w-full h-full object-cover" alt="" loading="lazy" />
-                            ) : (
-                              <span style={{ color: 'var(--theme-primary)' }}>{entry.dateObj.getDate()}</span>
-                            )}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[11px] font-bold opacity-60 uppercase tracking-wide">
-                              {entry.dateObj.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-                            </div>
-                            <div className="text-sm font-semibold truncate">{entry.log.title || 'Untitled'}</div>
-                            <span
-                              className="inline-flex items-center max-w-full font-bold text-white px-2 py-0.5 rounded-full leading-none mt-1"
-                              style={{ background: pillBackground, fontSize: '10px' }}
+                    entryDays.map((day) => (
+                      <div
+                        key={day.dateObj.toDateString()}
+                        style={{ borderColor: isToday(day.dateObj) ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                        // ring-inset here for the same reason as the Month
+                        // grid's today-ring: an outset ring/ring-offset
+                        // needs a few px of space outside this container to
+                        // render into, which this list's own scroll
+                        // boundary doesn't have when today's group is the
+                        // first or last one in view.
+                        className={`rounded-xl border overflow-hidden ${isToday(day.dateObj) ? 'ring-1 ring-inset ring-[var(--theme-primary)]' : ''}`}
+                      >
+                        {day.logs.map((log, i) => {
+                          const displayDotHex = getDisplayDotColor(day.logs, day.dateObj);
+                          const pillBackground = getPillBackground(log, displayDotHex);
+                          return (
+                            <div
+                              key={log.id || i}
+                              onClick={() => setSelectedLogModal({ dateObj: day.dateObj, logs: day.logs })}
+                              style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
+                              className={`flex items-center gap-3 p-2.5 cursor-pointer ${i > 0 ? 'border-t' : ''}`}
                             >
-                              <span className="block truncate">{getPillLabel(entry.log)}</span>
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })
+                              <div className="w-16 h-16 rounded-lg overflow-hidden shrink-0 flex items-center justify-center font-bold text-lg" style={{ backgroundColor: 'var(--theme-card)' }}>
+                                {log.imageUrl ? (
+                                  <img src={log.imageUrl} className="w-full h-full object-cover" alt="" loading="lazy" />
+                                ) : (
+                                  <span style={{ color: 'var(--theme-primary)' }}>{day.dateObj.getDate()}</span>
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                {i === 0 && (
+                                  <div className="text-[11px] font-bold opacity-60 uppercase tracking-wide">
+                                    {day.dateObj.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                                  </div>
+                                )}
+                                <div className="text-sm font-semibold truncate">{log.title || 'Untitled'}</div>
+                                <span
+                                  className="inline-flex items-center max-w-full font-bold text-white px-2 py-0.5 rounded-full leading-none mt-1"
+                                  style={{ background: pillBackground, fontSize: '10px' }}
+                                >
+                                  <span className="block truncate">{getPillLabel(log)}</span>
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))
                   )}
                 </div>
               </div>
@@ -3256,6 +3343,26 @@ function App() {
 
             return (
               <div className="flex flex-col h-full w-full min-h-0">
+                {/* Dots vs Blocks -- a standing preference (localStorage),
+                    not per-session state, so it's a small toggle rather
+                    than something tucked in Settings. */}
+                <div className="flex items-center gap-1 mb-2 shrink-0 self-end p-0.5 rounded-lg border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
+                  <button
+                    onClick={() => setMobileYearLayout('dots')}
+                    className={`px-2 py-1 text-[10px] font-semibold rounded-md transition-all cursor-pointer ${mobileYearLayout === 'dots' ? 'bg-black/20 font-bold' : 'opacity-60'}`}
+                  >
+                    Dots
+                  </button>
+                  <button
+                    onClick={() => setMobileYearLayout('blocks')}
+                    className={`px-2 py-1 text-[10px] font-semibold rounded-md transition-all cursor-pointer ${mobileYearLayout === 'blocks' ? 'bg-black/20 font-bold' : 'opacity-60'}`}
+                  >
+                    Blocks
+                  </button>
+                </div>
+
+                {mobileYearLayout === 'dots' ? (
+                <>
                 <div className="grid shrink-0 mb-1" style={{ gridTemplateColumns: '30px repeat(31, minmax(0, 1fr))', gap: '2px' }}>
                   <div />
                   {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
@@ -3298,12 +3405,21 @@ function App() {
                           return (
                             <div key={dayNum} className="flex items-center justify-center h-full" onClick={() => handleDayClick(dateObj, logs)}>
                               <div
-                                className={`rounded-full transition-all ${isToday(dateObj) ? 'ring-1 ring-[var(--theme-primary)] ring-offset-1' : ''} ${isHighlightedProject ? 'ring-1 ring-[var(--theme-secondary)]' : ''} ${isDimmedByHighlight ? 'opacity-25' : ''}`}
+                                // opacity is set inline below (not via an
+                                // opacity-* class) specifically so the
+                                // dimmed-by-highlight state can win over the
+                                // hasLog/no-log opacity -- an inline style
+                                // always beats a class for the same
+                                // property, so a competing opacity-25 CLASS
+                                // here was silently losing to hasLog's own
+                                // inline opacity:1 and never visibly dimming
+                                // anything.
+                                className={`rounded-full transition-all ${isToday(dateObj) ? 'ring-1 ring-[var(--theme-primary)] ring-offset-1' : ''} ${isHighlightedProject ? 'ring-1 ring-[var(--theme-secondary)]' : ''} ${isDimmedByHighlight ? 'grayscale' : ''}`}
                                 style={{
                                   width: hasLog ? '7px' : '4px',
                                   height: hasLog ? '7px' : '4px',
                                   background: isToday(dateObj) ? 'var(--theme-primary)' : (hasLog ? dotStyle.bg : dotStyle.border),
-                                  opacity: hasLog ? 1 : 0.5,
+                                  opacity: isDimmedByHighlight ? 0.25 : hasLog ? 1 : 0.5,
                                 }}
                               />
                             </div>
@@ -3313,69 +3429,77 @@ function App() {
                     );
                   })}
                 </div>
-
-                {/* PROJECTS LOGGED THIS YEAR -- same grouped/collapsible/
-                    tap-to-highlight panel as Month view (mobilePanelCollapsedSources
-                    is shared between the two; a database collapsed in one
-                    stays collapsed in the other, which reads as one
-                    consistent setting rather than two to keep track of). */}
-                <div className="flex-1 min-h-0 overflow-y-auto pt-3 mt-2 border-t" style={{ borderColor: 'var(--theme-border)' }}>
-                  <div className="text-[10px] font-bold uppercase tracking-wide opacity-50 mb-2">Logged this year</div>
-                  {visibleBySource.size === 0 ? (
-                    <div className="text-xs italic opacity-40">Nothing logged yet.</div>
-                  ) : (
-                    <div className="space-y-2.5">
-                      {Array.from(visibleBySource.entries()).map(([source, projects]) => {
-                        const isCollapsed = showSourceHeaders && mobilePanelCollapsedSources[source] === true;
-                        return (
-                          <div key={source}>
-                            {showSourceHeaders && (
-                              <button
-                                onClick={() => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
-                                className="flex items-center gap-1 mb-1.5 cursor-pointer"
-                              >
-                                <span className={`text-[9px] transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>▾</span>
-                                <span className="text-[10px] font-bold uppercase tracking-wide opacity-70">{source}</span>
-                              </button>
-                            )}
-                            {!isCollapsed && (
-                              <div className="flex flex-wrap gap-1.5">
-                                {Array.from(projects.entries()).map(([name, bg]) => {
-                                  const isActive = hoveredProjectTitle === name;
-                                  return (
-                                    <button
-                                      key={name}
-                                      onClick={() => setHoveredProjectTitle(isActive ? null : name)}
-                                      className={`inline-flex items-center font-bold text-white px-2.5 py-1 rounded-full leading-none cursor-pointer transition-all ${isActive ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1' : hoveredProjectTitle ? 'opacity-40' : ''}`}
-                                      style={{ background: bg, fontSize: '11px' }}
-                                    >
-                                      {name}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
+                </>
+                ) : (
+                  // Blocks: 12 mini month-calendars, 3 per row / 4 rows, so
+                  // the whole year is visible without scrolling the grid
+                  // itself -- matches the gallery view's mini-calendar
+                  // layout, but with project-colored dots standing in for
+                  // its plain day numbers (a year overview cares about
+                  // which project a day belongs to, not the exact date).
+                  <div className="grid shrink-0 mb-2" style={{ gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                    {MONTH_NAMES.map((monthLabel, mIdx) => {
+                      const startOffset = new Date(year, mIdx, 1).getDay();
+                      const daysInMonth = new Date(year, mIdx + 1, 0).getDate();
+                      const totalSlots = Math.ceil((daysInMonth + startOffset) / 7) * 7;
+                      const slots = Array.from({ length: totalSlots }, (_, i) => {
+                        const dayNum = i - startOffset + 1;
+                        return dayNum > 0 && dayNum <= daysInMonth ? dayNum : null;
+                      });
+                      return (
+                        <div key={monthLabel}>
+                          <button
+                            onClick={() => { setCurrentDate(new Date(year, mIdx, 1)); setViewMode('month'); }}
+                            className="block w-full text-left font-bold uppercase tracking-wide opacity-70 cursor-pointer hover:opacity-100 mb-1"
+                            style={{ fontSize: '9px' }}
+                          >
+                            {monthLabel}
+                          </button>
+                          <div className="grid" style={{ gridTemplateColumns: 'repeat(7, 1fr)', gap: '2.5px' }}>
+                            {slots.map((dayNum, i) => {
+                              if (dayNum === null) return <div key={i} />;
+                              const dateObj = new Date(year, mIdx, dayNum);
+                              const logs = getLogsForDate(dateObj);
+                              const hasLog = logs.length > 0;
+                              const displayDotHex = getDisplayDotColor(logs, dateObj);
+                              const specialDay = getSpecialDayForDate(dateObj, specialDays);
+                              const dotStyle = getDayDotStyling(dateObj, hasLog, displayDotHex, specialDay);
+                              const isHighlightedProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
+                              const isDimmedByHighlight = hoveredProjectTitle && !isHighlightedProject;
+                              return (
+                                <div key={i} className="flex items-center justify-center" style={{ aspectRatio: '1' }} onClick={() => handleDayClick(dateObj, logs)}>
+                                  <div
+                                    className={`rounded-full w-full h-full transition-all ${isToday(dateObj) ? 'ring-1 ring-inset ring-[var(--theme-primary)]' : ''} ${isHighlightedProject ? 'ring-1 ring-inset ring-[var(--theme-secondary)]' : ''} ${isDimmedByHighlight ? 'grayscale' : ''}`}
+                                    style={{
+                                      background: isToday(dateObj) ? 'var(--theme-primary)' : (hasLog ? dotStyle.bg : dotStyle.border),
+                                      opacity: isDimmedByHighlight ? 0.25 : hasLog ? 1 : 0.4,
+                                    }}
+                                  />
+                                </div>
+                              );
+                            })}
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {hoveredProjectTitle && highlightedProjectSource && (
-                  <button
-                    onClick={() => {
-                      setPreGalleryViewMode(viewMode);
-                      setGalleryTarget({ title: hoveredProjectTitle, source: highlightedProjectSource });
-                      setViewMode('gallery');
-                    }}
-                    style={{ backgroundColor: 'var(--theme-primary)' }}
-                    className="shrink-0 mt-2 w-full py-2.5 rounded-lg text-white text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5"
-                  >
-                    <span>Go to "{hoveredProjectTitle}" Gallery</span>
-                    <span>→</span>
-                  </button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
+
+                <VisibleProjectsPanel
+                  title="Logged this year"
+                  emptyMessage="Nothing logged yet."
+                  visibleBySource={visibleBySource}
+                  showSourceHeaders={showSourceHeaders}
+                  collapsedSources={mobilePanelCollapsedSources}
+                  onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
+                  hoveredProjectTitle={hoveredProjectTitle}
+                  onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
+                  onGoToGallery={(title, source) => {
+                    setPreGalleryViewMode(viewMode);
+                    setGalleryTarget({ title, source });
+                    setViewMode('gallery');
+                  }}
+                />
               </div>
             );
           })()}

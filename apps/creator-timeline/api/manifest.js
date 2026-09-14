@@ -18,14 +18,16 @@ export default function handler(req, res) {
     scope: '/',
     display: 'standalone',
     background_color: '#F8FAFC',
-    // Matches the default "Rose" theme's primary accent (see
-    // DEFAULT_THEME_PRESETS in src/App.jsx) -- this is what Android uses
-    // for the status bar/task-switcher color on an installed PWA. It's
-    // fixed at install time from this static manifest, so a tenant who's
-    // switched to a different in-app color theme won't see their status
-    // bar follow along without reinstalling; there's no PWA-standard way
-    // to make that live.
-    theme_color: '#F43F5E',
+    // Matches background_color (the default "Rose" theme's light bg --
+    // see DEFAULT_THEME_PRESETS in src/App.jsx) rather than the primary
+    // accent, so the status bar blends into the app instead of standing
+    // out as a bold accent stripe. This is what Android uses for the
+    // status bar/task-switcher color on an installed PWA, fixed at
+    // install time from this static manifest -- a tenant who's switched
+    // to a different in-app color theme won't see their status bar follow
+    // along without reinstalling; there's no PWA-standard way to make
+    // that live.
+    theme_color: '#F8FAFC',
     icons: [
       { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
       { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
