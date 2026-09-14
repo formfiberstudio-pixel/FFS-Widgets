@@ -39,12 +39,22 @@ function toDateInputValue(date) {
   return new Date(d.getTime() - offset * 60000).toISOString().split('T')[0];
 }
 
+// Identifies a project across a photo's projectKey and the <select>
+// options -- two different sources could otherwise name a project the
+// same thing, so source is part of the identity, matching how the
+// gallery/sidebar already key projects elsewhere in the app.
+const projectKeyOf = (p) => `${p.source}::${p.title}`;
+
 export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos }) {
-  const [project, setProject] = useState(null);
+  // The project picked in step 1 -- now just the DEFAULT new photos get
+  // assigned, not a batch-wide setting. Each photo carries its own
+  // projectKey (below) and can be reassigned individually in the review
+  // grid, so a single batch can land across several different projects.
+  const [defaultProject, setDefaultProject] = useState(null);
   const [photos, setPhotos] = useState([]);
   const [step, setStep] = useState('select-project'); // select-project | review | uploading | done
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
-  const [uploadResults, setUploadResults] = useState({ succeeded: 0, failed: [] });
+  const [uploadResults, setUploadResults] = useState({ byProject: [], failed: [] });
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -83,6 +93,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
       previewUrl,
       date: toDateInputValue(date),
       hasExif,
+      projectKey: defaultProject ? projectKeyOf(defaultProject) : '',
     };
   };
 
@@ -109,6 +120,10 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, date: newDate, hasExif: false } : p)));
   };
 
+  const updatePhotoProject = (id, newProjectKey) => {
+    setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, projectKey: newProjectKey } : p)));
+  };
+
   const removePhoto = (id) => {
     setPhotos((prev) => {
       const target = prev.find((p) => p.id === id);
@@ -121,23 +136,42 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     setStep('uploading');
     setUploadProgress({ done: 0, total: photos.length });
     const failed = [];
+    const succeededByProject = new Map(); // projectKey -> count
     let doneCount = 0;
 
-    // Photos backlogged for the same date land on ONE page (multiple image
-    // blocks) instead of one page each -- group first, then within each
-    // date group upload the first photo in "create" mode and chain every
-    // photo after it onto the page that call returns via `pageId` (see
-    // backlog-photo.js). If the first photo in a group fails, the next one
-    // just falls back to creating its own page rather than the whole
+    // Photos backlogged for the same PROJECT and DATE land on ONE page
+    // (multiple image blocks) instead of one page each -- group by both,
+    // not just date, so two photos on the same day but different projects
+    // correctly end up as two separate pages. Within each group, the
+    // first photo uploads in "create" mode and every photo after it
+    // chains onto the page that call returns via `pageId` (see
+    // backlog-photo.js). If the first photo in a group fails, the next
+    // one just falls back to creating its own page rather than the whole
     // group silently vanishing.
     const groups = new Map();
     photos.forEach((photo) => {
-      if (!groups.has(photo.date)) groups.set(photo.date, []);
-      groups.get(photo.date).push(photo);
+      const groupKey = `${photo.projectKey}::${photo.date}`;
+      if (!groups.has(groupKey)) groups.set(groupKey, []);
+      groups.get(groupKey).push(photo);
     });
 
-    for (const [date, groupPhotos] of groups) {
+    for (const groupPhotos of groups.values()) {
+      const { date, projectKey } = groupPhotos[0];
+      const groupProject = allProjects.find((p) => projectKeyOf(p) === projectKey);
       let pageId = null;
+
+      if (!groupProject) {
+        // Shouldn't happen (every photo's projectKey comes from
+        // allProjects), but fail that group's photos explicitly rather
+        // than silently dropping them if it ever does.
+        groupPhotos.forEach((photo) => {
+          failed.push({ name: photo.file.name, error: 'No project selected for this photo' });
+          doneCount++;
+        });
+        setUploadProgress({ done: doneCount, total: photos.length });
+        continue;
+      }
+
       // `date` is a bare "YYYY-MM-DD" -- new Date(date) would parse that as
       // UTC midnight (a spec guarantee for date-only ISO strings) and then
       // render it in the browser's LOCAL timezone, which is exactly the
@@ -153,7 +187,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           const imageBase64 = await resizeImageForUpload(photo.file);
           const body = pageId
             ? { tenantId, pageId, imageBase64 }
-            : { tenantId, referenceLogId: project.referenceLogId, title: `${project.title} — ${formattedDate}`, dateTaken: date, imageBase64 };
+            : { tenantId, referenceLogId: groupProject.referenceLogId, title: `${groupProject.title} — ${formattedDate}`, dateTaken: date, imageBase64 };
 
           const response = await fetch('/api/backlog-photo', {
             method: 'POST',
@@ -163,6 +197,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           const result = await response.json();
           if (!result.success) throw new Error(result.error || 'Upload failed');
           if (!pageId) pageId = result.pageId;
+          succeededByProject.set(groupProject.title, (succeededByProject.get(groupProject.title) || 0) + 1);
         } catch (err) {
           failed.push({ name: photo.file.name, error: err.message });
         }
@@ -171,7 +206,10 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
       }
     }
 
-    setUploadResults({ succeeded: photos.length - failed.length, failed });
+    setUploadResults({
+      byProject: Array.from(succeededByProject, ([title, count]) => ({ title, count })),
+      failed,
+    });
     setStep('done');
     onUploaded();
   };
@@ -179,13 +217,14 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   const resetToStart = () => {
     photos.forEach((p) => URL.revokeObjectURL(p.previewUrl));
     setPhotos([]);
-    setProject(null);
-    setUploadResults({ succeeded: 0, failed: [] });
+    setDefaultProject(null);
+    setUploadResults({ byProject: [], failed: [] });
     setStep('select-project');
   };
 
   // -----------------------------------------------------------------
-  // STEP 1: pick which project these photos belong to
+  // STEP 1: pick a default project for new photos (each photo can still
+  // be reassigned individually once added, in step 2)
   // -----------------------------------------------------------------
   if (step === 'select-project') {
     const bySource = {};
@@ -196,7 +235,9 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
     return (
       <div className="flex flex-col h-full w-full min-h-0 max-w-2xl mx-auto">
-        <p className="text-sm opacity-60 mb-4 shrink-0">Which project are these backlogged photos for?</p>
+        <p className="text-sm opacity-60 mb-4 shrink-0">
+          Which project should backlogged photos default to? You can assign individual photos to a different project once they're added.
+        </p>
         <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-1">
           {Object.entries(bySource).map(([source, projs]) => (
             <div key={source}>
@@ -204,8 +245,8 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
               <div className="space-y-1.5">
                 {projs.map((p) => (
                   <button
-                    key={`${p.source}::${p.title}`}
-                    onClick={() => { setProject(p); setStep('review'); }}
+                    key={projectKeyOf(p)}
+                    onClick={() => { setDefaultProject(p); setStep('review'); }}
                     style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
                     className="w-full text-left p-3 rounded-lg border cursor-pointer transition-colors hover:border-[var(--theme-primary)] flex items-center justify-between"
                   >
@@ -235,9 +276,9 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4 shrink-0">
           <div>
             <button onClick={() => setStep('select-project')} className="text-xs font-semibold cursor-pointer hover:opacity-70" style={{ color: 'var(--theme-primary)' }}>
-              ‹ Change Project
+              ‹ Change Default Project
             </button>
-            <div className="text-sm font-bold mt-0.5">Backlogging for: {project.title}</div>
+            <div className="text-sm font-bold mt-0.5">New photos default to: {defaultProject.title}</div>
           </div>
           <button
             onClick={startUpload}
@@ -297,7 +338,17 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                       </span>
                     )}
                   </div>
-                  <div className="p-2">
+                  <div className="p-2 space-y-1.5">
+                    <select
+                      value={photo.projectKey}
+                      onChange={(e) => updatePhotoProject(photo.id, e.target.value)}
+                      style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+                      className="w-full text-xs px-1.5 py-1 rounded border truncate"
+                    >
+                      {allProjects.map((p) => (
+                        <option key={projectKeyOf(p)} value={projectKeyOf(p)}>{p.title}</option>
+                      ))}
+                    </select>
                     <input
                       type="date"
                       value={photo.date}
@@ -334,11 +385,19 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   // -----------------------------------------------------------------
   // STEP 4: done
   // -----------------------------------------------------------------
+  const totalSucceeded = uploadResults.byProject.reduce((sum, p) => sum + p.count, 0);
   return (
     <div className="flex flex-col items-center justify-center h-full w-full gap-4 max-w-md mx-auto text-center">
       <div className="text-lg font-bold">
-        {uploadResults.succeeded} photo{uploadResults.succeeded === 1 ? '' : 's'} added to {project?.title}
+        {totalSucceeded} photo{totalSucceeded === 1 ? '' : 's'} added
       </div>
+      {uploadResults.byProject.length > 0 && (
+        <ul className="text-sm opacity-70 space-y-0.5">
+          {uploadResults.byProject.map(({ title, count }) => (
+            <li key={title}>{count} to {title}</li>
+          ))}
+        </ul>
+      )}
       {uploadResults.failed.length > 0 && (
         <div className="text-sm text-left w-full p-3 rounded-lg border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
           <div className="font-bold mb-1 opacity-80">{uploadResults.failed.length} failed:</div>
