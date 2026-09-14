@@ -1957,49 +1957,55 @@ function App() {
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
-            disabled={isLoading || !tenantId}
-            title={isDemoMode ? 'Sync is disabled in this demo' : 'Sync Notion Data'}
-            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-            className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50"
-          >
-            <span className={isLoading ? "animate-spin" : ""}><IconSync /></span>
-            <span>Sync</span>
-          </button>
+          {/* Hidden on narrow screens while importing -- the Import panel
+              needs the room, and none of these four do anything useful
+              mid-import on a phone (Back to Calendar covers navigating
+              away). Still shown at sm+ and in every other view. */}
+          <div className={`${viewMode === 'import' ? 'hidden sm:flex' : 'flex'} items-center gap-2`}>
+            <button
+              onClick={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
+              disabled={isLoading || !tenantId}
+              title={isDemoMode ? 'Sync is disabled in this demo' : 'Sync Notion Data'}
+              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+              className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50"
+            >
+              <span className={isLoading ? "animate-spin" : ""}><IconSync /></span>
+              <span>Sync</span>
+            </button>
 
-          <button
-            onClick={() => setShowSettings(true)}
-            title="Widget Settings & Customization"
-            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-            className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors"
-          >
-            <IconSettings />
-            <span>Settings</span>
-          </button>
+            <button
+              onClick={() => setShowSettings(true)}
+              title="Widget Settings & Customization"
+              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+              className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors"
+            >
+              <IconSettings />
+              <span>Settings</span>
+            </button>
 
-          <button
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-            className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1"
-          >
-            <IconFolder />
-            <span>{isSidebarOpen ? 'Hide Projects' : 'Projects'}</span>
-          </button>
+            <button
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+              className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1"
+            >
+              <IconFolder />
+              <span>{isSidebarOpen ? 'Hide Projects' : 'Projects'}</span>
+            </button>
 
-          <button
-            onClick={() => {
-              if (viewMode !== 'gallery' && viewMode !== 'import') setPreGalleryViewMode(viewMode);
-              setViewMode('import');
-            }}
-            disabled={isDemoMode || !tenantId}
-            title={isDemoMode ? 'Import is disabled in this demo' : 'Backlog photos from your device, dated from each photo\'s own EXIF data'}
-            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-            className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <IconUpload />
-            <span>Import Photos</span>
-          </button>
+            <button
+              onClick={() => {
+                if (viewMode !== 'gallery' && viewMode !== 'import') setPreGalleryViewMode(viewMode);
+                setViewMode('import');
+              }}
+              disabled={isDemoMode || !tenantId}
+              title={isDemoMode ? 'Import is disabled in this demo' : 'Backlog photos from your device, dated from each photo\'s own EXIF data'}
+              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+              className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <IconUpload />
+              <span>Import Photos</span>
+            </button>
+          </div>
 
           <button
             onClick={() => setCurrentDate(today)}

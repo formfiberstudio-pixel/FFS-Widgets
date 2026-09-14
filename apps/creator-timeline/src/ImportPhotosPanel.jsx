@@ -45,18 +45,45 @@ function toDateInputValue(date) {
 // gallery/sidebar already key projects elsewhere in the app.
 const projectKeyOf = (p) => `${p.source}::${p.title}`;
 
+// Below this width the review step swaps the grid+per-photo-dropdown
+// layout for a compact tap-to-assign UI (horizontal photo strip over a
+// vertical project list) -- matches Tailwind's `sm` breakpoint already
+// used elsewhere for the same narrow/wide split.
+const MOBILE_BREAKPOINT = 640;
+
 export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos }) {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < MOBILE_BREAKPOINT);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   // The project picked in step 1 -- now just the DEFAULT new photos get
   // assigned, not a batch-wide setting. Each photo carries its own
   // projectKey (below) and can be reassigned individually in the review
   // grid, so a single batch can land across several different projects.
+  // On mobile, step 1 is skipped entirely (see the lazy initializer
+  // below) -- there's no "default," every photo is assigned via the
+  // tap-to-assign UI instead.
   const [defaultProject, setDefaultProject] = useState(null);
   const [photos, setPhotos] = useState([]);
-  const [step, setStep] = useState('select-project'); // select-project | review | uploading | done
+  const [step, setStep] = useState(() => (window.innerWidth < MOBILE_BREAKPOINT ? 'review' : 'select-project')); // select-project | review | uploading | done
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [uploadResults, setUploadResults] = useState({ byProject: [], failed: [] });
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
+
+  // Mobile tap-to-assign state: tapping photos with no project armed
+  // multi-selects them (checkboxes); tapping a project with photos
+  // selected assigns all of them and clears the selection. Tapping a
+  // project with NOTHING selected arms it instead, and every photo
+  // tapped after that is assigned to it immediately, one at a time,
+  // until the project is tapped again to disarm -- covers both
+  // "photos first" and "project first" orderings without the two modes
+  // fighting each other (only one is ever active: armed OR multi-select).
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState(() => new Set());
+  const [armedProjectKey, setArmedProjectKey] = useState(null);
 
   // Object URLs are only good until the tab/component goes away -- clean
   // up whatever's still outstanding rather than leaking them.
@@ -124,11 +151,39 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, projectKey: newProjectKey } : p)));
   };
 
+  // Mobile tap-to-assign -- see the state comment above for the model.
+  const handlePhotoTap = (id) => {
+    if (armedProjectKey) {
+      updatePhotoProject(id, armedProjectKey);
+      return;
+    }
+    setSelectedPhotoIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const handleProjectTap = (key) => {
+    if (selectedPhotoIds.size > 0) {
+      setPhotos((prev) => prev.map((p) => (selectedPhotoIds.has(p.id) ? { ...p, projectKey: key } : p)));
+      setSelectedPhotoIds(new Set());
+      return;
+    }
+    setArmedProjectKey((prev) => (prev === key ? null : key));
+  };
+
   const removePhoto = (id) => {
     setPhotos((prev) => {
       const target = prev.find((p) => p.id === id);
       if (target) URL.revokeObjectURL(target.previewUrl);
       return prev.filter((p) => p.id !== id);
+    });
+    setSelectedPhotoIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
     });
   };
 
@@ -218,8 +273,12 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     photos.forEach((p) => URL.revokeObjectURL(p.previewUrl));
     setPhotos([]);
     setDefaultProject(null);
+    setSelectedPhotoIds(new Set());
+    setArmedProjectKey(null);
     setUploadResults({ byProject: [], failed: [] });
-    setStep('select-project');
+    // Mobile skips the default-project step entirely (see the `step`
+    // lazy initializer) -- resetting should land back wherever it started.
+    setStep(isMobile ? 'review' : 'select-project');
   };
 
   // -----------------------------------------------------------------
@@ -268,7 +327,173 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   }
 
   // -----------------------------------------------------------------
-  // STEP 2: add photos, review/fix each one's date
+  // STEP 2 (mobile): a horizontal strip of photos over a vertical list of
+  // projects -- tap photos then a project to batch-assign, or tap a
+  // project then photos to paint-assign one at a time (see
+  // handlePhotoTap/handleProjectTap above). Replaces the grid+dropdown
+  // layout below, which stays for desktop where there's room for it.
+  // -----------------------------------------------------------------
+  if (step === 'review' && isMobile) {
+    const bySource = {};
+    allProjects.forEach((p) => {
+      if (!bySource[p.source]) bySource[p.source] = [];
+      bySource[p.source].push(p);
+    });
+    const countByProjectKey = {};
+    photos.forEach((p) => {
+      if (p.projectKey) countByProjectKey[p.projectKey] = (countByProjectKey[p.projectKey] || 0) + 1;
+    });
+    const unassignedCount = photos.filter((p) => !p.projectKey).length;
+
+    return (
+      <div className="flex flex-col h-full w-full min-h-0">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => { handleFiles(e.target.files); e.target.value = ''; }}
+        />
+
+        <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
+            className="text-xs font-semibold px-3 py-2 rounded-lg border cursor-pointer shrink-0"
+          >
+            + Add Photos
+          </button>
+          <button
+            onClick={startUpload}
+            disabled={photos.length === 0 || unassignedCount > 0}
+            title={unassignedCount > 0 ? `${unassignedCount} photo${unassignedCount === 1 ? '' : 's'} still need${unassignedCount === 1 ? 's' : ''} a project` : undefined}
+            style={{ backgroundColor: 'var(--theme-primary)' }}
+            className="text-sm font-bold text-white px-4 py-2 rounded-lg cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+          >
+            Upload {photos.length}
+          </button>
+        </div>
+
+        {/* Horizontal photo strip */}
+        <div className="shrink-0 mb-2 -mx-1 px-1 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+          {photos.length === 0 ? (
+            <div className="text-xs italic opacity-50 py-8 text-center">No photos yet — tap "+ Add Photos" above.</div>
+          ) : (
+            <div className="flex gap-2 pb-1" style={{ width: 'max-content' }}>
+              {photos.map((photo) => {
+                const isSelected = selectedPhotoIds.has(photo.id);
+                const assignedProject = photo.projectKey ? allProjects.find((p) => projectKeyOf(p) === photo.projectKey) : null;
+                return (
+                  <div key={photo.id} className="shrink-0" style={{ width: '92px' }}>
+                    <div
+                      onClick={() => handlePhotoTap(photo.id)}
+                      className="relative rounded-lg overflow-hidden cursor-pointer"
+                      style={{
+                        width: '92px',
+                        height: '92px',
+                        backgroundColor: 'var(--theme-card)',
+                        border: isSelected ? '3px solid var(--theme-secondary)' : '1px solid var(--theme-border)',
+                      }}
+                    >
+                      <img src={photo.previewUrl} alt="" className="w-full h-full object-cover" />
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removePhoto(photo.id); }}
+                        title="Remove"
+                        className="absolute top-0.5 right-0.5 w-6 h-6 rounded-full bg-black/60 text-white text-sm flex items-center justify-center cursor-pointer"
+                      >
+                        ×
+                      </button>
+                      {isSelected && (
+                        <div
+                          className="absolute top-0.5 left-0.5 w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-black"
+                          style={{ backgroundColor: 'var(--theme-secondary)' }}
+                        >
+                          ✓
+                        </div>
+                      )}
+                      {!photo.hasExif && (
+                        <div
+                          title="No EXIF date -- check the date below"
+                          className="absolute bottom-1 left-1 w-2.5 h-2.5 rounded-full"
+                          style={{ backgroundColor: 'var(--theme-secondary)' }}
+                        />
+                      )}
+                      <div className="absolute bottom-0 inset-x-0 px-1 py-0.5 text-center" style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}>
+                        <div className="text-[9px] font-bold text-white truncate">{assignedProject ? assignedProject.title : 'Unassigned'}</div>
+                      </div>
+                    </div>
+                    <input
+                      type="date"
+                      value={photo.date}
+                      onChange={(e) => updatePhotoDate(photo.id, e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+                      className="w-full mt-1 text-[10px] px-1 py-0.5 rounded border"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="text-xs opacity-60 mb-2 shrink-0">
+          {armedProjectKey
+            ? `Assigning to "${allProjects.find((p) => projectKeyOf(p) === armedProjectKey)?.title}" — tap photos, or tap the project again to stop.`
+            : selectedPhotoIds.size > 0
+              ? `${selectedPhotoIds.size} photo${selectedPhotoIds.size === 1 ? '' : 's'} selected — tap a project below to assign.`
+              : 'Tap photos to select them, or tap a project to start assigning.'}
+        </div>
+
+        {/* Vertical project list */}
+        <div className="flex-1 overflow-y-auto min-h-0 space-y-3 pr-1">
+          {Object.entries(bySource).map(([source, projs]) => (
+            <div key={source}>
+              <div className="text-[10px] font-black uppercase tracking-wider opacity-50 mb-1.5">{source}</div>
+              <div className="space-y-1.5">
+                {projs.map((p) => {
+                  const key = projectKeyOf(p);
+                  const isArmed = armedProjectKey === key;
+                  const count = countByProjectKey[key] || 0;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => handleProjectTap(key)}
+                      style={{
+                        backgroundColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-bg)',
+                        borderColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-border)',
+                        color: isArmed ? '#fff' : 'var(--theme-text)',
+                      }}
+                      className="w-full text-left p-3 rounded-lg border cursor-pointer flex items-center justify-between transition-colors"
+                    >
+                      <span className="font-semibold text-sm truncate">{p.title}</span>
+                      {count > 0 && (
+                        <span
+                          className="text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0 ml-2"
+                          style={{ backgroundColor: isArmed ? 'rgba(255,255,255,0.25)' : 'var(--theme-primary)', color: '#fff' }}
+                        >
+                          {count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          {allProjects.length === 0 && (
+            <div className="text-sm italic opacity-50 text-center py-8">
+              No projects found yet -- sync your calendar first.
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // -----------------------------------------------------------------
+  // STEP 2 (desktop): add photos, review/fix each one's date and project
   // -----------------------------------------------------------------
   if (step === 'review') {
     return (
