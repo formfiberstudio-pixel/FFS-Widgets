@@ -779,6 +779,10 @@ function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= MOBILE_BREAKPOINT);
+  // Mobile's header consolidates Sync/Settings/Projects/Import Photos behind
+  // one "more" button instead of showing all four inline -- there isn't
+  // vertical room to spare for a phone screen the way there is on desktop.
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [selectedProjectFilters, setSelectedProjectFilters] = useState([]); 
   const [selectedLogModal, setSelectedLogModal] = useState(null);
   // Which single project's photo gallery is showing in place of the
@@ -1810,6 +1814,41 @@ function App() {
     else setCurrentDate(new Date(currentDate.getFullYear() + 1, currentDate.getMonth(), 1));
   };
 
+  // Swipe-to-navigate on mobile, replacing the Prev/Next buttons with a
+  // left/right flick across the calendar -- the natural gesture for paging
+  // through dates on a phone. Scoped to Month/Week only: the Year grid
+  // already uses horizontal touch-scroll to browse its own months (see its
+  // overflow-x-auto), and layering a second, competing horizontal gesture
+  // on the same surface would make both worse rather than replace one with
+  // the other cleanly.
+  const swipeStartRef = useRef(null);
+  const handleCalendarTouchStart = (e) => {
+    if (!isMobile || (viewMode !== 'month' && viewMode !== 'week')) { swipeStartRef.current = null; return; }
+    const t = e.touches[0];
+    swipeStartRef.current = { x: t.clientX, y: t.clientY, time: Date.now() };
+  };
+  const handleCalendarTouchEnd = (e) => {
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    if (!start) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    // Must be a clearly-horizontal flick, big enough and fast enough not to
+    // be a scroll or a tap -- otherwise leave it alone so normal scrolling
+    // and tapping a day cell both keep working.
+    if (Date.now() - start.time > 800) return;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (dx < 0) handleNext(); else handlePrev();
+  };
+
+  // Smaller header title on mobile -- 3.25rem (52px) is sized for a desktop
+  // header with room to spare; on a phone it alone was eating a big chunk
+  // of the vertical space the calendar needs.
+  const titleBigSize = isMobile ? '2.1rem' : '3.25rem';
+  const titleSubSize = isMobile ? '0.95rem' : '1.15rem';
+  const titleGallerySize = isMobile ? '1.25rem' : '1.6rem';
+
   // -------------------------------------------------------------
   // DYNAMIC THEME & VIEW SCALE INJECTION
   // -------------------------------------------------------------
@@ -1900,7 +1939,7 @@ function App() {
                 <span>←</span>
                 <span>Back to Calendar</span>
               </button>
-              <div className="font-black uppercase tracking-wide" style={{ fontSize: '1.6rem' }}>
+              <div className="font-black uppercase tracking-wide" style={{ fontSize: titleGallerySize }}>
                 {galleryTarget?.title}
               </div>
             </div>
@@ -1915,7 +1954,7 @@ function App() {
                 <span>←</span>
                 <span>Back to Calendar</span>
               </button>
-              <div className="font-black uppercase tracking-wide" style={{ fontSize: '1.6rem' }}>
+              <div className="font-black uppercase tracking-wide" style={{ fontSize: titleGallerySize }}>
                 Import Photos
               </div>
             </div>
@@ -1925,11 +1964,11 @@ function App() {
                 onClick={() => setViewMode('year')}
                 title="Jump to Year view"
                 className="block font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
-                style={{ fontSize: '3.25rem', color: 'var(--theme-primary)' }}
+                style={{ fontSize: titleBigSize, color: 'var(--theme-primary)' }}
               >
                 {currentDate.getFullYear()}
               </button>
-              <div className="font-black uppercase tracking-wide mt-0.5" style={{ fontSize: '1.15rem' }}>
+              <div className="font-black uppercase tracking-wide mt-0.5" style={{ fontSize: titleSubSize }}>
                 {currentDate.toLocaleDateString('en-US', { month: 'long' })}
               </div>
             </div>
@@ -1939,7 +1978,7 @@ function App() {
                 onClick={() => setViewMode('year')}
                 title="Jump to Year view"
                 className="block font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
-                style={{ fontSize: '3.25rem', color: 'var(--theme-primary)' }}
+                style={{ fontSize: titleBigSize, color: 'var(--theme-primary)' }}
               >
                 {endOfWeek?.getFullYear()}
               </button>
@@ -1947,110 +1986,218 @@ function App() {
                 onClick={() => setViewMode('month')}
                 title="Jump to Month view"
                 className="block font-black uppercase tracking-wide mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
-                style={{ fontSize: '1.15rem' }}
+                style={{ fontSize: titleSubSize }}
               >
                 {startOfWeek?.getMonth() === endOfWeek?.getMonth()
                   ? startOfWeek?.toLocaleDateString('en-US', { month: 'long' })
                   : `${startOfWeek?.toLocaleDateString('en-US', { month: 'short' })} – ${endOfWeek?.toLocaleDateString('en-US', { month: 'short' })}`}
               </button>
-              <div className="font-black uppercase tracking-wide" style={{ fontSize: '1.15rem' }}>
+              <div className="font-black uppercase tracking-wide" style={{ fontSize: titleSubSize }}>
                 {startOfWeek?.getDate()}–{endOfWeek?.getDate()}
               </div>
             </div>
           ) : (
-            <div
-              className="font-light tracking-tight leading-none"
-              style={{ fontSize: '3.25rem', color: 'var(--theme-primary)' }}
-            >
-              {year}
-            </div>
-          )}
-          <p className="text-sm mt-2 opacity-60">Driven by Figma Tokens & Notion Data.</p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Hidden on narrow screens while importing -- the Import panel
-              needs the room, and none of these four do anything useful
-              mid-import on a phone (Back to Calendar covers navigating
-              away). Still shown at sm+ and in every other view. Wraps onto
-              its own row(s) rather than squeezing on a phone -- there just
-              isn't room for all of Sync/Settings/Projects/Import Photos,
-              Today, the Year/Month/Week switch, and Prev/Next on one line
-              at 375px, and shrinking them illegibly is worse than a
-              second row. */}
-          <div className={`${viewMode === 'import' ? 'hidden sm:flex' : 'flex'} flex-wrap items-center gap-2`}>
-            <button
-              onClick={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
-              disabled={isLoading || !tenantId}
-              title={isDemoMode ? 'Sync is disabled in this demo' : 'Sync Notion Data'}
-              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-              className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50"
-            >
-              <span className={isLoading ? "animate-spin" : ""}><IconSync /></span>
-              <span>Sync</span>
-            </button>
-
-            <button
-              onClick={() => setShowSettings(true)}
-              title="Widget Settings & Customization"
-              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-              className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors"
-            >
-              <IconSettings />
-              <span>Settings</span>
-            </button>
-
-            <button
-              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-              className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1"
-            >
-              <IconFolder />
-              <span>{isSidebarOpen ? 'Hide Projects' : 'Projects'}</span>
-            </button>
-
-            <button
-              onClick={() => {
-                if (viewMode !== 'gallery' && viewMode !== 'import') setPreGalleryViewMode(viewMode);
-                setViewMode('import');
-              }}
-              disabled={isDemoMode || !tenantId}
-              title={isDemoMode ? 'Import is disabled in this demo' : 'Backlog photos from your device, dated from each photo\'s own EXIF data'}
-              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-              className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <IconUpload />
-              <span>Import Photos</span>
-            </button>
-          </div>
-
-          <button
-            onClick={() => setCurrentDate(today)}
-            style={{
-              backgroundColor: 'var(--theme-card)',
-              borderColor: 'var(--theme-primary)',
-              color: 'var(--theme-primary)'
-            }}
-            className="px-2.5 py-1.5 text-xs font-semibold rounded-md flex items-center gap-1.5 border cursor-pointer"
-          >
-            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--theme-primary)' }} />Today
-          </button>
-
-          {viewMode !== 'gallery' && viewMode !== 'import' && (
-            <div className="flex items-center p-0.5 rounded-lg border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
-              <button onClick={() => setViewMode('year')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
-              <button onClick={() => setViewMode('month')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
-              <button onClick={() => setViewMode('week')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
-            </div>
-          )}
-
-          {viewMode !== 'gallery' && viewMode !== 'import' && (
             <div className="flex items-center gap-1">
-              <button onClick={handlePrev} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">← Prev</button>
-              <button onClick={handleNext} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">Next →</button>
+              {isMobile && (
+                <button
+                  onClick={handlePrev}
+                  title="Previous year"
+                  className="font-light leading-none cursor-pointer hover:opacity-70 transition-opacity"
+                  style={{ fontSize: '1.5rem', color: 'var(--theme-primary)' }}
+                >
+                  ‹
+                </button>
+              )}
+              <div
+                className="font-light tracking-tight leading-none"
+                style={{ fontSize: titleBigSize, color: 'var(--theme-primary)' }}
+              >
+                {year}
+              </div>
+              {isMobile && (
+                <button
+                  onClick={handleNext}
+                  title="Next year"
+                  className="font-light leading-none cursor-pointer hover:opacity-70 transition-opacity"
+                  style={{ fontSize: '1.5rem', color: 'var(--theme-primary)' }}
+                >
+                  ›
+                </button>
+              )}
             </div>
           )}
+          <p className="hidden sm:block text-sm mt-2 opacity-60">Driven by Figma Tokens & Notion Data.</p>
         </div>
+
+        {isMobile ? (
+          /* MOBILE CONTROLS -- consolidated to one row so the calendar gets
+             the rest of the screen. Sync/Settings/Projects/Import Photos
+             move behind a single "more" button instead of sitting inline;
+             Prev/Next are dropped entirely in favor of swiping the calendar
+             itself (see handleCalendarTouchStart/End on <main>) -- month and
+             week navigation on a phone should feel like paging through
+             photos, not like clicking a web nav bar. Hidden entirely during
+             Import, which has its own project picker and needs the room
+             (Back to Calendar in the title covers navigating away). */
+          viewMode !== 'import' && (
+            <div className="relative flex items-center gap-2 w-full">
+              {viewMode !== 'gallery' && (
+                <div className="flex items-center p-0.5 rounded-lg border shrink-0" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
+                  <button onClick={() => setViewMode('year')} className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
+                  <button onClick={() => setViewMode('month')} className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
+                  <button onClick={() => setViewMode('week')} className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
+                </div>
+              )}
+
+              <div className="flex items-center gap-1.5 ml-auto shrink-0">
+                {viewMode !== 'gallery' && (
+                  <button
+                    onClick={() => setCurrentDate(today)}
+                    title="Jump to today"
+                    style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)' }}
+                    className="w-8 h-8 rounded-full border flex items-center justify-center cursor-pointer"
+                  >
+                    <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: 'var(--theme-primary)' }} />
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowMobileMenu((v) => !v)}
+                  title="More"
+                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                  className="w-8 h-8 rounded-full border flex items-center justify-center text-lg font-black leading-none cursor-pointer"
+                >
+                  ⋯
+                </button>
+              </div>
+
+              {showMobileMenu && (
+                <>
+                  {/* Full-screen tap-catcher to dismiss -- not a visible
+                      backdrop, since the menu is a small anchored dropdown
+                      rather than a full modal. */}
+                  <div className="fixed inset-0 z-40" onClick={() => setShowMobileMenu(false)} />
+                  <div
+                    style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                    className="absolute right-0 top-full mt-2 z-50 w-56 rounded-lg border shadow-xl overflow-hidden"
+                  >
+                    <button
+                      onClick={() => { setShowMobileMenu(false); if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
+                      disabled={isLoading || !tenantId}
+                      style={{ borderColor: 'var(--theme-border)' }}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left border-b cursor-pointer disabled:opacity-50"
+                    >
+                      <span className={isLoading ? 'animate-spin' : ''}><IconSync /></span>
+                      <span>{isDemoMode ? 'Sync (disabled in demo)' : 'Sync'}</span>
+                    </button>
+                    <button
+                      onClick={() => { setShowMobileMenu(false); setShowSettings(true); }}
+                      style={{ borderColor: 'var(--theme-border)' }}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left border-b cursor-pointer"
+                    >
+                      <IconSettings />
+                      <span>Settings</span>
+                    </button>
+                    <button
+                      onClick={() => { setShowMobileMenu(false); setIsSidebarOpen(!isSidebarOpen); }}
+                      style={{ borderColor: 'var(--theme-border)' }}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left border-b cursor-pointer"
+                    >
+                      <IconFolder />
+                      <span>{isSidebarOpen ? 'Hide Projects' : 'Projects'}</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowMobileMenu(false);
+                        if (viewMode !== 'gallery' && viewMode !== 'import') setPreGalleryViewMode(viewMode);
+                        setViewMode('import');
+                      }}
+                      disabled={isDemoMode || !tenantId}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left cursor-pointer disabled:opacity-50"
+                    >
+                      <IconUpload />
+                      <span>Import Photos</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <div className={`${viewMode === 'import' ? 'hidden sm:flex' : 'flex'} flex-wrap items-center gap-2`}>
+              <button
+                onClick={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
+                disabled={isLoading || !tenantId}
+                title={isDemoMode ? 'Sync is disabled in this demo' : 'Sync Notion Data'}
+                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50"
+              >
+                <span className={isLoading ? "animate-spin" : ""}><IconSync /></span>
+                <span>Sync</span>
+              </button>
+
+              <button
+                onClick={() => setShowSettings(true)}
+                title="Widget Settings & Customization"
+                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors"
+              >
+                <IconSettings />
+                <span>Settings</span>
+              </button>
+
+              <button
+                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1"
+              >
+                <IconFolder />
+                <span>{isSidebarOpen ? 'Hide Projects' : 'Projects'}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  if (viewMode !== 'gallery' && viewMode !== 'import') setPreGalleryViewMode(viewMode);
+                  setViewMode('import');
+                }}
+                disabled={isDemoMode || !tenantId}
+                title={isDemoMode ? 'Import is disabled in this demo' : 'Backlog photos from your device, dated from each photo\'s own EXIF data'}
+                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <IconUpload />
+                <span>Import Photos</span>
+              </button>
+            </div>
+
+            <button
+              onClick={() => setCurrentDate(today)}
+              style={{
+                backgroundColor: 'var(--theme-card)',
+                borderColor: 'var(--theme-primary)',
+                color: 'var(--theme-primary)'
+              }}
+              className="px-2.5 py-1.5 text-xs font-semibold rounded-md flex items-center gap-1.5 border cursor-pointer"
+            >
+              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--theme-primary)' }} />Today
+            </button>
+
+            {viewMode !== 'gallery' && viewMode !== 'import' && (
+              <div className="flex items-center p-0.5 rounded-lg border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
+                <button onClick={() => setViewMode('year')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
+                <button onClick={() => setViewMode('month')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
+                <button onClick={() => setViewMode('week')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
+              </div>
+            )}
+
+            {viewMode !== 'gallery' && viewMode !== 'import' && (
+              <div className="flex items-center gap-1">
+                <button onClick={handlePrev} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">← Prev</button>
+                <button onClick={handleNext} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">Next →</button>
+              </div>
+            )}
+          </div>
+        )}
       </header>
 
       {/* GLOBAL LOADING / ERROR ALERTS */}
@@ -2293,8 +2440,10 @@ function App() {
         )}
 
         {/* CALENDAR CANVAS */}
-        <main 
-          ref={calendarRef} 
+        <main
+          ref={calendarRef}
+          onTouchStart={handleCalendarTouchStart}
+          onTouchEnd={handleCalendarTouchEnd}
           style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
           className="flex-1 h-full min-h-0 min-w-0 border rounded-xl shadow-sm p-4 overflow-hidden flex flex-col relative transition-colors"
         >
