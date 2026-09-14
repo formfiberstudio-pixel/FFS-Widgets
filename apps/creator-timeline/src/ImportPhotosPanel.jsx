@@ -138,7 +138,15 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
     for (const [date, groupPhotos] of groups) {
       let pageId = null;
-      const formattedDate = new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      // `date` is a bare "YYYY-MM-DD" -- new Date(date) would parse that as
+      // UTC midnight (a spec guarantee for date-only ISO strings) and then
+      // render it in the browser's LOCAL timezone, which is exactly the
+      // bug just fixed on the write side, just for the title text instead
+      // of the Notion date property. Building the Date from the parsed
+      // components instead keeps it entirely in local semantics, so
+      // formatting can't shift it across a day boundary.
+      const [dY, dM, dD] = date.split('-').map(Number);
+      const formattedDate = new Date(dY, dM - 1, dD).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
       for (const photo of groupPhotos) {
         try {
