@@ -792,6 +792,14 @@ function WeekDayColumn({
 // -------------------------------------------------------------
 const MOBILE_BREAKPOINT = 640;
 
+// Mobile Month view's continuous scroll shows exactly this many week rows
+// at once (scroll-snapped, see monthScrollContainerRef) -- the row/cell
+// size itself doesn't change, only how many are visible before the rest
+// of the screen goes to the visible-projects panel below the grid.
+const MOBILE_MONTH_ROW_HEIGHT = 78;
+const MOBILE_MONTH_ROW_GAP = 4;
+const MOBILE_MONTH_VISIBLE_ROWS = 4;
+
 function App() {
   const today = new Date();
   const [currentDate, setCurrentDate] = useState(today);
@@ -819,6 +827,12 @@ function App() {
   // this list never disturbs the date other views are showing.
   const mobileMonthWeeks = useMemo(() => buildContinuousWeeks(new Date(), 6, 6), []);
   const [mobileVisibleMonthDate, setMobileVisibleMonthDate] = useState(() => new Date());
+  // Index of whichever week row is snapped to the top of the scroll --
+  // with exactly MOBILE_MONTH_VISIBLE_ROWS rows visible and scroll-snap
+  // keeping that top row's start aligned to the container, the visible
+  // window is always [this index, this index + rows). Drives the
+  // "projects logged in the visible weeks" panel below the grid.
+  const [mobileMonthVisibleStartIdx, setMobileMonthVisibleStartIdx] = useState(0);
   const monthScrollContainerRef = useRef(null);
   const monthWeekRowRefs = useRef([]);
   const dayLongPressRef = useRef({ timer: null, triggered: false });
@@ -1890,14 +1904,16 @@ function App() {
     if (!container) return;
     const containerTop = container.getBoundingClientRect().top;
     let closestEl = null;
+    let closestIdx = -1;
     let closestDist = Infinity;
-    for (const el of monthWeekRowRefs.current) {
-      if (!el) continue;
+    monthWeekRowRefs.current.forEach((el, idx) => {
+      if (!el) return;
       const dist = Math.abs(el.getBoundingClientRect().top - containerTop);
-      if (dist < closestDist) { closestDist = dist; closestEl = el; }
-    }
+      if (dist < closestDist) { closestDist = dist; closestEl = el; closestIdx = idx; }
+    });
     const iso = closestEl?.dataset.midDate;
     if (iso) setMobileVisibleMonthDate(new Date(iso));
+    if (closestIdx >= 0) setMobileMonthVisibleStartIdx(closestIdx);
   };
 
   // Scrolls the continuous list back to the row containing `today` --
@@ -1907,8 +1923,14 @@ function App() {
   const scrollMobileMonthToToday = () => {
     const todayIso = new Date().toDateString();
     const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === todayIso));
+    if (idx < 0) return;
+    // 'start' rather than 'center' -- matches the scroll-snap grid (each
+    // row snaps to the container's top edge), so today's row lands as the
+    // first of the visible rows instead of settling one snap-step off.
     const el = monthWeekRowRefs.current[idx];
-    if (el) el.scrollIntoView({ block: 'center' });
+    if (el) el.scrollIntoView({ block: 'start' });
+    setMobileMonthVisibleStartIdx(idx);
+    setMobileVisibleMonthDate(mobileMonthWeeks[idx][3]);
   };
 
   // The continuous list otherwise opens scrolled to its top (6 months back
@@ -2020,15 +2042,30 @@ function App() {
   }
 
   return (
-    <div 
-      ref={appRef} 
-      style={{ ...themeVars, backgroundColor: 'var(--theme-bg)', color: 'var(--theme-text)' }}
+    <div
+      ref={appRef}
+      // 100vh (the h-screen class below) is taller than the ACTUAL visible
+      // area on most mobile browsers, which size it against the largest
+      // possible viewport (address bar hidden) rather than the current
+      // one -- that extra height is what let the whole page scroll,
+      // dragging the header along with it, instead of only the calendar's
+      // own inner scroll region moving. 100dvh tracks the real visible
+      // viewport; h-screen stays as a fallback for browsers that don't
+      // support dvh (an unparsed value is dropped, not applied, so the
+      // class's 100vh takes over for those).
+      style={{ ...themeVars, backgroundColor: 'var(--theme-bg)', color: 'var(--theme-text)', height: '100dvh' }}
       className="w-full h-screen flex flex-col p-4 sm:p-6 overflow-hidden select-none transition-colors duration-300"
     >
-      
-      {/* HEADER */}
-      <header className="shrink-0 mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div>
+
+      {/* HEADER -- sticky (not just a non-scrolling flex sibling) so it
+          stays pinned even under the mobile viewport quirks the 100dvh
+          fix above targets, with a solid background so scrolled content
+          doesn't show through underneath it. */}
+      <header
+        style={{ backgroundColor: 'var(--theme-bg)' }}
+        className={`sticky top-0 z-30 shrink-0 flex items-center justify-between gap-2 ${isMobile ? 'flex-nowrap mb-2' : 'flex-wrap gap-3 mb-5'}`}
+      >
+        <div className="min-w-0 shrink">
           {viewMode === 'gallery' ? (
             <div className="leading-none">
               <button
@@ -2144,22 +2181,22 @@ function App() {
              Import, which has its own project picker and needs the room
              (Back to Calendar in the title covers navigating away). */
           viewMode !== 'import' && (
-            <div className="relative flex items-center gap-2 w-full">
+            <div className="relative flex items-center gap-1.5 shrink-0">
               {viewMode !== 'gallery' && (
                 <div className="flex items-center p-0.5 rounded-lg border shrink-0" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
-                  <button onClick={() => setViewMode('year')} className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
-                  <button onClick={() => setViewMode('month')} className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
-                  <button onClick={() => setViewMode('week')} className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
+                  <button onClick={() => setViewMode('year')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
+                  <button onClick={() => setViewMode('month')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
+                  <button onClick={() => setViewMode('week')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
                 </div>
               )}
 
-              <div className="flex items-center gap-1.5 ml-auto shrink-0">
+              <div className="flex items-center gap-1.5 shrink-0">
                 {viewMode !== 'gallery' && (
                   <button
                     onClick={() => { if (viewMode === 'month') scrollMobileMonthToToday(); else setCurrentDate(today); }}
                     title="Jump to today"
                     style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)' }}
-                    className="w-8 h-8 rounded-full border flex items-center justify-center cursor-pointer"
+                    className="w-7 h-7 rounded-full border flex items-center justify-center cursor-pointer"
                   >
                     <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: 'var(--theme-primary)' }} />
                   </button>
@@ -2168,7 +2205,7 @@ function App() {
                   onClick={() => setShowMobileMenu((v) => !v)}
                   title="More"
                   style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                  className="w-8 h-8 rounded-full border flex items-center justify-center text-lg font-black leading-none cursor-pointer"
+                  className="w-7 h-7 rounded-full border flex items-center justify-center text-base font-black leading-none cursor-pointer"
                 >
                   ⋯
                 </button>
@@ -2672,93 +2709,135 @@ function App() {
           })()}
 
           {/* A. MONTH VIEW */}
-          {viewMode === 'month' && isMobile && (
-            /* Continuous vertical scroll (see mobileMonthWeeks) instead of
-               one month at a time -- a week row is always 7 real dates, so
-               the first row of August also shows the tail end of July
-               rather than leaving those cells blank. No per-row "open
-               weekly view" arrow (long-press a day instead, see
-               handleDayTouchStart) and no entry-title overlay (see the
-               conversation that led here) -- both were fighting the photo
-               thumbnail for the little width/space a phone-width day cell
-               has to give. */
-            <div className="flex flex-col h-full w-full min-h-0">
-              <div className="grid text-center font-semibold uppercase tracking-wider mb-1.5 shrink-0" style={{ gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: '4px', fontSize: '10px' }}>
-                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, idx) => (
-                  <div key={day} className={idx === 0 || idx === 6 ? 'font-bold' : 'opacity-60'} style={{ color: idx === 0 || idx === 6 ? 'var(--theme-primary)' : undefined }}>{day}</div>
-                ))}
-              </div>
+          {viewMode === 'month' && isMobile && (() => {
+            const visibleWeeks = mobileMonthWeeks.slice(mobileMonthVisibleStartIdx, mobileMonthVisibleStartIdx + MOBILE_MONTH_VISIBLE_ROWS);
+            // Projects logged anywhere in the currently-visible weeks --
+            // recomputed on every scroll-snap step (see handleMonthScroll)
+            // so the panel below the grid always reflects what's on screen.
+            const visibleProjects = new Map();
+            for (const week of visibleWeeks) {
+              for (const d of week) {
+                const dayLogs = getLogsForDate(d);
+                for (const log of dayLogs) {
+                  const key = log.Projects || 'Untitled Project';
+                  if (visibleProjects.has(key)) continue;
+                  visibleProjects.set(key, getPillBackground(log, getDisplayDotColor(dayLogs, d)));
+                }
+              }
+            }
 
-              <div
-                ref={monthScrollContainerRef}
-                onScroll={handleMonthScroll}
-                className="flex-1 min-h-0 overflow-y-auto flex flex-col"
-                style={{ gap: '4px' }}
-              >
-                {mobileMonthWeeks.map((weekDays, rowIndex) => (
-                  <div
-                    key={rowIndex}
-                    ref={(el) => { monthWeekRowRefs.current[rowIndex] = el; }}
-                    data-mid-date={weekDays[3].toDateString()}
-                    className="grid shrink-0"
-                    style={{ gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: '4px', height: '78px' }}
-                  >
-                    {weekDays.map((dateObj, dIdx) => {
-                      const logs = getLogsForDate(dateObj);
-                      const hasLog = logs.length > 0;
-                      const hasMultipleProjects = new Set(logs.map(l => l.Projects || 'Untitled Project')).size > 1;
-                      const { primaryLog, isHalftoned } = getThumbnailLogForDate(dateObj, logs);
-                      const displayDotHex = getDisplayDotColor(logs, dateObj);
-                      const pillBackground = hasLog && primaryLog ? getPillBackground(primaryLog, displayDotHex) : displayDotHex;
-                      const specialDay = getSpecialDayForDate(dateObj, specialDays);
-                      const dotStyle = getDayDotStyling(dateObj, hasLog, pillBackground, specialDay);
-                      const isFirstOfMonth = dateObj.getDate() === 1;
+            return (
+              /* Continuous vertical scroll (see mobileMonthWeeks) instead of
+                 one month at a time -- a week row is always 7 real dates, so
+                 the first row of August also shows the tail end of July
+                 rather than leaving those cells blank. No per-row "open
+                 weekly view" arrow (long-press a day instead, see
+                 handleDayTouchStart) and no entry-title overlay -- both were
+                 fighting the photo thumbnail for the little space a phone-
+                 width day cell has to give. Capped to MOBILE_MONTH_VISIBLE_ROWS
+                 rows with scroll-snap so a row is always either fully in
+                 view or fully scrolled past, never half-cut; the vertical
+                 space that frees up goes to the visible-projects panel
+                 below instead of just showing more (smaller) rows. */
+              <div className="flex flex-col h-full w-full min-h-0">
+                <div className="grid text-center font-semibold uppercase tracking-wider mb-1.5 shrink-0" style={{ gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: '4px', fontSize: '10px' }}>
+                  {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, idx) => (
+                    <div key={day} className={idx === 0 || idx === 6 ? 'font-bold' : 'opacity-60'} style={{ color: idx === 0 || idx === 6 ? 'var(--theme-primary)' : undefined }}>{day}</div>
+                  ))}
+                </div>
 
-                      return (
-                        <div
-                          key={dIdx}
-                          onClick={() => handleDayClick(dateObj, logs)}
-                          onTouchStart={handleDayTouchStart(dateObj)}
-                          onTouchEnd={handleDayTouchEnd}
-                          onTouchMove={handleDayTouchEnd}
-                          style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
-                          className={`h-full w-full relative overflow-hidden border cursor-pointer ${isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''}`}
-                        >
-                          {hasLog && primaryLog?.imageUrl && (
-                            <img
-                              src={primaryLog.imageUrl}
-                              className={`absolute inset-0 w-full h-full object-cover z-0 ${isHalftoned ? 'opacity-40' : ''}`}
-                              alt=""
-                              decoding="async"
-                              loading="lazy"
-                            />
-                          )}
+                <div
+                  ref={monthScrollContainerRef}
+                  onScroll={handleMonthScroll}
+                  className="flex flex-col shrink-0"
+                  style={{
+                    gap: `${MOBILE_MONTH_ROW_GAP}px`,
+                    height: `${MOBILE_MONTH_VISIBLE_ROWS * MOBILE_MONTH_ROW_HEIGHT + (MOBILE_MONTH_VISIBLE_ROWS - 1) * MOBILE_MONTH_ROW_GAP}px`,
+                    overflowY: 'auto',
+                    scrollSnapType: 'y mandatory',
+                  }}
+                >
+                  {mobileMonthWeeks.map((weekDays, rowIndex) => (
+                    <div
+                      key={rowIndex}
+                      ref={(el) => { monthWeekRowRefs.current[rowIndex] = el; }}
+                      data-mid-date={weekDays[3].toDateString()}
+                      className="grid shrink-0"
+                      style={{ gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: `${MOBILE_MONTH_ROW_GAP}px`, height: `${MOBILE_MONTH_ROW_HEIGHT}px`, scrollSnapAlign: 'start' }}
+                    >
+                      {weekDays.map((dateObj, dIdx) => {
+                        const logs = getLogsForDate(dateObj);
+                        const hasLog = logs.length > 0;
+                        const hasMultipleProjects = new Set(logs.map(l => l.Projects || 'Untitled Project')).size > 1;
+                        const { primaryLog, isHalftoned } = getThumbnailLogForDate(dateObj, logs);
+                        const displayDotHex = getDisplayDotColor(logs, dateObj);
+                        const pillBackground = hasLog && primaryLog ? getPillBackground(primaryLog, displayDotHex) : displayDotHex;
+                        const specialDay = getSpecialDayForDate(dateObj, specialDays);
+                        const dotStyle = getDayDotStyling(dateObj, hasLog, pillBackground, specialDay);
+
+                        return (
                           <div
-                            className={`absolute top-1 left-1 flex items-center justify-center font-bold shadow-sm border z-10 ${isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''}`}
-                            style={{
-                              minWidth: isFirstOfMonth ? undefined : '18px',
-                              height: '18px',
-                              padding: isFirstOfMonth ? '0 5px' : undefined,
-                              borderRadius: '9px',
-                              fontSize: '9px',
-                              background: isToday(dateObj) ? 'var(--theme-primary)' : dotStyle.bg,
-                              color: isToday(dateObj) ? '#FFFFFF' : dotStyle.text,
-                              borderColor: dotStyle.border,
-                            }}
+                            key={dIdx}
+                            onClick={() => handleDayClick(dateObj, logs)}
+                            onTouchStart={handleDayTouchStart(dateObj)}
+                            onTouchEnd={handleDayTouchEnd}
+                            onTouchMove={handleDayTouchEnd}
+                            style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
+                            className={`h-full w-full relative overflow-hidden border cursor-pointer ${isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''}`}
                           >
-                            {isFirstOfMonth ? dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : dateObj.getDate()}
-                            {hasMultipleProjects && (
-                              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-white text-[6px] font-black flex items-center justify-center leading-none border border-white shadow-xs" style={{ backgroundColor: 'var(--theme-secondary)' }}>+</span>
+                            {hasLog && primaryLog?.imageUrl && (
+                              <img
+                                src={primaryLog.imageUrl}
+                                className={`absolute inset-0 w-full h-full object-cover z-0 ${isHalftoned ? 'opacity-40' : ''}`}
+                                alt=""
+                                decoding="async"
+                                loading="lazy"
+                              />
                             )}
+                            <div
+                              className={`absolute top-1 left-1 flex items-center justify-center font-bold shadow-sm border z-10 ${isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''}`}
+                              style={{
+                                width: '18px',
+                                height: '18px',
+                                borderRadius: '9px',
+                                fontSize: '9px',
+                                background: isToday(dateObj) ? 'var(--theme-primary)' : dotStyle.bg,
+                                color: isToday(dateObj) ? '#FFFFFF' : dotStyle.text,
+                                borderColor: dotStyle.border,
+                              }}
+                            >
+                              {dateObj.getDate()}
+                              {hasMultipleProjects && (
+                                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-white text-[6px] font-black flex items-center justify-center leading-none border border-white shadow-xs" style={{ backgroundColor: 'var(--theme-secondary)' }}>+</span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+
+                {/* PROJECTS LOGGED IN THE VISIBLE WEEKS -- fills the space
+                    freed up by capping the grid to MOBILE_MONTH_VISIBLE_ROWS
+                    rather than letting it stretch to the rest of the screen. */}
+                <div className="flex-1 min-h-0 overflow-y-auto pt-3 mt-1 border-t" style={{ borderColor: 'var(--theme-border)' }}>
+                  <div className="text-[10px] font-bold uppercase tracking-wide opacity-50 mb-2">Logged this scroll</div>
+                  {visibleProjects.size === 0 ? (
+                    <div className="text-xs italic opacity-40">Nothing logged in the visible weeks.</div>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      {Array.from(visibleProjects.entries()).map(([name, bg]) => (
+                        <span key={name} className="inline-flex items-center font-bold text-white px-2.5 py-1 rounded-full leading-none" style={{ background: bg, fontSize: '11px' }}>
+                          {name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {viewMode === 'month' && !isMobile && (
             <div className="flex flex-col h-full w-full min-h-0">
