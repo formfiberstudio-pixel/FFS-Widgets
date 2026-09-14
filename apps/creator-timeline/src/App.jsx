@@ -833,6 +833,11 @@ function App() {
   // window is always [this index, this index + rows). Drives the
   // "projects logged in the visible weeks" panel below the grid.
   const [mobileMonthVisibleStartIdx, setMobileMonthVisibleStartIdx] = useState(0);
+  // Collapse state for the visible-projects panel's per-database groups --
+  // kept separate from the sidebar's collapsedSources so toggling one
+  // doesn't also toggle the other; they're the same grouping concept but
+  // different surfaces the user shouldn't have to keep in sync.
+  const [mobilePanelCollapsedSources, setMobilePanelCollapsedSources] = useState({});
   const monthScrollContainerRef = useRef(null);
   const monthWeekRowRefs = useRef([]);
   const dayLongPressRef = useRef({ timer: null, triggered: false });
@@ -2711,20 +2716,25 @@ function App() {
           {/* A. MONTH VIEW */}
           {viewMode === 'month' && isMobile && (() => {
             const visibleWeeks = mobileMonthWeeks.slice(mobileMonthVisibleStartIdx, mobileMonthVisibleStartIdx + MOBILE_MONTH_VISIBLE_ROWS);
-            // Projects logged anywhere in the currently-visible weeks --
-            // recomputed on every scroll-snap step (see handleMonthScroll)
-            // so the panel below the grid always reflects what's on screen.
-            const visibleProjects = new Map();
+            // Projects logged anywhere in the currently-visible weeks,
+            // grouped by source database -- recomputed on every scroll-snap
+            // step (see handleMonthScroll) so the panel below the grid
+            // always reflects what's on screen.
+            const visibleBySource = new Map();
             for (const week of visibleWeeks) {
               for (const d of week) {
                 const dayLogs = getLogsForDate(d);
                 for (const log of dayLogs) {
-                  const key = log.Projects || 'Untitled Project';
-                  if (visibleProjects.has(key)) continue;
-                  visibleProjects.set(key, getPillBackground(log, getDisplayDotColor(dayLogs, d)));
+                  const source = log.source || 'Activity Log';
+                  const projectKey = log.Projects || 'Untitled Project';
+                  if (!visibleBySource.has(source)) visibleBySource.set(source, new Map());
+                  const projectsForSource = visibleBySource.get(source);
+                  if (projectsForSource.has(projectKey)) continue;
+                  projectsForSource.set(projectKey, getPillBackground(log, getDisplayDotColor(dayLogs, d)));
                 }
               }
             }
+            const showSourceHeaders = visibleBySource.size > 1;
 
             return (
               /* Continuous vertical scroll (see mobileMonthWeeks) instead of
@@ -2774,6 +2784,12 @@ function App() {
                         const pillBackground = hasLog && primaryLog ? getPillBackground(primaryLog, displayDotHex) : displayDotHex;
                         const specialDay = getSpecialDayForDate(dateObj, specialDays);
                         const dotStyle = getDayDotStyling(dateObj, hasLog, pillBackground, specialDay);
+                        // Tapping a project pill in the panel below sets
+                        // hoveredProjectTitle (same state desktop's mouse
+                        // hover uses) -- matching entries ring, everything
+                        // else dims, exactly like the desktop hover effect.
+                        const isHighlightedProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
+                        const isDimmedByHighlight = hoveredProjectTitle && !isHighlightedProject;
 
                         return (
                           <div
@@ -2782,20 +2798,20 @@ function App() {
                             onTouchStart={handleDayTouchStart(dateObj)}
                             onTouchEnd={handleDayTouchEnd}
                             onTouchMove={handleDayTouchEnd}
-                            style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
-                            className={`h-full w-full relative overflow-hidden border cursor-pointer ${isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''}`}
+                            style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-bg)', borderColor: isHighlightedProject ? 'var(--theme-secondary)' : 'var(--theme-border)' }}
+                            className={`h-full w-full relative overflow-hidden border cursor-pointer transition-all ${isHighlightedProject ? 'ring-2 ring-[var(--theme-secondary)] z-20' : isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''}`}
                           >
                             {hasLog && primaryLog?.imageUrl && (
                               <img
                                 src={primaryLog.imageUrl}
-                                className={`absolute inset-0 w-full h-full object-cover z-0 ${isHalftoned ? 'opacity-40' : ''}`}
+                                className={`absolute inset-0 w-full h-full object-cover z-0 transition-opacity ${isHalftoned ? 'opacity-40' : ''} ${isDimmedByHighlight ? 'opacity-30 grayscale' : ''}`}
                                 alt=""
                                 decoding="async"
                                 loading="lazy"
                               />
                             )}
                             <div
-                              className={`absolute top-1 left-1 flex items-center justify-center font-bold shadow-sm border z-10 ${isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''}`}
+                              className={`absolute top-1 left-1 flex items-center justify-center font-bold shadow-sm border z-10 transition-opacity ${isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''} ${isDimmedByHighlight ? 'opacity-40' : ''}`}
                               style={{
                                 width: '18px',
                                 height: '18px',
@@ -2819,19 +2835,51 @@ function App() {
                 </div>
 
                 {/* PROJECTS LOGGED IN THE VISIBLE WEEKS -- fills the space
-                    freed up by capping the grid to MOBILE_MONTH_VISIBLE_ROWS
-                    rather than letting it stretch to the rest of the screen. */}
+                    freed up by capping the grid to MOBILE_MONTH_VISIBLE_ROWS,
+                    grouped by source database (collapsible per group, own
+                    state from the sidebar's). Tapping a pill sets
+                    hoveredProjectTitle -- the same state desktop's mouse
+                    hover uses -- to ring/dim matching entries in the grid
+                    above; tapping it again clears the highlight. */}
                 <div className="flex-1 min-h-0 overflow-y-auto pt-3 mt-1 border-t" style={{ borderColor: 'var(--theme-border)' }}>
                   <div className="text-[10px] font-bold uppercase tracking-wide opacity-50 mb-2">Logged this scroll</div>
-                  {visibleProjects.size === 0 ? (
+                  {visibleBySource.size === 0 ? (
                     <div className="text-xs italic opacity-40">Nothing logged in the visible weeks.</div>
                   ) : (
-                    <div className="flex flex-wrap gap-1.5">
-                      {Array.from(visibleProjects.entries()).map(([name, bg]) => (
-                        <span key={name} className="inline-flex items-center font-bold text-white px-2.5 py-1 rounded-full leading-none" style={{ background: bg, fontSize: '11px' }}>
-                          {name}
-                        </span>
-                      ))}
+                    <div className="space-y-2.5">
+                      {Array.from(visibleBySource.entries()).map(([source, projects]) => {
+                        const isCollapsed = showSourceHeaders && mobilePanelCollapsedSources[source] === true;
+                        return (
+                          <div key={source}>
+                            {showSourceHeaders && (
+                              <button
+                                onClick={() => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
+                                className="flex items-center gap-1 mb-1.5 cursor-pointer"
+                              >
+                                <span className={`text-[9px] transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>▾</span>
+                                <span className="text-[10px] font-bold uppercase tracking-wide opacity-70">{source}</span>
+                              </button>
+                            )}
+                            {!isCollapsed && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {Array.from(projects.entries()).map(([name, bg]) => {
+                                  const isActive = hoveredProjectTitle === name;
+                                  return (
+                                    <button
+                                      key={name}
+                                      onClick={() => setHoveredProjectTitle(isActive ? null : name)}
+                                      className={`inline-flex items-center font-bold text-white px-2.5 py-1 rounded-full leading-none cursor-pointer transition-all ${isActive ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1' : hoveredProjectTitle ? 'opacity-40' : ''}`}
+                                      style={{ background: bg, fontSize: '11px' }}
+                                    >
+                                      {name}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

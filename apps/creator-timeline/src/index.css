@@ -1,5 +1,25 @@
 @import "tailwindcss";
 
+/* Pins the page itself so ONLY the app's own designated inner containers
+   (the calendar canvas, the mobile month scroll, etc.) ever scroll -- not
+   the page/body. Without this, mobile browsers can end up scrolling the
+   whole document by a few pixels (rounding, a sticky element, the address
+   bar collapsing) even though the app's own root div is sized and clipped
+   correctly, which drags "fixed"/sticky elements like the header along
+   with it. overscroll-behavior additionally kills the iOS/Android rubber-
+   band bounce, which can visually do the same thing at a scroll boundary
+   even with overflow already hidden. */
+@layer base {
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  #root {
+    height: 100%;
+  }
+}
+
 /* Sleek, minimal scrollbars everywhere by default. Kept in the `base`
    layer so spots that deliberately hide their scrollbar entirely (the
    sidebar category list, the photo lightbox carousel -- both styled via
