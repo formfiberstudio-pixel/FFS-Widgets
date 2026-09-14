@@ -838,9 +838,13 @@ function App() {
   // doesn't also toggle the other; they're the same grouping concept but
   // different surfaces the user shouldn't have to keep in sync.
   const [mobilePanelCollapsedSources, setMobilePanelCollapsedSources] = useState({});
+  // Mobile Month view: the week (identified by its Sunday) a day tap has
+  // selected/previewed, if any -- see handleMonthDayTap. Highlights that
+  // row in the grid and scopes the panel below to just its projects; a
+  // second tap within the same week commits to the Week view instead.
+  const [selectedWeekStartDate, setSelectedWeekStartDate] = useState(null);
   const monthScrollContainerRef = useRef(null);
   const monthWeekRowRefs = useRef([]);
-  const dayLongPressRef = useRef({ timer: null, triggered: false });
   const [selectedProjectFilters, setSelectedProjectFilters] = useState([]);
   const [selectedLogModal, setSelectedLogModal] = useState(null);
   // Which single project's photo gallery is showing in place of the
@@ -1947,27 +1951,34 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, isMobile]);
 
-  // Long-press a day cell (mobile Month view) to jump into that week's
-  // entry gallery instead of the single-day modal a normal tap opens --
-  // replaces the old per-row "open weekly view" arrow button, which ate
-  // width that now goes to the day cells themselves.
-  const LONG_PRESS_MS = 450;
-  const handleDayTouchStart = (dateObj) => () => {
-    if (!isMobile) return;
-    dayLongPressRef.current.triggered = false;
-    dayLongPressRef.current.timer = setTimeout(() => {
-      dayLongPressRef.current.triggered = true;
-      if (navigator.vibrate) navigator.vibrate(12);
+  const handleDayClick = (dateObj, logs) => {
+    if (dateObj) setSelectedLogModal({ dateObj, logs });
+  };
+
+  // Mobile Month view's day-cell tap is two-step rather than opening the
+  // day modal directly: first tap on a date selects/highlights its whole
+  // week (and scopes the panel below the grid to just that week's
+  // projects, see visibleBySource's selectedWeekStartDate branch); a
+  // second tap anywhere in that same already-selected week commits and
+  // opens the week gallery, whose own entry cards are what reach the
+  // single-day modal (see the mobile Week view). Tapping a date in a
+  // DIFFERENT week just moves the selection there instead of opening
+  // anything, so switching your mind about which week costs one tap, not
+  // a trip back out.
+  const weekStartOf = (dateObj) => {
+    const d = new Date(dateObj);
+    d.setDate(d.getDate() - d.getDay());
+    return d;
+  };
+  const handleMonthDayTap = (dateObj) => {
+    const tappedWeekStart = weekStartOf(dateObj);
+    if (selectedWeekStartDate && selectedWeekStartDate.toDateString() === tappedWeekStart.toDateString()) {
       setCurrentDate(dateObj);
       setViewMode('week');
-    }, LONG_PRESS_MS);
-  };
-  const handleDayTouchEnd = () => {
-    if (dayLongPressRef.current.timer) clearTimeout(dayLongPressRef.current.timer);
-  };
-  const handleDayClick = (dateObj, logs) => {
-    if (dayLongPressRef.current.triggered) { dayLongPressRef.current.triggered = false; return; }
-    if (dateObj) setSelectedLogModal({ dateObj, logs });
+      setSelectedWeekStartDate(null);
+    } else {
+      setSelectedWeekStartDate(tappedWeekStart);
+    }
   };
 
   // Smaller header title on mobile -- 3.25rem (52px) is sized for a desktop
@@ -2715,11 +2726,12 @@ function App() {
 
           {/* A. MONTH VIEW */}
           {viewMode === 'month' && isMobile && (() => {
-            const visibleWeeks = mobileMonthWeeks.slice(mobileMonthVisibleStartIdx, mobileMonthVisibleStartIdx + MOBILE_MONTH_VISIBLE_ROWS);
-            // Projects logged anywhere in the currently-visible weeks,
-            // grouped by source database -- recomputed on every scroll-snap
-            // step (see handleMonthScroll) so the panel below the grid
-            // always reflects what's on screen.
+            // A selected week (see handleMonthDayTap) narrows the panel to
+            // just that week's projects; otherwise it covers the whole
+            // scroll-snapped window, recomputed on every scroll step.
+            const visibleWeeks = selectedWeekStartDate
+              ? [Array.from({ length: 7 }, (_, i) => { const d = new Date(selectedWeekStartDate); d.setDate(d.getDate() + i); return d; })]
+              : mobileMonthWeeks.slice(mobileMonthVisibleStartIdx, mobileMonthVisibleStartIdx + MOBILE_MONTH_VISIBLE_ROWS);
             const visibleBySource = new Map();
             for (const week of visibleWeeks) {
               for (const d of week) {
@@ -2767,13 +2779,22 @@ function App() {
                     scrollSnapType: 'y mandatory',
                   }}
                 >
-                  {mobileMonthWeeks.map((weekDays, rowIndex) => (
+                  {mobileMonthWeeks.map((weekDays, rowIndex) => {
+                    const isSelectedWeek = selectedWeekStartDate && weekDays[0].toDateString() === selectedWeekStartDate.toDateString();
+                    return (
                     <div
                       key={rowIndex}
                       ref={(el) => { monthWeekRowRefs.current[rowIndex] = el; }}
                       data-mid-date={weekDays[3].toDateString()}
-                      className="grid shrink-0"
-                      style={{ gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: `${MOBILE_MONTH_ROW_GAP}px`, height: `${MOBILE_MONTH_ROW_HEIGHT}px`, scrollSnapAlign: 'start' }}
+                      style={{
+                        gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
+                        gap: `${MOBILE_MONTH_ROW_GAP}px`,
+                        height: `${MOBILE_MONTH_ROW_HEIGHT}px`,
+                        scrollSnapAlign: 'start',
+                        backgroundColor: isSelectedWeek ? 'color-mix(in srgb, var(--theme-primary) 12%, transparent)' : undefined,
+                        borderRadius: `${cardRadius}px`,
+                      }}
+                      className="grid shrink-0 transition-colors -mx-1 px-1"
                     >
                       {weekDays.map((dateObj, dIdx) => {
                         const logs = getLogsForDate(dateObj);
@@ -2794,12 +2815,9 @@ function App() {
                         return (
                           <div
                             key={dIdx}
-                            onClick={() => handleDayClick(dateObj, logs)}
-                            onTouchStart={handleDayTouchStart(dateObj)}
-                            onTouchEnd={handleDayTouchEnd}
-                            onTouchMove={handleDayTouchEnd}
-                            style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-bg)', borderColor: isHighlightedProject ? 'var(--theme-secondary)' : 'var(--theme-border)' }}
-                            className={`h-full w-full relative overflow-hidden border cursor-pointer transition-all ${isHighlightedProject ? 'ring-2 ring-[var(--theme-secondary)] z-20' : isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''}`}
+                            onClick={() => handleMonthDayTap(dateObj)}
+                            style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-bg)', borderColor: isHighlightedProject ? 'var(--theme-secondary)' : isSelectedWeek ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                            className={`h-full w-full relative overflow-hidden border cursor-pointer transition-all ${isHighlightedProject ? 'ring-2 ring-[var(--theme-secondary)] z-20' : isSelectedWeek ? 'ring-1 ring-[var(--theme-primary)] z-10' : isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''}`}
                           >
                             {hasLog && primaryLog?.imageUrl && (
                               <img
@@ -2831,7 +2849,8 @@ function App() {
                         );
                       })}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {/* PROJECTS LOGGED IN THE VISIBLE WEEKS -- fills the space
@@ -2842,9 +2861,14 @@ function App() {
                     hover uses -- to ring/dim matching entries in the grid
                     above; tapping it again clears the highlight. */}
                 <div className="flex-1 min-h-0 overflow-y-auto pt-3 mt-1 border-t" style={{ borderColor: 'var(--theme-border)' }}>
-                  <div className="text-[10px] font-bold uppercase tracking-wide opacity-50 mb-2">Logged this scroll</div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wide opacity-50">{selectedWeekStartDate ? 'Logged this week' : 'Logged this scroll'}</span>
+                    {selectedWeekStartDate && (
+                      <button onClick={() => setSelectedWeekStartDate(null)} className="text-[10px] font-bold opacity-50 hover:opacity-100 cursor-pointer">Clear</button>
+                    )}
+                  </div>
                   {visibleBySource.size === 0 ? (
-                    <div className="text-xs italic opacity-40">Nothing logged in the visible weeks.</div>
+                    <div className="text-xs italic opacity-40">{selectedWeekStartDate ? 'Nothing logged this week.' : 'Nothing logged in the visible weeks.'}</div>
                   ) : (
                     <div className="space-y-2.5">
                       {Array.from(visibleBySource.entries()).map(([source, projects]) => {
@@ -2941,7 +2965,12 @@ function App() {
                               borderColor: isHoveredProject ? 'var(--theme-secondary)' : 'var(--theme-border)'
                             }}
                             className={`h-full w-full relative overflow-hidden p-2 border cursor-pointer flex flex-col justify-end transition-all shadow-sm ${
-                              isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] shadow-md scale-[1.02] z-20' : isToday(slot.dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''
+                              // No scale-up on hover here (used to be
+                              // scale-[1.02]) -- it pushed cells right at
+                              // the grid's own edge past this <main>'s
+                              // overflow-hidden boundary, visibly clipping
+                              // them instead of highlighting them.
+                              isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] shadow-md z-20' : isToday(slot.dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''
                             }`}
                           >
                             {hasLog && primaryLog?.imageUrl && (
@@ -3156,7 +3185,147 @@ function App() {
           )}
 
           {/* C. YEAR VIEW */}
-          {viewMode === 'year' && (
+          {viewMode === 'year' && isMobile && (() => {
+            // Months as rows, days 1-31 as columns -- the desktop "portrait"
+            // layout (months as columns) needs horizontal scrolling to see
+            // the whole year on a phone; this doesn't, since 31 narrow dot
+            // columns fit in 375px without ever needing more than a glance.
+            // Bare dots (no day number) instead of the desktop's numbered
+            // circles -- there's no room to make a number legible at this
+            // column width, and the point here is the shape of a year's
+            // activity, not reading exact dates off it. Same
+            // grouped-by-database, tap-to-highlight panel as Month view,
+            // scoped to the whole displayed year rather than a scrolled
+            // window (nothing here needs scrolling in the first place).
+            const visibleBySource = new Map();
+            for (let m = 0; m < 12; m++) {
+              const daysInMonth = new Date(year, m + 1, 0).getDate();
+              for (let d = 1; d <= daysInMonth; d++) {
+                const dayLogs = getLogsForDate(new Date(year, m, d));
+                for (const log of dayLogs) {
+                  const source = log.source || 'Activity Log';
+                  const projectKey = log.Projects || 'Untitled Project';
+                  if (!visibleBySource.has(source)) visibleBySource.set(source, new Map());
+                  const projectsForSource = visibleBySource.get(source);
+                  if (projectsForSource.has(projectKey)) continue;
+                  projectsForSource.set(projectKey, getPillBackground(log, getDisplayDotColor(dayLogs, new Date(year, m, d))));
+                }
+              }
+            }
+            const showSourceHeaders = visibleBySource.size > 1;
+
+            return (
+              <div className="flex flex-col h-full w-full min-h-0">
+                <div className="grid shrink-0 mb-1" style={{ gridTemplateColumns: '30px repeat(31, minmax(0, 1fr))', gap: '2px' }}>
+                  <div />
+                  {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                    <div key={d} className="text-center opacity-40" style={{ fontSize: '7px' }}>
+                      {d === 1 || d % 5 === 0 ? d : ''}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-col shrink-0" style={{ gap: '2px' }}>
+                  {MONTH_NAMES.map((monthLabel, mIdx) => {
+                    const daysInMonth = new Date(year, mIdx + 1, 0).getDate();
+                    return (
+                      <div key={monthLabel} className="grid items-center" style={{ gridTemplateColumns: '30px repeat(31, minmax(0, 1fr))', gap: '2px', height: '17px' }}>
+                        <button
+                          onClick={() => { setCurrentDate(new Date(year, mIdx, 1)); setViewMode('month'); }}
+                          // Centered in the fixed 30px column rather than
+                          // left-aligned -- left-align kept the start flush
+                          // but let the far edge of each label ragged
+                          // differently per month (JAN vs SEP render at
+                          // different widths even at the same 3 characters);
+                          // centering balances the leftover space evenly on
+                          // both sides instead of dumping it all on one.
+                          className="w-full text-center font-bold uppercase tracking-wide opacity-70 cursor-pointer hover:opacity-100"
+                          style={{ fontSize: '9px' }}
+                        >
+                          {monthLabel}
+                        </button>
+                        {Array.from({ length: 31 }, (_, i) => i + 1).map((dayNum) => {
+                          if (dayNum > daysInMonth) return <div key={dayNum} />;
+                          const dateObj = new Date(year, mIdx, dayNum);
+                          const logs = getLogsForDate(dateObj);
+                          const hasLog = logs.length > 0;
+                          const displayDotHex = getDisplayDotColor(logs, dateObj);
+                          const specialDay = getSpecialDayForDate(dateObj, specialDays);
+                          const dotStyle = getDayDotStyling(dateObj, hasLog, displayDotHex, specialDay);
+                          const isHighlightedProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
+                          const isDimmedByHighlight = hoveredProjectTitle && !isHighlightedProject;
+
+                          return (
+                            <div key={dayNum} className="flex items-center justify-center h-full" onClick={() => handleDayClick(dateObj, logs)}>
+                              <div
+                                className={`rounded-full transition-all ${isToday(dateObj) ? 'ring-1 ring-[var(--theme-primary)] ring-offset-1' : ''} ${isHighlightedProject ? 'ring-1 ring-[var(--theme-secondary)]' : ''} ${isDimmedByHighlight ? 'opacity-25' : ''}`}
+                                style={{
+                                  width: hasLog ? '7px' : '4px',
+                                  height: hasLog ? '7px' : '4px',
+                                  background: isToday(dateObj) ? 'var(--theme-primary)' : (hasLog ? dotStyle.bg : dotStyle.border),
+                                  opacity: hasLog ? 1 : 0.5,
+                                }}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* PROJECTS LOGGED THIS YEAR -- same grouped/collapsible/
+                    tap-to-highlight panel as Month view (mobilePanelCollapsedSources
+                    is shared between the two; a database collapsed in one
+                    stays collapsed in the other, which reads as one
+                    consistent setting rather than two to keep track of). */}
+                <div className="flex-1 min-h-0 overflow-y-auto pt-3 mt-2 border-t" style={{ borderColor: 'var(--theme-border)' }}>
+                  <div className="text-[10px] font-bold uppercase tracking-wide opacity-50 mb-2">Logged this year</div>
+                  {visibleBySource.size === 0 ? (
+                    <div className="text-xs italic opacity-40">Nothing logged yet.</div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {Array.from(visibleBySource.entries()).map(([source, projects]) => {
+                        const isCollapsed = showSourceHeaders && mobilePanelCollapsedSources[source] === true;
+                        return (
+                          <div key={source}>
+                            {showSourceHeaders && (
+                              <button
+                                onClick={() => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
+                                className="flex items-center gap-1 mb-1.5 cursor-pointer"
+                              >
+                                <span className={`text-[9px] transition-transform ${isCollapsed ? '-rotate-90' : ''}`}>▾</span>
+                                <span className="text-[10px] font-bold uppercase tracking-wide opacity-70">{source}</span>
+                              </button>
+                            )}
+                            {!isCollapsed && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {Array.from(projects.entries()).map(([name, bg]) => {
+                                  const isActive = hoveredProjectTitle === name;
+                                  return (
+                                    <button
+                                      key={name}
+                                      onClick={() => setHoveredProjectTitle(isActive ? null : name)}
+                                      className={`inline-flex items-center font-bold text-white px-2.5 py-1 rounded-full leading-none cursor-pointer transition-all ${isActive ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1' : hoveredProjectTitle ? 'opacity-40' : ''}`}
+                                      style={{ background: bg, fontSize: '11px' }}
+                                    >
+                                      {name}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {viewMode === 'year' && !isMobile && (
             <div className="flex flex-col h-full w-full min-w-0 min-h-0 relative">
               <div className="absolute top-0 right-0 z-50 flex items-center border shadow-sm rounded-md p-1 text-[10px] font-bold" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
                 <button 
@@ -3283,7 +3452,12 @@ function App() {
                                   }}
                                   className={`rounded-full flex items-center justify-center transition-all duration-200 relative z-20 border bg-[var(--theme-card)] ${
                                     hasLog || isSpecialDay ? 'font-bold shadow-xs' : ''
-                                  } ${hasLog ? 'scale-110' : ''} ${isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1 font-bold z-30 scale-125' : isToday(targetDate) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 font-bold' : ''} ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
+                                  // scale-125 on highlight (used to sit
+                                  // alongside the ring below) pushed dots at
+                                  // the grid's own edge past the container's
+                                  // overflow-hidden boundary -- dropped, the
+                                  // ring alone still reads as highlighted.
+                                  } ${hasLog ? 'scale-110' : ''} ${isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1 font-bold z-30' : isToday(targetDate) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 font-bold' : ''} ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
                                 >
                                   {targetDayNum}
                                   {hasMultipleProjects && (
@@ -3401,7 +3575,12 @@ function App() {
                                     }}
                                     className={`rounded-full flex items-center justify-center transition-all duration-200 relative z-20 border bg-[var(--theme-card)] ${
                                       hasLog || isSpecialDay ? 'font-bold shadow-xs' : ''
-                                    } ${hasLog ? 'scale-110' : ''} ${isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1 font-bold z-30 scale-125' : isToday(targetDate) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 font-bold' : ''} ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
+                                    // scale-125 on highlight (used to sit
+                                  // alongside the ring below) pushed dots at
+                                  // the grid's own edge past the container's
+                                  // overflow-hidden boundary -- dropped, the
+                                  // ring alone still reads as highlighted.
+                                  } ${hasLog ? 'scale-110' : ''} ${isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1 font-bold z-30' : isToday(targetDate) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 font-bold' : ''} ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
                                   >
                                     {targetDayNum}
                                     {hasMultipleProjects && (
