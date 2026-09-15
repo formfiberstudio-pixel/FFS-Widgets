@@ -2406,7 +2406,7 @@ function App() {
              Import, which has its own project picker and needs the room
              (Back to Calendar in the title covers navigating away). */
           viewMode !== 'import' && (
-            <div className="relative flex items-center gap-1.5 shrink-0">
+            <div className="relative flex flex-col items-end gap-1.5 shrink-0">
               {viewMode !== 'gallery' && (
                 <div className="flex items-center p-0.5 rounded-lg border shrink-0" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
                   <button onClick={() => setViewMode('year')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
@@ -3309,20 +3309,6 @@ function App() {
             const totalEntries = filteredEntryDays.reduce((sum, d) => sum + d.logs.length, 0);
             return (
               <div className="flex flex-col h-full w-full min-h-0">
-                <button
-                  onClick={() => {
-                    setPreGalleryViewMode(viewMode);
-                    setImportDateRange({ start: toLocalDateInputValue(startOfWeek), end: toLocalDateInputValue(endOfWeek) });
-                    setViewMode('import');
-                  }}
-                  disabled={isDemoMode || !tenantId}
-                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
-                  className="shrink-0 mb-3 w-full py-2.5 rounded-lg border text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <IconUpload />
-                  <span>Import Photos for This Week</span>
-                </button>
-
                 <div
                   className="flex-1 min-h-0 space-y-2.5 pr-0.5"
                   style={{ overflowY: 'auto', overflowX: 'hidden', scrollSnapType: 'y proximity' }}
@@ -3415,6 +3401,20 @@ function App() {
                     />
                   </div>
                 )}
+
+                <button
+                  onClick={() => {
+                    setPreGalleryViewMode(viewMode);
+                    setImportDateRange({ start: toLocalDateInputValue(startOfWeek), end: toLocalDateInputValue(endOfWeek) });
+                    setViewMode('import');
+                  }}
+                  disabled={isDemoMode || !tenantId}
+                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
+                  className="shrink-0 mt-3 w-full py-2.5 rounded-lg border text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <IconUpload />
+                  <span>Import Photos for This Week</span>
+                </button>
               </div>
             );
           })()}
@@ -3504,20 +3504,6 @@ function App() {
             const dateKey = toLocalDateInputValue(currentDate);
             return (
               <div className="flex flex-col h-full w-full min-h-0">
-                <button
-                  onClick={() => {
-                    setPreGalleryViewMode(viewMode);
-                    setImportDateRange({ start: dateKey, end: dateKey });
-                    setViewMode('import');
-                  }}
-                  disabled={isDemoMode || !tenantId}
-                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
-                  className="shrink-0 mb-3 w-full py-2.5 rounded-lg border text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <IconUpload />
-                  <span>Import Photos for This Day</span>
-                </button>
-
                 <div className="flex-1 overflow-y-auto min-h-0 space-y-3 pr-0.5">
                   {dayLogs.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-sm italic opacity-50">Nothing logged this day.</div>
@@ -3549,6 +3535,20 @@ function App() {
                     })
                   )}
                 </div>
+
+                <button
+                  onClick={() => {
+                    setPreGalleryViewMode(viewMode);
+                    setImportDateRange({ start: dateKey, end: dateKey });
+                    setViewMode('import');
+                  }}
+                  disabled={isDemoMode || !tenantId}
+                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
+                  className="shrink-0 mt-3 w-full py-2.5 rounded-lg border text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <IconUpload />
+                  <span>Import Photos for This Day</span>
+                </button>
               </div>
             );
           })()}
