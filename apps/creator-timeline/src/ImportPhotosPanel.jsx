@@ -111,43 +111,60 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   const photoFromFile = async (file, exifOverrideDate) => {
     const previewUrl = URL.createObjectURL(file);
     let date = new Date();
-    let hasExif = false;
+    let hasReliableDate = false;
     if (exifOverrideDate) {
       // Already extracted server-side (see share-target.js) from the
       // original, full-EXIF bytes -- re-reading EXIF from this same file
       // client-side would just repeat that same lookup.
       date = new Date(exifOverrideDate);
-      hasExif = true;
+      hasReliableDate = true;
     } else {
       try {
         const exif = await exifr.parse(file, { pick: ['DateTimeOriginal', 'CreateDate'] });
         const exifDate = exif?.DateTimeOriginal || exif?.CreateDate;
         if (exifDate instanceof Date && !isNaN(exifDate.getTime())) {
           date = exifDate;
-          hasExif = true;
+          hasReliableDate = true;
         }
       } catch (err) {
-        // No EXIF, or a format exifr can't read (e.g. some HEIC/PNG paths)
-        // -- falls back to today, left for the user to fix below.
+        // No EXIF, or a format exifr can't read -- HEIC in particular
+        // (the default format on modern iPhones) frequently fails to
+        // parse in-browser even though the photo does have a real date.
+      }
+      if (!hasReliableDate && file.lastModified && Date.now() - file.lastModified > 60 * 60 * 1000) {
+        // Fall back to the file's own last-modified time, which the OS's
+        // photo picker generally sets to the original capture date even
+        // when the EXIF block itself couldn't be read. Without this,
+        // every HEIC (or otherwise unparseable) photo silently falls
+        // through the date-range filter below instead of being checked
+        // against it -- the "older than an hour" guard is there so a
+        // freshly-exported temp file (lastModified == right now, no real
+        // signal) doesn't get mistaken for a genuine date.
+        const modDate = new Date(file.lastModified);
+        if (!isNaN(modDate.getTime())) {
+          date = modDate;
+          hasReliableDate = true;
+        }
       }
     }
 
     let dateStr = toDateInputValue(date);
     if (fixedDateRange) {
-      if (hasExif && (dateStr < fixedDateRange.start || dateStr > fixedDateRange.end)) {
-        // Has a real EXIF date and it falls outside the requested day/week
-        // -- excluded. The device's own photo picker has no way to filter
+      if (hasReliableDate && (dateStr < fixedDateRange.start || dateStr > fixedDateRange.end)) {
+        // Has a real date and it falls outside the requested day/week --
+        // excluded. The device's own photo picker has no way to filter
         // itself by date (there's no web API for that), so it always shows
         // the whole camera roll regardless of where this button was
         // opened from; this is the actual filtering, applied to whatever
         // gets picked out of it.
         return null;
       }
-      if (!hasExif) {
-        // No reliable date of its own (screenshot, or a format exifr can't
-        // read) -- can't judge whether it belongs here, so instead of
-        // rejecting it outright it defaults into the requested window: the
-        // single day for Day view, the first day of the week for Week view.
+      if (!hasReliableDate) {
+        // No reliable date of its own (screenshot, or a format nothing
+        // above could read) -- can't judge whether it belongs here, so
+        // instead of rejecting it outright it defaults into the requested
+        // window: the single day for Day view, the first day of the week
+        // for Week view.
         dateStr = fixedDateRange.start;
       }
     }
@@ -157,7 +174,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
       file,
       previewUrl,
       date: dateStr,
-      hasExif,
+      hasExif: hasReliableDate,
       projectKey: defaultProject ? projectKeyOf(defaultProject) : '',
     };
   };
@@ -471,7 +488,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                       )}
                       {!photo.hasExif && (
                         <div
-                          title="No EXIF date -- check the date below"
+                          title="No reliable date found -- check the date below"
                           className="absolute bottom-1 left-1 w-2.5 h-2.5 rounded-full"
                           style={{ backgroundColor: 'var(--theme-secondary)' }}
                         />
@@ -638,7 +655,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                     </button>
                     {!photo.hasExif && (
                       <span className="absolute bottom-1 left-1 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-black/60 text-white/90">
-                        No EXIF
+                        No Date Found
                       </span>
                     )}
                   </div>
