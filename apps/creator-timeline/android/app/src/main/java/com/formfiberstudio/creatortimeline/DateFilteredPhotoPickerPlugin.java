@@ -154,15 +154,19 @@ public class DateFilteredPhotoPickerPlugin extends Plugin {
 
     @PluginMethod
     public void getThumbnail(PluginCall call) {
-        resolveEncodedImage(call, THUMB_MAX_DIM, THUMB_QUALITY);
+        // Static preview only -- a still frame is the normal, expected
+        // thumbnail for a GIF (same as Notion's or any gallery app's own
+        // grid), so this always goes through the regular Bitmap decode
+        // below rather than the raw-bytes GIF path getPhotoData uses.
+        resolveEncodedImage(call, THUMB_MAX_DIM, THUMB_QUALITY, false);
     }
 
     @PluginMethod
     public void getPhotoData(PluginCall call) {
-        resolveEncodedImage(call, FULL_MAX_DIM, FULL_QUALITY);
+        resolveEncodedImage(call, FULL_MAX_DIM, FULL_QUALITY, true);
     }
 
-    private void resolveEncodedImage(PluginCall call, int maxDim, int quality) {
+    private void resolveEncodedImage(PluginCall call, int maxDim, int quality, boolean preserveGifAnimation) {
         String uriStr = call.getString("uri");
         if (uriStr == null) {
             call.reject("Missing uri");
@@ -173,6 +177,33 @@ public class DateFilteredPhotoPickerPlugin extends Plugin {
         ContentResolver resolver = getContext().getContentResolver();
 
         try {
+            // Animated GIFs can't survive the Bitmap decode below -- it
+            // only ever captures a single frame, and Bitmap.compress has
+            // no GIF encoder at all (JPEG/PNG/WEBP only), so resizing one
+            // here would silently flatten it to a static frame -- the
+            // actual cause of uploaded GIFs coming out non-moving on
+            // Notion's side. For the real upload (not the picker grid's
+            // own static thumbnail), the original bytes are read and
+            // returned untouched instead, same as the web upload path's
+            // own GIF passthrough (imageResize.js).
+            if (preserveGifAnimation && "image/gif".equals(resolver.getType(uri))) {
+                try (InputStream gifStream = resolver.openInputStream(uri)) {
+                    if (gifStream == null) {
+                        call.reject("Could not open GIF");
+                        return;
+                    }
+                    ByteArrayOutputStream gifOut = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = gifStream.read(buf)) != -1) gifOut.write(buf, 0, n);
+                    String gifBase64 = Base64.encodeToString(gifOut.toByteArray(), Base64.NO_WRAP);
+                    JSObject gifRet = new JSObject();
+                    gifRet.put("base64", "data:image/gif;base64," + gifBase64);
+                    call.resolve(gifRet);
+                    return;
+                }
+            }
+
             // Decode bounds only first -- decoding a 12MP original into
             // memory just to immediately shrink it would be wasteful for
             // every photo in what could be a grid of dozens.

@@ -249,8 +249,15 @@ export default async function handler(req, res) {
   try {
     const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, '').replace(/[\r\n\s]/g, '');
     const isPng = cleanBase64.startsWith('iVBORw');
-    const contentType = isPng ? 'image/png' : 'image/jpeg';
-    const filename = `backlog_${Date.now()}.${isPng ? 'png' : 'jpg'}`;
+    // GIF87a/GIF89a's shared "GIF8" magic bytes base64-encode to this
+    // exact prefix -- resizeImageForUpload (imageResize.js) passes a GIF
+    // through untouched rather than flattening it to a static JPEG, so
+    // this is what lets that original file keep its own content type
+    // (and therefore its animation) all the way to Notion instead of
+    // silently falling into the jpeg default below.
+    const isGif = cleanBase64.startsWith('R0lGOD');
+    const contentType = isGif ? 'image/gif' : isPng ? 'image/png' : 'image/jpeg';
+    const filename = `backlog_${Date.now()}.${isGif ? 'gif' : isPng ? 'png' : 'jpg'}`;
     const buffer = Buffer.from(cleanBase64, 'base64');
 
     const fileUploadId = await uploadImageToNotion(buffer, contentType, filename, notionToken, NOTION_VERSION);

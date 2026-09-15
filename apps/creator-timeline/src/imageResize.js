@@ -11,6 +11,24 @@
 // both eventually POST to the same /api/backlog-photo endpoint, which is
 // what the 4.5MB cap applies to.
 export async function resizeImageForUpload(file, maxDim = 1800, quality = 0.82) {
+  // An animated GIF can't survive this pipeline: createImageBitmap only
+  // ever decodes a single frame, and canvas.toBlob has no GIF encoder at
+  // all (png/jpeg/webp only) -- resizing one here would silently flatten
+  // it to one static frame, which is exactly the "uploaded GIFs don't
+  // move" bug this guards against. Passed straight through as its own
+  // original bytes instead; Notion hosts animated GIFs natively, and the
+  // content-type sniffing on the receiving end (backlog-photo.js) already
+  // treats type as something to detect, not assume, so it only needs the
+  // right bytes here to do the right thing with them.
+  if (file.type === 'image/gif') {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
   const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   let { width, height } = bitmap;
   if (width > maxDim || height > maxDim) {
