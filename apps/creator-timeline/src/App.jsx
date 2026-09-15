@@ -3762,12 +3762,19 @@ function App() {
                   is always DERIVED from the row count (see the
                   ResizeObserver effect above), so dragging this snaps to
                   whole rows instead of landing on a fractional one that
-                  would get cropped. */}
+                  would get cropped. Sits at the bottom of the first
+                  visible row (matching weekCardHeight's own handle, which
+                  sits right after its one reference row) rather than the
+                  bottom of the whole grid -- top is relative to this
+                  wrapper, not the scrolled content, so it tracks
+                  whichever row is currently topmost regardless of scroll
+                  position. */}
               <div
                 onMouseDown={handleMouseDownDesktopMonthRowsResize}
-                className={`group/handle absolute left-0 right-0 bottom-0 translate-y-1/2 z-30 h-6 flex items-center justify-between cursor-ns-resize transition-opacity duration-150 ${
+                className={`group/handle absolute left-0 right-0 -translate-y-1/2 z-30 h-6 flex items-center justify-between cursor-ns-resize transition-opacity duration-150 ${
                   isResizingDesktopMonthRows ? 'opacity-100' : 'opacity-0 hover:opacity-100'
                 }`}
+                style={{ top: `${desktopMonthRowHeight}px` }}
                 title="Click & drag up/down to change how many week rows are visible"
               >
                 <div className="pl-0.5 flex items-center pointer-events-none">
