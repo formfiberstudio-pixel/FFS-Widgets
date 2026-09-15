@@ -1,0 +1,9 @@
+{
+  "appId": "com.formfiberstudio.creatortimeline",
+  "appName": "Creator Timeline",
+  "webDir": "dist",
+  "server": {
+    "url": "https://ffs-widgets-creator-timeline.vercel.app/?demo=1",
+    "androidScheme": "https"
+  }
+}
