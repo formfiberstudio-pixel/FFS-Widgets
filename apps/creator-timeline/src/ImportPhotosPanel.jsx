@@ -70,6 +70,95 @@ function AddProjectRow({ isActive, draft, onDraftChange, onActivate, onCancel, o
   );
 }
 
+// The grouped-by-source, tap-to-assign project list -- shared between
+// mobile's step (below its horizontal photo strip) and desktop's (in its
+// own left-hand column), since the interaction itself (click a project
+// to arm it and assign photos one at a time, or batch-assign whatever's
+// already selected) is identical either way, only the surrounding layout
+// differs.
+function ProjectAssignList({
+  bySource, armedProjectKey, onProjectTap, countByProjectKey,
+  collapsedSources, onToggleSource,
+  addProjectSource, newProjectDraft, onNewProjectDraftChange, onAddProjectActivate, onAddProjectCancel, onAddProjectSubmit, creatingProject, createProjectError,
+  isEmpty,
+}) {
+  return (
+    <>
+      {Object.entries(bySource).map(([source, projs]) => {
+        const isCollapsed = collapsedSources.has(source);
+        const sourceCount = projs.reduce((sum, p) => sum + (countByProjectKey[projectKeyOf(p)] || 0), 0);
+        return (
+          <div key={source}>
+            <button
+              onClick={() => onToggleSource(source)}
+              className="w-full flex items-center justify-between cursor-pointer mb-1.5"
+            >
+              <span className="text-[10px] font-black uppercase tracking-wider opacity-50">{source}</span>
+              <span className="flex items-center gap-1.5">
+                {isCollapsed && sourceCount > 0 && (
+                  <span
+                    className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                    style={{ backgroundColor: 'var(--theme-primary)', color: '#fff' }}
+                  >
+                    {sourceCount}
+                  </span>
+                )}
+                <span className="text-[9px] font-mono opacity-50">{isCollapsed ? '▼' : '▲'}</span>
+              </span>
+            </button>
+            {!isCollapsed && (
+              <div className="space-y-1.5">
+                {projs.map((p) => {
+                  const key = projectKeyOf(p);
+                  const isArmed = armedProjectKey === key;
+                  const count = countByProjectKey[key] || 0;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => onProjectTap(key)}
+                      style={{
+                        backgroundColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-bg)',
+                        borderColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-border)',
+                        color: isArmed ? '#fff' : 'var(--theme-text)',
+                      }}
+                      className="w-full text-left p-3 rounded-lg border cursor-pointer flex items-center justify-between transition-colors"
+                    >
+                      <span className="font-semibold text-sm truncate">{p.title}</span>
+                      {count > 0 && (
+                        <span
+                          className="text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0 ml-2"
+                          style={{ backgroundColor: isArmed ? 'rgba(255,255,255,0.25)' : 'var(--theme-primary)', color: '#fff' }}
+                        >
+                          {count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+                <AddProjectRow
+                  isActive={addProjectSource === source}
+                  draft={newProjectDraft}
+                  onDraftChange={onNewProjectDraftChange}
+                  onActivate={() => onAddProjectActivate(source)}
+                  onCancel={onAddProjectCancel}
+                  onSubmit={() => onAddProjectSubmit(source)}
+                  submitting={creatingProject}
+                  error={addProjectSource === source ? createProjectError : null}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {isEmpty && (
+        <div className="text-sm italic opacity-50 text-center py-8">
+          No projects found yet -- sync your calendar first.
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, fixedDateRange }) {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < MOBILE_BREAKPOINT);
   useEffect(() => {
@@ -803,149 +892,50 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
         {/* Vertical project list */}
         <div className="flex-1 overflow-y-auto min-h-0 space-y-3 pr-1">
-          {Object.entries(bySource).map(([source, projs]) => {
-            const isCollapsed = collapsedSources.has(source);
-            const sourceCount = projs.reduce((sum, p) => sum + (countByProjectKey[projectKeyOf(p)] || 0), 0);
-            return (
-              <div key={source}>
-                <button
-                  onClick={() => toggleSourceCollapse(source)}
-                  className="w-full flex items-center justify-between cursor-pointer mb-1.5"
-                >
-                  <span className="text-[10px] font-black uppercase tracking-wider opacity-50">{source}</span>
-                  <span className="flex items-center gap-1.5">
-                    {isCollapsed && sourceCount > 0 && (
-                      <span
-                        className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
-                        style={{ backgroundColor: 'var(--theme-primary)', color: '#fff' }}
-                      >
-                        {sourceCount}
-                      </span>
-                    )}
-                    <span className="text-[9px] font-mono opacity-50">{isCollapsed ? '▼' : '▲'}</span>
-                  </span>
-                </button>
-                {!isCollapsed && (
-                  <div className="space-y-1.5">
-                    {projs.map((p) => {
-                      const key = projectKeyOf(p);
-                      const isArmed = armedProjectKey === key;
-                      const count = countByProjectKey[key] || 0;
-                      return (
-                        <button
-                          key={key}
-                          onClick={() => handleProjectTap(key)}
-                          style={{
-                            backgroundColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-bg)',
-                            borderColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-border)',
-                            color: isArmed ? '#fff' : 'var(--theme-text)',
-                          }}
-                          className="w-full text-left p-3 rounded-lg border cursor-pointer flex items-center justify-between transition-colors"
-                        >
-                          <span className="font-semibold text-sm truncate">{p.title}</span>
-                          {count > 0 && (
-                            <span
-                              className="text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0 ml-2"
-                              style={{ backgroundColor: isArmed ? 'rgba(255,255,255,0.25)' : 'var(--theme-primary)', color: '#fff' }}
-                            >
-                              {count}
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                    <AddProjectRow
-                      isActive={addProjectSource === source}
-                      draft={newProjectDraft}
-                      onDraftChange={setNewProjectDraft}
-                      onActivate={() => { setAddProjectSource(source); setNewProjectDraft(''); setCreateProjectError(null); }}
-                      onCancel={cancelAddProject}
-                      onSubmit={() => submitAddProject(source)}
-                      submitting={creatingProject}
-                      error={addProjectSource === source ? createProjectError : null}
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {effectiveProjects.length === 0 && (
-            <div className="text-sm italic opacity-50 text-center py-8">
-              No projects found yet -- sync your calendar first.
-            </div>
-          )}
+          <ProjectAssignList
+            bySource={bySource}
+            armedProjectKey={armedProjectKey}
+            onProjectTap={handleProjectTap}
+            countByProjectKey={countByProjectKey}
+            collapsedSources={collapsedSources}
+            onToggleSource={toggleSourceCollapse}
+            addProjectSource={addProjectSource}
+            newProjectDraft={newProjectDraft}
+            onNewProjectDraftChange={setNewProjectDraft}
+            onAddProjectActivate={(source) => { setAddProjectSource(source); setNewProjectDraft(''); setCreateProjectError(null); }}
+            onAddProjectCancel={cancelAddProject}
+            onAddProjectSubmit={submitAddProject}
+            creatingProject={creatingProject}
+            createProjectError={createProjectError}
+            isEmpty={effectiveProjects.length === 0}
+          />
         </div>
       </div>
     );
   }
 
   // -----------------------------------------------------------------
-  // STEP 2 (desktop): dump photos in first, categorize after -- same
-  // philosophy as mobile's tap-to-assign step, just via a per-photo
-  // dropdown instead of tap-to-assign (desktop has the screen room for a
-  // grid, so there's no need for mobile's more compact interaction). No
-  // more forced "pick a default project" step first.
+  // STEP 2 (desktop): same dump-first, tap-to-assign interaction as
+  // mobile (handlePhotoTap/handleProjectTap, armedProjectKey/
+  // selectedPhotoIds below) -- just laid out as a left-hand project list
+  // (matching the app's own Categories sidebar) beside a photo grid,
+  // instead of a vertical list below a horizontal strip. The list itself
+  // is the same ProjectAssignList component mobile's step uses.
   // -----------------------------------------------------------------
   if (step === 'review') {
-    const sources = [...new Set(effectiveProjects.map((p) => p.source))];
+    const bySource = {};
+    effectiveProjects.forEach((p) => {
+      if (!bySource[p.source]) bySource[p.source] = [];
+      bySource[p.source].push(p);
+    });
+    const countByProjectKey = {};
+    photos.forEach((p) => {
+      if (p.projectKey) countByProjectKey[p.projectKey] = (countByProjectKey[p.projectKey] || 0) + 1;
+    });
     const unassignedCount = photos.filter((p) => !p.projectKey).length;
 
     return (
       <div className="flex flex-col h-full w-full min-h-0">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4 shrink-0">
-          <div className="flex items-center gap-2 flex-wrap min-h-[34px]">
-            {!addProjectSource ? (
-              sources.length > 0 && (
-                <select
-                  value=""
-                  onChange={(e) => { if (e.target.value) { setAddProjectSource(e.target.value); setNewProjectDraft(''); setCreateProjectError(null); } }}
-                  style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-                  className="text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer"
-                >
-                  <option value="">+ Add Project…</option>
-                  {sources.map((s) => <option key={s} value={s}>to {s}</option>)}
-                </select>
-              )
-            ) : (
-              <div className="flex items-center gap-1.5">
-                <input
-                  autoFocus
-                  type="text"
-                  value={newProjectDraft}
-                  onChange={(e) => setNewProjectDraft(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') submitAddProject(addProjectSource); if (e.key === 'Escape') cancelAddProject(); }}
-                  placeholder={`New project in ${addProjectSource}`}
-                  style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-primary)', color: 'var(--theme-text)' }}
-                  className="text-xs px-2.5 py-1.5 rounded-lg border outline-none"
-                />
-                <button onClick={cancelAddProject} className="text-xs font-semibold px-2 py-1 rounded cursor-pointer opacity-60 hover:opacity-100 transition-opacity">
-                  Cancel
-                </button>
-                <button
-                  onClick={() => submitAddProject(addProjectSource)}
-                  disabled={creatingProject || !newProjectDraft.trim()}
-                  style={{ backgroundColor: 'var(--theme-primary)' }}
-                  className="text-xs font-bold text-white px-2.5 py-1.5 rounded-lg cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {creatingProject ? 'Adding…' : 'Add'}
-                </button>
-              </div>
-            )}
-            {createProjectError && addProjectSource && (
-              <span className="text-[10px]" style={{ color: 'var(--theme-secondary)' }}>{createProjectError}</span>
-            )}
-          </div>
-          <button
-            onClick={startUpload}
-            disabled={photos.length === 0 || unassignedCount > 0}
-            title={unassignedCount > 0 ? `${unassignedCount} photo${unassignedCount === 1 ? '' : 's'} still need${unassignedCount === 1 ? 's' : ''} a project` : undefined}
-            style={{ backgroundColor: 'var(--theme-primary)' }}
-            className="w-full sm:w-auto px-4 py-2.5 sm:py-2 text-sm font-bold text-white rounded-lg cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
-          >
-            Upload {photos.length} Photo{photos.length === 1 ? '' : 's'}
-          </button>
-        </div>
-
         <input
           ref={fileInputRef}
           type="file"
@@ -955,83 +945,139 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           onChange={(e) => { handleFiles(e.target.files); e.target.value = ''; }}
         />
 
-        <div
-          onClick={() => {
-            if (isNativePhotoPickerSupported() && fixedDateRange) openNativePicker();
-            else fileInputRef.current?.click();
-          }}
-          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={(e) => { e.preventDefault(); setIsDragging(false); handleFiles(e.dataTransfer.files); }}
-          style={{
-            borderColor: isDragging ? 'var(--theme-primary)' : 'var(--theme-border)',
-            backgroundColor: isDragging ? 'var(--theme-bg)' : 'transparent',
-          }}
-          className="shrink-0 mb-4 border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors"
-        >
-          <div className="text-sm font-semibold opacity-70">+ Add Photos</div>
-          <div className="text-xs opacity-50 mt-1">Click to browse, or drag and drop -- dates are read from each photo automatically</div>
+        <div className="flex items-center justify-between gap-3 mb-4 shrink-0">
+          {skippedOutOfRangeCount > 0 ? (
+            <div className="text-xs italic opacity-60">
+              Skipped {skippedOutOfRangeCount} photo{skippedOutOfRangeCount === 1 ? '' : 's'} taken outside this date range.
+            </div>
+          ) : <div />}
+          <button
+            onClick={startUpload}
+            disabled={photos.length === 0 || unassignedCount > 0}
+            title={unassignedCount > 0 ? `${unassignedCount} photo${unassignedCount === 1 ? '' : 's'} still need${unassignedCount === 1 ? 's' : ''} a project` : undefined}
+            style={{ backgroundColor: 'var(--theme-primary)' }}
+            className="px-4 py-2 text-sm font-bold text-white rounded-lg cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-opacity shrink-0"
+          >
+            Upload {photos.length} Photo{photos.length === 1 ? '' : 's'}
+          </button>
         </div>
 
-        {effectiveProjects.length === 0 && (
-          <div className="shrink-0 mb-4 text-xs italic opacity-60 text-center">
-            No projects found yet -- sync your calendar first.
+        <div className="flex-1 flex gap-4 min-h-0">
+          {/* LEFT: project list, styled like the app's own Categories
+              sidebar -- click a project to arm it (then click photos to
+              assign them one at a time), or select photos first and
+              click a project to batch-assign them all at once. */}
+          <div className="w-60 shrink-0 flex flex-col min-h-0">
+            <div className="text-xs opacity-60 mb-2 shrink-0">
+              {armedProjectKey
+                ? `Assigning to "${effectiveProjects.find((p) => projectKeyOf(p) === armedProjectKey)?.title}" — click photos, or click the project again to stop.`
+                : selectedPhotoIds.size > 0
+                  ? `${selectedPhotoIds.size} photo${selectedPhotoIds.size === 1 ? '' : 's'} selected — click a project to assign.`
+                  : 'Click photos to select them, or click a project to start assigning.'}
+            </div>
+            <div className="flex-1 overflow-y-auto min-h-0 space-y-3 pr-1">
+              <ProjectAssignList
+                bySource={bySource}
+                armedProjectKey={armedProjectKey}
+                onProjectTap={handleProjectTap}
+                countByProjectKey={countByProjectKey}
+                collapsedSources={collapsedSources}
+                onToggleSource={toggleSourceCollapse}
+                addProjectSource={addProjectSource}
+                newProjectDraft={newProjectDraft}
+                onNewProjectDraftChange={setNewProjectDraft}
+                onAddProjectActivate={(source) => { setAddProjectSource(source); setNewProjectDraft(''); setCreateProjectError(null); }}
+                onAddProjectCancel={cancelAddProject}
+                onAddProjectSubmit={submitAddProject}
+                creatingProject={creatingProject}
+                createProjectError={createProjectError}
+                isEmpty={effectiveProjects.length === 0}
+              />
+            </div>
           </div>
-        )}
 
-        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
-          {photos.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-sm italic opacity-50">
-              No photos added yet.
+          {/* RIGHT: add photos + the grid itself */}
+          <div className="flex-1 flex flex-col min-h-0">
+            <div
+              onClick={() => {
+                if (isNativePhotoPickerSupported() && fixedDateRange) openNativePicker();
+                else fileInputRef.current?.click();
+              }}
+              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={(e) => { e.preventDefault(); setIsDragging(false); handleFiles(e.dataTransfer.files); }}
+              style={{
+                borderColor: isDragging ? 'var(--theme-primary)' : 'var(--theme-border)',
+                backgroundColor: isDragging ? 'var(--theme-bg)' : 'transparent',
+              }}
+              className="shrink-0 mb-3 border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors"
+            >
+              <div className="text-sm font-semibold opacity-70">+ Add Photos</div>
+              <div className="text-xs opacity-50 mt-1">Click to browse, or drag and drop -- dates are read from each photo automatically</div>
             </div>
-          ) : (
-            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}>
-              {photos.map((photo) => (
-                <div key={photo.id} style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }} className="rounded-lg border overflow-hidden">
-                  <div className="relative aspect-square" style={{ backgroundColor: 'var(--theme-card)' }}>
-                    <img src={photo.previewUrl} alt="" className="w-full h-full object-cover" />
-                    <button
-                      onClick={() => removePhoto(photo.id)}
-                      title="Remove"
-                      className="absolute top-1 right-1 w-8 h-8 rounded-full bg-black/60 text-white text-lg flex items-center justify-center cursor-pointer hover:bg-black/80"
-                    >
-                      ×
-                    </button>
-                    {!photo.hasExif && (
-                      <span className="absolute bottom-1 left-1 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-black/60 text-white/90">
-                        No Date Found
-                      </span>
-                    )}
-                    {!photo.projectKey && (
-                      <span className="absolute bottom-1 right-1 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded text-white" style={{ backgroundColor: 'var(--theme-secondary)' }}>
-                        Unassigned
-                      </span>
-                    )}
-                  </div>
-                  <div className="p-2 space-y-1.5">
-                    <select
-                      value={photo.projectKey}
-                      onChange={(e) => updatePhotoProject(photo.id, e.target.value)}
-                      style={{ backgroundColor: 'var(--theme-card)', borderColor: photo.projectKey ? 'var(--theme-border)' : 'var(--theme-secondary)', color: 'var(--theme-text)' }}
-                      className="w-full text-xs px-1.5 py-1 rounded border truncate"
-                    >
-                      <option value="">Choose a project…</option>
-                      {effectiveProjects.map((p) => (
-                        <option key={projectKeyOf(p)} value={projectKeyOf(p)}>{p.title}</option>
-                      ))}
-                    </select>
-                    <input
-                      type="date"
-                      value={photo.date}
-                      onChange={(e) => updatePhotoDate(photo.id, e.target.value)}
-                      style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-                      className="w-full text-xs px-1.5 py-1 rounded border"
-                    />
-                  </div>
+
+            <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+              {photos.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-sm italic opacity-50">
+                  No photos added yet.
                 </div>
-              ))}
+              ) : (
+                <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
+                  {photos.map((photo) => {
+                    const isSelected = selectedPhotoIds.has(photo.id);
+                    const assignedProject = photo.projectKey ? effectiveProjects.find((p) => projectKeyOf(p) === photo.projectKey) : null;
+                    return (
+                      <div key={photo.id}>
+                        <div
+                          onClick={() => handlePhotoTap(photo.id)}
+                          className="relative rounded-lg overflow-hidden cursor-pointer aspect-square"
+                          style={{
+                            backgroundColor: 'var(--theme-card)',
+                            border: isSelected ? '3px solid var(--theme-secondary)' : '1px solid var(--theme-border)',
+                          }}
+                        >
+                          <img src={photo.previewUrl} alt="" className="w-full h-full object-cover" />
+                          <button
+                            onClick={(e) => { e.stopPropagation(); removePhoto(photo.id); }}
+                            title="Remove"
+                            className="absolute top-1 right-1 w-7 h-7 rounded-full bg-black/60 text-white text-base flex items-center justify-center cursor-pointer hover:bg-black/80"
+                          >
+                            ×
+                          </button>
+                          {isSelected && (
+                            <div
+                              className="absolute top-1 left-1 w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-black"
+                              style={{ backgroundColor: 'var(--theme-secondary)' }}
+                            >
+                              ✓
+                            </div>
+                          )}
+                          {!photo.hasExif && (
+                            <div
+                              title="No reliable date found -- check the date below"
+                              className="absolute bottom-1 left-1 w-2.5 h-2.5 rounded-full"
+                              style={{ backgroundColor: 'var(--theme-secondary)' }}
+                            />
+                          )}
+                          <div className="absolute bottom-0 inset-x-0 px-1.5 py-1 text-center" style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}>
+                            <div className="text-[10px] font-bold text-white truncate">{assignedProject ? assignedProject.title : 'Unassigned'}</div>
+                          </div>
+                        </div>
+                        <input
+                          type="date"
+                          value={photo.date}
+                          onChange={(e) => updatePhotoDate(photo.id, e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+                          className="w-full mt-1 text-[10px] px-1.5 py-1 rounded border"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </div>
       </div>
     );
