@@ -826,13 +826,26 @@ function WeekDayColumn({
                   isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] shadow-md scale-[1.01] z-10' : ''
                 } ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
               >
-                {log.imageUrl && (
-                  <img 
-                    src={log.imageUrl} 
-                    className="absolute inset-0 w-full h-full object-cover z-0 transition-opacity duration-200" 
-                    alt="" 
+                {log.imageUrl ? (
+                  <img
+                    src={log.imageUrl}
+                    className="absolute inset-0 w-full h-full object-cover z-0 transition-opacity duration-200"
+                    alt=""
                   />
-                )}
+                ) : log.pageContent ? (
+                  // No photo -- the note fills the same frame instead of
+                  // leaving it visually blank. Static preview only; the
+                  // day-detail modal's LogNoteEditor is still the one
+                  // place that actually writes a note back to Notion.
+                  <div className="absolute inset-0 z-0 overflow-hidden p-2 pointer-events-none">
+                    <p
+                      className="whitespace-pre-wrap"
+                      style={{ color: 'var(--theme-text)', fontSize: `${Math.round(10 * scaleFactor)}px` }}
+                    >
+                      {log.pageContent}
+                    </p>
+                  </div>
+                ) : null}
 
                 <div className="relative z-10 flex items-center gap-1.5 pointer-events-none min-w-0">
                   <span
@@ -906,6 +919,14 @@ const MOBILE_BREAKPOINT = 640;
 const MOBILE_MONTH_ROW_HEIGHT = 78;
 const MOBILE_MONTH_ROW_GAP = 4;
 const MOBILE_MONTH_VISIBLE_ROWS = 4;
+
+// Desktop Month view's continuous scroll shows exactly this many week rows
+// at once -- unlike mobile's fixed row height (the rest of a phone screen
+// goes to the projects panel below), desktop has no such panel underneath,
+// so instead the row height itself is computed (see desktopMonthRowHeight)
+// to split whatever vertical space the window actually gives it into
+// exactly this many equal rows.
+const DESKTOP_MONTH_VISIBLE_ROWS = 6;
 
 function App() {
   const today = new Date();
@@ -995,6 +1016,11 @@ function App() {
   // a single month: whichever row is scrolled nearest the top edge.
   const desktopMonthScrollContainerRef = useRef(null);
   const desktopMonthWeekRowRefs = useRef([]);
+  // Row height that makes exactly DESKTOP_MONTH_VISIBLE_ROWS rows fill the
+  // container's actual rendered height (see the ResizeObserver effect
+  // below) -- recomputed on resize rather than fixed, since "window height
+  // maximized" means the row height itself has to flex with the window.
+  const [desktopMonthRowHeight, setDesktopMonthRowHeight] = useState(130);
   const [desktopMonthVisibleStartIdx, setDesktopMonthVisibleStartIdx] = useState(() => {
     const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === currentDate.toDateString()));
     return idx >= 0 ? idx : 0;
@@ -2197,18 +2223,41 @@ function App() {
     else setCurrentDate(new Date(currentDate.getFullYear() + 1, currentDate.getMonth(), 1));
   };
 
+  // Import Photos panel (viewMode 'import'), opened for a fixed single day
+  // or week via the Day/Week "Import Photos for..." buttons: shifts
+  // importDateRange to the adjacent block, same granularity it was opened
+  // at (start === end means a single day, otherwise a week) -- mirrors the
+  // Mandalart app's swipe-between-date-blocks behavior for its own photo
+  // picker. No-op for the unconstrained header "Import Photos" entry
+  // point, where importDateRange is null and there's no block to page
+  // through. Only shifts the range itself; ImportPhotosPanel re-reads it
+  // on every subsequent photoFromFile call, so anything added after the
+  // swipe is filtered against the new block same as if the panel had been
+  // reopened for that date -- photos already staged from the previous
+  // block are left alone rather than silently discarded.
+  const shiftImportDateRange = (direction) => {
+    if (!importDateRange) return;
+    const parseLocal = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+    const days = (importDateRange.start === importDateRange.end ? 1 : 7) * direction;
+    const newStart = parseLocal(importDateRange.start);
+    newStart.setDate(newStart.getDate() + days);
+    const newEnd = parseLocal(importDateRange.end);
+    newEnd.setDate(newEnd.getDate() + days);
+    setImportDateRange({ start: toLocalDateInputValue(newStart), end: toLocalDateInputValue(newEnd) });
+  };
+
   // Swipe-to-navigate on mobile, replacing the Prev/Next buttons with a
   // left/right flick -- the natural gesture for paging through dates on a
-  // phone. Scoped to Day, Week and Year: all three page to the next/prev
-  // period with no horizontal scroll of their own to compete with (neither
-  // the dots nor the blocks Year layout scrolls horizontally any more --
-  // see the continuous-weeks redesign). Month is excluded: it's a
-  // continuous vertical scroll (see mobileMonthWeeks below) rather than
-  // one page per month, so it has no "next/prev page" for a horizontal
-  // swipe to mean.
+  // phone. Scoped to Day, Week, Year and Import: all four page to the
+  // next/prev period (or date block, for Import) with no horizontal
+  // scroll of their own to compete with (neither the dots nor the blocks
+  // Year layout scrolls horizontally any more -- see the continuous-weeks
+  // redesign). Month is excluded: it's a continuous vertical scroll (see
+  // mobileMonthWeeks below) rather than one page per month, so it has no
+  // "next/prev page" for a horizontal swipe to mean.
   const swipeStartRef = useRef(null);
   const handleCalendarTouchStart = (e) => {
-    if (!isMobile || !['day', 'week', 'year'].includes(viewMode)) { swipeStartRef.current = null; return; }
+    if (!isMobile || !['day', 'week', 'year', 'import'].includes(viewMode)) { swipeStartRef.current = null; return; }
     const t = e.touches[0];
     swipeStartRef.current = { x: t.clientX, y: t.clientY, time: Date.now() };
   };
@@ -2226,7 +2275,8 @@ function App() {
     const isHorizontal = Math.abs(dx) >= 60 && Math.abs(dx) >= Math.abs(dy) * 1.5;
     const isVertical = Math.abs(dy) >= 60 && Math.abs(dy) >= Math.abs(dx) * 1.5;
     if (isHorizontal) {
-      if (dx < 0) handleNext(); else handlePrev();
+      if (viewMode === 'import') { if (dx < 0) shiftImportDateRange(1); else shiftImportDateRange(-1); }
+      else if (dx < 0) handleNext(); else handlePrev();
     } else if (isVertical && viewMode === 'year') {
       // Year's grid (Dots or Blocks) has no vertical scroll of its own to
       // fight with -- swipe up collapses the "visible projects" panel to
@@ -2253,6 +2303,24 @@ function App() {
     });
     if (closestIdx >= 0) setMobileMonthVisibleStartIdx(closestIdx);
   };
+
+  // Keeps exactly DESKTOP_MONTH_VISIBLE_ROWS rows filling the scroll
+  // container's actual height (itself already maximized via flex-1 in a
+  // h-full column) -- recomputed whenever the container resizes, and
+  // re-attached each time the Month view (re)mounts, since the container
+  // only exists in the DOM while viewMode==='month' && !isMobile.
+  useEffect(() => {
+    const container = desktopMonthScrollContainerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const rowHeight = (entry.contentRect.height - (DESKTOP_MONTH_VISIBLE_ROWS - 1) * gap) / DESKTOP_MONTH_VISIBLE_ROWS;
+      if (rowHeight > 0) setDesktopMonthRowHeight(rowHeight);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [viewMode, isMobile, gap]);
 
   // Desktop equivalent of handleMonthScroll above -- same "closest row to
   // the container's top edge" technique, separate index/refs since
@@ -3337,7 +3405,7 @@ function App() {
                             // scroll position.
                             className={`h-full w-full relative overflow-hidden border cursor-pointer transition-all ${isHighlightedProject ? 'ring-2 ring-inset ring-[var(--theme-secondary)] z-20' : isSelectedWeek ? 'ring-1 ring-inset ring-[var(--theme-primary)] z-10' : isToday(dateObj) ? 'ring-2 ring-inset ring-[var(--theme-primary)] z-10' : ''}`}
                           >
-                            {hasLog && primaryLog?.imageUrl && (
+                            {hasLog && primaryLog?.imageUrl ? (
                               <img
                                 src={primaryLog.imageUrl}
                                 className={`absolute inset-0 w-full h-full object-cover z-0 transition-opacity ${isHalftoned ? 'opacity-40' : ''} ${isDimmedByHighlight ? 'opacity-30 grayscale' : ''}`}
@@ -3345,7 +3413,11 @@ function App() {
                                 decoding="async"
                                 loading="lazy"
                               />
-                            )}
+                            ) : hasLog && primaryLog?.pageContent ? (
+                              <div className={`absolute inset-0 z-0 overflow-hidden p-1 pt-5 pointer-events-none transition-opacity ${isHalftoned ? 'opacity-40' : ''} ${isDimmedByHighlight ? 'opacity-30 grayscale' : ''}`}>
+                                <p className="whitespace-pre-wrap" style={{ color: 'var(--theme-text)', fontSize: `${Math.round(8 * scaleFactor)}px` }}>{primaryLog.pageContent}</p>
+                              </div>
+                            ) : null}
                             <div
                               className={`absolute top-1 left-1 flex items-center justify-center font-bold shadow-sm border z-10 transition-opacity ${isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''} ${isDimmedByHighlight ? 'opacity-40' : ''}`}
                               style={{
@@ -3434,14 +3506,14 @@ function App() {
                 ref={desktopMonthScrollContainerRef}
                 onScroll={handleDesktopMonthScroll}
                 className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
-                style={{ gap: `${gap}px` }}
+                style={{ gap: `${gap}px`, scrollSnapType: 'y mandatory' }}
               >
                 {mobileMonthWeeks.map((weekDays, rowIndex) => (
                   <div
                     key={rowIndex}
                     ref={(el) => { desktopMonthWeekRowRefs.current[rowIndex] = el; }}
                     className="flex items-stretch gap-2 shrink-0"
-                    style={{ height: `${Math.round(130 * scaleFactor)}px` }}
+                    style={{ height: `${desktopMonthRowHeight}px`, scrollSnapAlign: 'start' }}
                   >
                     <button
                       onClick={() => { setCurrentDate(weekDays[0]); setViewMode('week'); }}
@@ -3490,7 +3562,7 @@ function App() {
                               isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] shadow-md z-20' : isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''
                             }`}
                           >
-                            {hasLog && primaryLog?.imageUrl && (
+                            {hasLog && primaryLog?.imageUrl ? (
                               <img
                                 src={primaryLog.imageUrl}
                                 className={`absolute inset-0 w-full h-full object-cover z-0 transition-opacity duration-200 ${isHalftoned ? 'opacity-40' : ''}`}
@@ -3498,7 +3570,14 @@ function App() {
                                 decoding="async"
                                 loading="lazy"
                               />
-                            )}
+                            ) : hasLog && primaryLog?.pageContent ? (
+                              <div
+                                className={`absolute inset-0 z-0 overflow-hidden p-2 pointer-events-none transition-opacity duration-200 ${isHalftoned ? 'opacity-40' : ''}`}
+                                style={{ paddingTop: `${monthDotPx + 12}px` }}
+                              >
+                                <p className="whitespace-pre-wrap" style={{ color: 'var(--theme-text)', fontSize: `${Math.round(9 * scaleFactor)}px` }}>{primaryLog.pageContent}</p>
+                              </div>
+                            ) : null}
 
                             <div className="absolute top-2 left-2 right-2 flex items-center gap-1.5 z-10 pointer-events-none">
                               <div
@@ -5053,21 +5132,14 @@ function App() {
                                 alt=""
                               />
                             ) : (
-                              // No photo -- the note fills the same frame
-                              // instead of leaving it visually blank. A
-                              // static preview, not editable here; the
-                              // LogNoteEditor below is still the one place
-                              // that actually writes a note back to Notion.
+                              // No photo -- just the empty frame. The note
+                              // itself (if any) already reads in full via
+                              // LogNoteEditor directly below; showing it a
+                              // second time in here as well duplicated it.
                               <div
-                                className="h-full w-full rounded-md border overflow-y-auto p-3"
+                                className="h-full w-full rounded-md border"
                                 style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
-                              >
-                                {log.pageContent ? (
-                                  <p className="text-sm whitespace-pre-wrap" style={{ color: 'var(--theme-text)' }}>{log.pageContent}</p>
-                                ) : (
-                                  <p className="text-sm italic opacity-40">No photo or note yet.</p>
-                                )}
-                              </div>
+                              />
                             )}
 
                             <div
