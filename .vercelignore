@@ -16,3 +16,10 @@ archive/
 node_modules/
 packages/*/node_modules/
 apps/*/node_modules/
+
+# creator-timeline's Capacitor/Android native project (gradle wrapper,
+# build tooling, generated res/) -- the Android app it builds is installed
+# directly on-device, never deployed here; Vercel only ever needs the
+# plain web build. Was quietly ~100MB of the upload every deploy once this
+# got added to the repo.
+apps/creator-timeline/android/
