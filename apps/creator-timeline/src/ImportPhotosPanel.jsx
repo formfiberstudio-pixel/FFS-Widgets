@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import exifr from 'exifr';
 import { resizeImageForUpload } from './imageResize.js';
+import { isNativePhotoPickerSupported, queryPhotosByDateRange, getPhotoThumbnail, getPhotoData } from './nativePhotoPicker.js';
 
 function toDateInputValue(date) {
   const d = new Date(date);
@@ -76,6 +77,66 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   // fixedDateRange -- surfaced as a brief notice rather than silently
   // dropping photos the user explicitly picked.
   const [skippedOutOfRangeCount, setSkippedOutOfRangeCount] = useState(0);
+
+  // Native picker (Android app only, see nativePhotoPicker.js) -- MediaStore
+  // itself gets queried for photos taken (or, failing that, last modified)
+  // within fixedDateRange, so unlike the web <input type=file> path there's
+  // nothing to filter after the fact: everything shown here already
+  // belongs in this window. Thumbnails are fetched once, up front, for the
+  // whole result set; the full-resolution bytes for whatever gets picked
+  // aren't pulled until upload time (see startUpload), so selecting a lot
+  // of photos here doesn't mean decoding a lot of photos here.
+  const [nativePickPhotos, setNativePickPhotos] = useState([]);
+  const [nativePickSelected, setNativePickSelected] = useState(() => new Set());
+  const [nativePickLoading, setNativePickLoading] = useState(false);
+  const [nativePickError, setNativePickError] = useState(null);
+
+  const openNativePicker = async () => {
+    setStep('native-pick');
+    setNativePickLoading(true);
+    setNativePickError(null);
+    setNativePickSelected(new Set());
+    try {
+      const results = await queryPhotosByDateRange(fixedDateRange.start, fixedDateRange.end);
+      const withThumbs = await Promise.all(results.map(async (p) => {
+        try {
+          const thumbnail = await getPhotoThumbnail(p.uri);
+          return { ...p, thumbnail };
+        } catch {
+          return { ...p, thumbnail: null };
+        }
+      }));
+      setNativePickPhotos(withThumbs);
+    } catch (err) {
+      setNativePickError(err.message || 'Could not load photos from your device.');
+    } finally {
+      setNativePickLoading(false);
+    }
+  };
+
+  const toggleNativePick = (uri) => {
+    setNativePickSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(uri)) next.delete(uri); else next.add(uri);
+      return next;
+    });
+  };
+
+  const confirmNativePick = () => {
+    const chosen = nativePickPhotos.filter((p) => nativePickSelected.has(p.uri));
+    const newPhotos = chosen.map((p) => ({
+      id: `native-${p.uri}`,
+      file: null,
+      nativeUri: p.uri,
+      displayName: p.displayName,
+      previewUrl: p.thumbnail,
+      date: toDateInputValue(new Date(p.dateTaken)),
+      hasExif: true,
+      projectKey: defaultProject ? projectKeyOf(defaultProject) : '',
+    }));
+    setPhotos((prev) => [...prev, ...newPhotos]);
+    setStep('review');
+  };
 
   const photoFromFile = async (file, exifOverrideDate) => {
     const previewUrl = URL.createObjectURL(file);
@@ -246,7 +307,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         // allProjects), but fail that group's photos explicitly rather
         // than silently dropping them if it ever does.
         groupPhotos.forEach((photo) => {
-          failed.push({ name: photo.file.name, error: 'No project selected for this photo' });
+          failed.push({ name: photo.file?.name || photo.displayName || 'photo', error: 'No project selected for this photo' });
           doneCount++;
         });
         setUploadProgress({ done: doneCount, total: photos.length });
@@ -265,7 +326,14 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
       for (const photo of groupPhotos) {
         try {
-          const imageBase64 = await resizeImageForUpload(photo.file);
+          // Native-picked photos (photo.nativeUri set) were never a File
+          // to begin with -- the plugin already downscaled/re-encoded them
+          // on the Android side (see DateFilteredPhotoPickerPlugin's
+          // getPhotoData), so this just fetches those bytes now rather
+          // than up front for every photo in the picker grid.
+          const imageBase64 = photo.nativeUri
+            ? await getPhotoData(photo.nativeUri)
+            : await resizeImageForUpload(photo.file);
           const body = pageId
             ? { tenantId, pageId, imageBase64 }
             : { tenantId, referenceLogId: groupProject.referenceLogId, title: `${groupProject.title} — ${formattedDate}`, dateTaken: date, imageBase64 };
@@ -280,7 +348,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           if (!pageId) pageId = result.pageId;
           succeededByProject.set(groupProject.title, (succeededByProject.get(groupProject.title) || 0) + 1);
         } catch (err) {
-          failed.push({ name: photo.file.name, error: err.message });
+          failed.push({ name: photo.file?.name || photo.displayName || 'photo', error: err.message });
         }
         doneCount++;
         setUploadProgress({ done: doneCount, total: photos.length });
@@ -364,6 +432,87 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   }
 
   // -----------------------------------------------------------------
+  // NATIVE PICKER (Android app only): MediaStore already filtered this to
+  // fixedDateRange, so every thumbnail shown here is fair game -- no
+  // per-photo date badge/notice needed the way the web <input type=file>
+  // path has, since there's nothing to filter after the fact.
+  // -----------------------------------------------------------------
+  if (step === 'native-pick') {
+    const dateRangeLabel = fixedDateRange
+      ? fixedDateRange.start === fixedDateRange.end
+        ? 'this day'
+        : 'this range'
+      : '';
+    return (
+      <div className="flex flex-col h-full w-full min-h-0">
+        <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
+          <button
+            onClick={() => setStep('review')}
+            className="text-xs font-semibold cursor-pointer hover:opacity-70"
+            style={{ color: 'var(--theme-primary)' }}
+          >
+            ‹ Cancel
+          </button>
+          <button
+            onClick={confirmNativePick}
+            disabled={nativePickSelected.size === 0}
+            style={{ backgroundColor: 'var(--theme-primary)' }}
+            className="text-sm font-bold text-white px-4 py-2 rounded-lg cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Add {nativePickSelected.size > 0 ? nativePickSelected.size : ''} Photo{nativePickSelected.size === 1 ? '' : 's'}
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {nativePickLoading ? (
+            <div className="h-full flex items-center justify-center text-sm italic opacity-50">Scanning your photos…</div>
+          ) : nativePickError ? (
+            <div className="h-full flex items-center justify-center text-sm text-center px-4" style={{ color: 'var(--theme-secondary)' }}>
+              {nativePickError}
+            </div>
+          ) : nativePickPhotos.length === 0 ? (
+            <div className="h-full flex items-center justify-center text-sm italic opacity-50 text-center px-4">
+              No photos found on your phone for {dateRangeLabel}.
+            </div>
+          ) : (
+            <div className="grid gap-1.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))' }}>
+              {nativePickPhotos.map((p) => {
+                const isSelected = nativePickSelected.has(p.uri);
+                return (
+                  <div
+                    key={p.uri}
+                    onClick={() => toggleNativePick(p.uri)}
+                    className="relative rounded-lg overflow-hidden cursor-pointer"
+                    style={{
+                      aspectRatio: '1',
+                      backgroundColor: 'var(--theme-card)',
+                      border: isSelected ? '3px solid var(--theme-secondary)' : '1px solid var(--theme-border)',
+                    }}
+                  >
+                    {p.thumbnail ? (
+                      <img src={p.thumbnail} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-xs opacity-40">?</div>
+                    )}
+                    {isSelected && (
+                      <div
+                        className="absolute top-1 right-1 w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-black"
+                        style={{ backgroundColor: 'var(--theme-secondary)' }}
+                      >
+                        ✓
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // -----------------------------------------------------------------
   // STEP 2 (mobile): a horizontal strip of photos over a vertical list of
   // projects -- tap photos then a project to batch-assign, or tap a
   // project then photos to paint-assign one at a time (see
@@ -395,7 +544,10 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
         <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
           <button
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => {
+              if (isNativePhotoPickerSupported() && fixedDateRange) openNativePicker();
+              else fileInputRef.current?.click();
+            }}
             style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
             className="text-xs font-semibold px-3 py-2 rounded-lg border cursor-pointer shrink-0"
           >
@@ -590,7 +742,10 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         />
 
         <div
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => {
+            if (isNativePhotoPickerSupported() && fixedDateRange) openNativePicker();
+            else fileInputRef.current?.click();
+          }}
           onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
           onDragLeave={() => setIsDragging(false)}
           onDrop={(e) => { e.preventDefault(); setIsDragging(false); handleFiles(e.dataTransfer.files); }}
