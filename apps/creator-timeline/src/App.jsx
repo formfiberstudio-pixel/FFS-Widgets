@@ -3308,6 +3308,7 @@ function App() {
           {viewMode === 'import' && (
             <ImportPhotosPanel
               allProjects={getAllTreeProjects()}
+              projectColorMap={projectColorMap}
               tenantId={tenantId}
               onClose={() => { setViewMode(preGalleryViewMode); setImportDateRange(null); dismissBackEntry(); }}
               onUploaded={() => fetchLogsFromNotion(tenantId, sourceFilter)}

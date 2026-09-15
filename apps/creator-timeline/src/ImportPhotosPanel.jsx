@@ -76,8 +76,19 @@ function AddProjectRow({ isActive, draft, onDraftChange, onActivate, onCancel, o
 // to arm it and assign photos one at a time, or batch-assign whatever's
 // already selected) is identical either way, only the surrounding layout
 // differs.
+//
+// Styled to match the app's own Categories sidebar (source header
+// typography, the colored-dot project row) rather than its own bespoke
+// look, so Import Photos' project list reads as the same list, not a
+// different-looking one -- the one deliberate difference is the
+// "+ Add Project" row at the bottom of each source, which the sidebar
+// itself has no equivalent for. projectColorMap mirrors the sidebar's
+// own per-project color overrides; a project with no override there
+// falls back to the theme's primary color rather than the sidebar's own
+// per-CATEGORY fallback (baseTypeHex), since this list has no "type"
+// grouping level to pull one from.
 function ProjectAssignList({
-  bySource, armedProjectKey, onProjectTap, countByProjectKey,
+  bySource, armedProjectKey, onProjectTap, countByProjectKey, projectColorMap,
   collapsedSources, onToggleSource,
   addProjectSource, newProjectDraft, onNewProjectDraftChange, onAddProjectActivate, onAddProjectCancel, onAddProjectSubmit, creatingProject, createProjectError,
   isEmpty,
@@ -89,12 +100,12 @@ function ProjectAssignList({
         const sourceCount = projs.reduce((sum, p) => sum + (countByProjectKey[projectKeyOf(p)] || 0), 0);
         return (
           <div key={source}>
-            <button
+            <div
               onClick={() => onToggleSource(source)}
-              className="w-full flex items-center justify-between cursor-pointer mb-1.5"
+              className="flex items-center justify-between px-0.5 cursor-pointer select-none mb-1.5"
             >
-              <span className="text-[10px] font-black uppercase tracking-wider opacity-50">{source}</span>
-              <span className="flex items-center gap-1.5">
+              <span className="font-black uppercase tracking-wider opacity-80 text-[11px]">{source}</span>
+              <div className="flex items-center gap-2">
                 {isCollapsed && sourceCount > 0 && (
                   <span
                     className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
@@ -104,35 +115,38 @@ function ProjectAssignList({
                   </span>
                 )}
                 <span className="text-[9px] font-mono opacity-50">{isCollapsed ? '▼' : '▲'}</span>
-              </span>
-            </button>
+              </div>
+            </div>
             {!isCollapsed && (
               <div className="space-y-1.5">
                 {projs.map((p) => {
                   const key = projectKeyOf(p);
                   const isArmed = armedProjectKey === key;
                   const count = countByProjectKey[key] || 0;
+                  const dotHex = projectColorMap?.[p.title] || 'var(--theme-primary)';
                   return (
-                    <button
+                    <div
                       key={key}
                       onClick={() => onProjectTap(key)}
                       style={{
                         backgroundColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-bg)',
                         borderColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-border)',
                         color: isArmed ? '#fff' : 'var(--theme-text)',
+                        fontSize: '12px',
                       }}
-                      className="w-full text-left p-3 rounded-lg border cursor-pointer flex items-center justify-between transition-colors"
+                      className={`p-2.5 rounded border transition-all cursor-pointer flex items-center gap-2 ${isArmed ? 'font-bold' : ''}`}
                     >
-                      <span className="font-semibold text-sm truncate">{p.title}</span>
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20 shadow-sm" style={{ backgroundColor: dotHex }} />
+                      <span className="truncate flex-1">{p.title}</span>
                       {count > 0 && (
                         <span
-                          className="text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0 ml-2"
+                          className="text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0"
                           style={{ backgroundColor: isArmed ? 'rgba(255,255,255,0.25)' : 'var(--theme-primary)', color: '#fff' }}
                         >
                           {count}
                         </span>
                       )}
-                    </button>
+                    </div>
                   );
                 })}
                 <AddProjectRow
@@ -159,7 +173,7 @@ function ProjectAssignList({
   );
 }
 
-export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, fixedDateRange }) {
+export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, fixedDateRange, projectColorMap }) {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < MOBILE_BREAKPOINT);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
@@ -539,6 +553,85 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     setArmedProjectKey((prev) => (prev === key ? null : key));
   };
 
+  // Desktop-only batch selection: shift+click a photo to select the
+  // whole range from the last plain click to it (standard file-manager
+  // behavior), or click-and-drag across empty grid space to draw a
+  // marquee and select whatever it touches. Neither has a mobile
+  // equivalent (no shift key, no mouse drag there) -- mobile keeps
+  // using handlePhotoTap directly.
+  const lastClickedPhotoIndexRef = useRef(null);
+  const handleDesktopPhotoClick = (photo, index, e) => {
+    if (e.shiftKey && lastClickedPhotoIndexRef.current !== null) {
+      const start = Math.min(lastClickedPhotoIndexRef.current, index);
+      const end = Math.max(lastClickedPhotoIndexRef.current, index);
+      const rangeIds = photos.slice(start, end + 1).map((p) => p.id);
+      // Mirrors handlePhotoTap's own armed-vs-select branching, just
+      // applied to the whole range instead of one photo -- the anchor
+      // (lastClickedPhotoIndexRef) deliberately doesn't move on a
+      // shift+click, so a second shift+click extends/shrinks the SAME
+      // range rather than chaining off the last one, matching how
+      // Explorer/Finder-style range select behaves.
+      if (armedProjectKey) {
+        setPhotos((prev) => prev.map((p) => (rangeIds.includes(p.id) ? { ...p, projectKey: armedProjectKey } : p)));
+      } else {
+        setSelectedPhotoIds((prev) => new Set([...prev, ...rangeIds]));
+      }
+      return;
+    }
+    lastClickedPhotoIndexRef.current = index;
+    handlePhotoTap(photo.id);
+  };
+
+  // Marquee (click-and-drag) selection over empty grid space -- viewport
+  // (clientX/Y) coordinates throughout, compared directly against each
+  // tile's own getBoundingClientRect(), so none of this has to reason
+  // about the grid's own scroll offset.
+  const [isDragSelecting, setIsDragSelecting] = useState(false);
+  const [dragBox, setDragBox] = useState(null);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const photoTileRefs = useRef({});
+
+  const handleGridMouseDown = (e) => {
+    if (e.button !== 0) return; // left click/drag only
+    if (e.target.closest('[data-photo-tile]')) return; // a tile's own onClick handles that
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    setArmedProjectKey(null); // a marquee always means "select", not "assign as you go"
+    setSelectedPhotoIds(new Set()); // a plain click on empty space starts a fresh selection
+    setIsDragSelecting(true);
+    setDragBox({ left: e.clientX, top: e.clientY, width: 0, height: 0 });
+  };
+
+  useEffect(() => {
+    if (!isDragSelecting) return;
+    const handleMove = (e) => {
+      const { x: startX, y: startY } = dragStartRef.current;
+      const left = Math.min(startX, e.clientX);
+      const top = Math.min(startY, e.clientY);
+      const width = Math.abs(e.clientX - startX);
+      const height = Math.abs(e.clientY - startY);
+      setDragBox({ left, top, width, height });
+      const right = left + width;
+      const bottom = top + height;
+      const idsInRect = Object.keys(photoTileRefs.current).filter((id) => {
+        const el = photoTileRefs.current[id];
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return r.left < right && r.right > left && r.top < bottom && r.bottom > top;
+      });
+      setSelectedPhotoIds(new Set(idsInRect));
+    };
+    const handleUp = () => {
+      setIsDragSelecting(false);
+      setDragBox(null);
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, [isDragSelecting]);
+
   const removePhoto = (id) => {
     setPhotos((prev) => {
       const target = prev.find((p) => p.id === id);
@@ -897,6 +990,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
             armedProjectKey={armedProjectKey}
             onProjectTap={handleProjectTap}
             countByProjectKey={countByProjectKey}
+            projectColorMap={projectColorMap}
             collapsedSources={collapsedSources}
             onToggleSource={toggleSourceCollapse}
             addProjectSource={addProjectSource}
@@ -981,6 +1075,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                 armedProjectKey={armedProjectKey}
                 onProjectTap={handleProjectTap}
                 countByProjectKey={countByProjectKey}
+                projectColorMap={projectColorMap}
                 collapsedSources={collapsedSources}
                 onToggleSource={toggleSourceCollapse}
                 addProjectSource={addProjectSource}
@@ -1016,20 +1111,22 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
               <div className="text-xs opacity-50 mt-1">Click to browse, or drag and drop -- dates are read from each photo automatically</div>
             </div>
 
-            <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+            <div onMouseDown={handleGridMouseDown} className="flex-1 overflow-y-auto min-h-0 pr-1">
               {photos.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-sm italic opacity-50">
                   No photos added yet.
                 </div>
               ) : (
                 <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
-                  {photos.map((photo) => {
+                  {photos.map((photo, index) => {
                     const isSelected = selectedPhotoIds.has(photo.id);
                     const assignedProject = photo.projectKey ? effectiveProjects.find((p) => projectKeyOf(p) === photo.projectKey) : null;
                     return (
                       <div key={photo.id}>
                         <div
-                          onClick={() => handlePhotoTap(photo.id)}
+                          ref={(el) => { if (el) photoTileRefs.current[photo.id] = el; else delete photoTileRefs.current[photo.id]; }}
+                          data-photo-tile
+                          onClick={(e) => handleDesktopPhotoClick(photo, index, e)}
                           className="relative rounded-lg overflow-hidden cursor-pointer aspect-square"
                           style={{
                             backgroundColor: 'var(--theme-card)',
@@ -1079,6 +1176,22 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
             </div>
           </div>
         </div>
+
+        {/* Marquee rectangle -- fixed/viewport-positioned so it never has
+            to reason about the grid's own scroll offset (see
+            handleGridMouseDown's effect, which compares clientX/Y
+            directly against each tile's getBoundingClientRect()). Outer
+            div carries a fully-opaque border; the inner one is a
+            separate element so its fill can be partially transparent
+            without washing out the border too. */}
+        {isDragSelecting && dragBox && (
+          <div
+            className="fixed pointer-events-none z-50 rounded-sm"
+            style={{ left: dragBox.left, top: dragBox.top, width: dragBox.width, height: dragBox.height, border: '2px solid var(--theme-primary)' }}
+          >
+            <div className="w-full h-full" style={{ backgroundColor: 'var(--theme-primary)', opacity: 0.15 }} />
+          </div>
+        )}
       </div>
     );
   }
