@@ -1027,6 +1027,59 @@ function App() {
     localStorage.setItem('notionWidgetThumbnails', JSON.stringify(thumbnailOverrides));
   }, [thumbnailOverrides]);
 
+  // -------------------------------------------------------------
+  // IN-APP BACK STACK -- makes the phone's own back gesture/button undo a
+  // drill-down (gallery photo -> its day, project pill -> its gallery,
+  // "Import Photos" -> whatever it was opened from) instead of exiting the
+  // installed PWA outright, which is what happens today: nothing here ever
+  // touches browser history, so there's no entry for the back button to
+  // land on and it falls straight through to closing the app.
+  //
+  // Each drill-down calls pushBackEntry with a snapshot of the state being
+  // LEFT, then changes viewMode/currentDate/etc. itself as normal. The
+  // snapshot lives in this ref, not in history.state -- Dates and the rest
+  // of this app's state shape aren't things worth round-tripping through
+  // structured-clone, and the ref is all popState needs to restore the
+  // previous screen. A plain, mostly-empty pushState call just reserves the
+  // history slot popstate needs to fire against. Lateral moves (switching
+  // between the Year/Month/Week/Day tabs) deliberately don't push anything
+  // here, matching how tab bars usually behave elsewhere -- only actual
+  // drill-downs are back-navigable.
+  const backStackRef = useRef([]);
+  const pushBackEntry = (snapshot) => {
+    backStackRef.current.push(snapshot);
+    window.history.pushState({ __calendarBack: true }, '');
+  };
+  // Called by the explicit on-screen "Back to Calendar" buttons (Gallery,
+  // Import), which already know how to restore the right view themselves
+  // via preGalleryViewMode without needing this stack at all. This just
+  // keeps the browser's own history in sync with that same step -- without
+  // it, the entry pushBackEntry added on the way in would linger, and the
+  // phone's back button would later replay it for a screen the user
+  // already left through this button (one harmless-looking but confusing
+  // extra "back" press before the app actually exits). A no-op when
+  // there's nothing tracked, e.g. Import opened via the Android
+  // share-target landing rather than a drill-down.
+  const dismissBackEntry = () => {
+    if (backStackRef.current.length > 0) window.history.back();
+  };
+
+  useEffect(() => {
+    const onPopState = () => {
+      const prev = backStackRef.current.pop();
+      if (!prev) return; // Nothing tracked (or the tab was reloaded/restored
+      // mid-session and lost the in-memory stack) -- let the back gesture
+      // fall through to its normal browser/OS behavior instead of doing
+      // nothing silently.
+      setViewMode(prev.viewMode);
+      if (prev.currentDate) setCurrentDate(prev.currentDate);
+      if ('galleryTarget' in prev) setGalleryTarget(prev.galleryTarget);
+      if ('preGalleryViewMode' in prev) setPreGalleryViewMode(prev.preGalleryViewMode);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
   const [hoveredProjectTitle, setHoveredProjectTitle] = useState(null);
   const [hoveredWeek, setHoveredWeek] = useState(null);
   const [hoveredMonthButtonIndex, setHoveredMonthButtonIndex] = useState(null);
@@ -2247,7 +2300,7 @@ function App() {
           {viewMode === 'gallery' ? (
             <div className="leading-none">
               <button
-                onClick={() => setViewMode(preGalleryViewMode)}
+                onClick={() => { setViewMode(preGalleryViewMode); dismissBackEntry(); }}
                 title="Back to calendar"
                 className="flex items-center gap-1.5 font-bold cursor-pointer hover:opacity-80 transition-opacity mb-1"
                 style={{ fontSize: '0.9rem', color: 'var(--theme-primary)' }}
@@ -2262,7 +2315,7 @@ function App() {
           ) : viewMode === 'import' ? (
             <div className="leading-none">
               <button
-                onClick={() => { setViewMode(preGalleryViewMode); setImportDateRange(null); }}
+                onClick={() => { setViewMode(preGalleryViewMode); setImportDateRange(null); dismissBackEntry(); }}
                 title="Back to calendar"
                 className="flex items-center gap-1.5 font-bold cursor-pointer hover:opacity-80 transition-opacity mb-1"
                 style={{ fontSize: '0.9rem', color: 'var(--theme-primary)' }}
@@ -2475,7 +2528,10 @@ function App() {
                     <button
                       onClick={() => {
                         setShowMobileMenu(false);
-                        if (viewMode !== 'gallery' && viewMode !== 'import') setPreGalleryViewMode(viewMode);
+                        if (viewMode !== 'gallery' && viewMode !== 'import') {
+                          setPreGalleryViewMode(viewMode);
+                          pushBackEntry({ viewMode, currentDate, galleryTarget });
+                        }
                         setViewMode('import');
                       }}
                       disabled={isDemoMode || !tenantId}
@@ -2524,7 +2580,10 @@ function App() {
 
               <button
                 onClick={() => {
-                  if (viewMode !== 'gallery' && viewMode !== 'import') setPreGalleryViewMode(viewMode);
+                  if (viewMode !== 'gallery' && viewMode !== 'import') {
+                    setPreGalleryViewMode(viewMode);
+                    pushBackEntry({ viewMode, currentDate, galleryTarget });
+                  }
                   setViewMode('import');
                 }}
                 disabled={isDemoMode || !tenantId}
@@ -2765,7 +2824,10 @@ function App() {
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          if (viewMode !== 'gallery' && viewMode !== 'import') setPreGalleryViewMode(viewMode);
+                                          if (viewMode !== 'gallery' && viewMode !== 'import') {
+                                            setPreGalleryViewMode(viewMode);
+                                            pushBackEntry({ viewMode, currentDate, galleryTarget });
+                                          }
                                           setGalleryTarget({ title: p.title, source });
                                           setViewMode('gallery');
                                         }}
@@ -2831,7 +2893,7 @@ function App() {
             <ImportPhotosPanel
               allProjects={getAllTreeProjects()}
               tenantId={tenantId}
-              onClose={() => { setViewMode(preGalleryViewMode); setImportDateRange(null); }}
+              onClose={() => { setViewMode(preGalleryViewMode); setImportDateRange(null); dismissBackEntry(); }}
               onUploaded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
               sharedPhotos={pendingSharedPhotos}
               onConsumedSharedPhotos={() => setPendingSharedPhotos(null)}
@@ -2884,30 +2946,48 @@ function App() {
                           const isHovered = log.id === hoveredGalleryLogId;
 
                           return (
-                            <a
+                            <div
                               key={log.id}
-                              href={notionPageUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title="Open in Notion"
+                              role="button"
+                              tabIndex={0}
+                              title="Open this day"
+                              onClick={() => {
+                                pushBackEntry({ viewMode: 'gallery', currentDate, galleryTarget });
+                                setCurrentDate(dateObj);
+                                setViewMode('day');
+                              }}
+                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.currentTarget.click(); }}
                               onMouseEnter={() => setHoveredGalleryLogId(log.id)}
                               onMouseLeave={() => setHoveredGalleryLogId(null)}
                               style={{
                                 backgroundColor: 'var(--theme-bg)',
                                 borderColor: isHovered ? 'var(--theme-secondary)' : 'var(--theme-border)',
                               }}
-                              className={`group flex flex-col rounded-lg border overflow-hidden shadow-sm transition-all hover:border-[var(--theme-primary)] hover:shadow-md ${isHovered ? 'ring-2 ring-[var(--theme-secondary)] scale-[1.02]' : ''}`}
+                              className={`group flex flex-col rounded-lg border overflow-hidden shadow-sm transition-all cursor-pointer hover:border-[var(--theme-primary)] hover:shadow-md ${isHovered ? 'ring-2 ring-[var(--theme-secondary)] scale-[1.02]' : ''}`}
                             >
                               <div className="aspect-square w-full overflow-hidden" style={{ backgroundColor: 'var(--theme-card)' }}>
                                 <img src={log.imageUrl} alt="" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
                               </div>
                               <div className="p-2.5">
-                                <div className="text-[11px] font-bold opacity-60">
-                                  {dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="text-[11px] font-bold opacity-60">
+                                    {dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                  </div>
+                                  <a
+                                    href={notionPageUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title="Open in Notion"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-[10px] font-bold shrink-0 opacity-60 hover:opacity-100"
+                                    style={{ color: 'var(--theme-primary)' }}
+                                  >
+                                    Notion ↗
+                                  </a>
                                 </div>
                                 <div className="text-sm font-semibold truncate">{log.title}</div>
                               </div>
-                            </a>
+                            </div>
                           );
                         })}
                       </div>
@@ -3117,6 +3197,7 @@ function App() {
                     onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
                     onGoToGallery={(title, source) => {
                       setPreGalleryViewMode(viewMode);
+                      pushBackEntry({ viewMode, currentDate, galleryTarget });
                       setGalleryTarget({ title, source });
                       setViewMode('gallery');
                     }}
@@ -3395,6 +3476,7 @@ function App() {
                       onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
                       onGoToGallery={(title, source) => {
                         setPreGalleryViewMode(viewMode);
+                        pushBackEntry({ viewMode, currentDate, galleryTarget });
                         setGalleryTarget({ title, source });
                         setViewMode('gallery');
                       }}
@@ -3405,6 +3487,7 @@ function App() {
                 <button
                   onClick={() => {
                     setPreGalleryViewMode(viewMode);
+                    pushBackEntry({ viewMode, currentDate, galleryTarget });
                     setImportDateRange({ start: toLocalDateInputValue(startOfWeek), end: toLocalDateInputValue(endOfWeek) });
                     setViewMode('import');
                   }}
@@ -3539,6 +3622,7 @@ function App() {
                 <button
                   onClick={() => {
                     setPreGalleryViewMode(viewMode);
+                    pushBackEntry({ viewMode, currentDate, galleryTarget });
                     setImportDateRange({ start: dateKey, end: dateKey });
                     setViewMode('import');
                   }}
@@ -3604,74 +3688,70 @@ function App() {
                 </div>
 
                 {mobileYearLayout === 'dots' ? (
-                <>
-                <div className="grid shrink-0 mb-1" style={{ gridTemplateColumns: '30px repeat(31, minmax(0, 1fr))', gap: '2px' }}>
+                // One column per month (day 1 at the top running down to
+                // 31) instead of one row per month -- reads tall/narrow
+                // like the Blocks layout below rather than a single wide
+                // horizontal strip. A flat array (not a grid row per day)
+                // because CSS grid only cares about item ORDER, not DOM
+                // nesting -- flatMap avoids needing a keyed Fragment per
+                // row just to group a label with its 12 month cells.
+                <div
+                  className="grid shrink-0 mb-2"
+                  style={{ gridTemplateColumns: `18px repeat(${MONTH_NAMES.length}, minmax(0, 1fr))`, gap: '2px' }}
+                >
                   <div />
-                  {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
-                    <div key={d} className="text-center opacity-40" style={{ fontSize: '7px' }}>
-                      {d === 1 || d % 5 === 0 ? d : ''}
-                    </div>
+                  {MONTH_NAMES.map((monthLabel, mIdx) => (
+                    <button
+                      key={monthLabel}
+                      onClick={() => { setCurrentDate(new Date(year, mIdx, 1)); setViewMode('month'); }}
+                      className="text-center font-bold uppercase tracking-wide opacity-70 cursor-pointer hover:opacity-100"
+                      style={{ fontSize: '8px' }}
+                    >
+                      {monthLabel}
+                    </button>
                   ))}
-                </div>
 
-                <div className="flex flex-col shrink-0" style={{ gap: '2px' }}>
-                  {MONTH_NAMES.map((monthLabel, mIdx) => {
-                    const daysInMonth = new Date(year, mIdx + 1, 0).getDate();
-                    return (
-                      <div key={monthLabel} className="grid items-center" style={{ gridTemplateColumns: '30px repeat(31, minmax(0, 1fr))', gap: '2px', height: '17px' }}>
-                        <button
-                          onClick={() => { setCurrentDate(new Date(year, mIdx, 1)); setViewMode('month'); }}
-                          // Centered in the fixed 30px column rather than
-                          // left-aligned -- left-align kept the start flush
-                          // but let the far edge of each label ragged
-                          // differently per month (JAN vs SEP render at
-                          // different widths even at the same 3 characters);
-                          // centering balances the leftover space evenly on
-                          // both sides instead of dumping it all on one.
-                          className="w-full text-center font-bold uppercase tracking-wide opacity-70 cursor-pointer hover:opacity-100"
-                          style={{ fontSize: '9px' }}
-                        >
-                          {monthLabel}
-                        </button>
-                        {Array.from({ length: 31 }, (_, i) => i + 1).map((dayNum) => {
-                          if (dayNum > daysInMonth) return <div key={dayNum} />;
-                          const dateObj = new Date(year, mIdx, dayNum);
-                          const logs = getLogsForDate(dateObj);
-                          const hasLog = logs.length > 0;
-                          const displayDotHex = getDisplayDotColor(logs, dateObj);
-                          const specialDay = getSpecialDayForDate(dateObj, specialDays);
-                          const dotStyle = getDayDotStyling(dateObj, hasLog, displayDotHex, specialDay);
-                          const isHighlightedProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
-                          const isDimmedByHighlight = hoveredProjectTitle && !isHighlightedProject;
+                  {Array.from({ length: 31 }, (_, i) => i + 1).flatMap((dayNum) => [
+                    <div key={`label-${dayNum}`} className="flex items-center justify-end pr-0.5 opacity-40" style={{ fontSize: '7px', height: '10px' }}>
+                      {dayNum === 1 || dayNum % 5 === 0 ? dayNum : ''}
+                    </div>,
+                    ...MONTH_NAMES.map((monthLabel, mIdx) => {
+                      const daysInMonth = new Date(year, mIdx + 1, 0).getDate();
+                      if (dayNum > daysInMonth) return <div key={`${mIdx}-${dayNum}`} />;
+                      const dateObj = new Date(year, mIdx, dayNum);
+                      const logs = getLogsForDate(dateObj);
+                      const hasLog = logs.length > 0;
+                      const displayDotHex = getDisplayDotColor(logs, dateObj);
+                      const specialDay = getSpecialDayForDate(dateObj, specialDays);
+                      const dotStyle = getDayDotStyling(dateObj, hasLog, displayDotHex, specialDay);
+                      const isHighlightedProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
+                      const isDimmedByHighlight = hoveredProjectTitle && !isHighlightedProject;
 
-                          return (
-                            <div key={dayNum} className="flex items-center justify-center h-full" onClick={() => handleDayClick(dateObj, logs)}>
-                              <div
-                                // opacity is set inline below (not via an
-                                // opacity-* class) specifically so the
-                                // dimmed-by-highlight state can win over the
-                                // hasLog/no-log opacity -- an inline style
-                                // always beats a class for the same
-                                // property, so a competing opacity-25 CLASS
-                                // here was silently losing to hasLog's own
-                                // inline opacity:1 and never visibly dimming
-                                // anything.
-                                className={`rounded-full transition-all ${isToday(dateObj) ? 'ring-1 ring-[var(--theme-primary)] ring-offset-1' : ''} ${isHighlightedProject ? 'ring-1 ring-[var(--theme-secondary)]' : ''} ${isDimmedByHighlight ? 'grayscale' : ''}`}
-                                style={{
-                                  width: hasLog ? '7px' : '4px',
-                                  height: hasLog ? '7px' : '4px',
-                                  background: isToday(dateObj) ? 'var(--theme-primary)' : (hasLog ? dotStyle.bg : dotStyle.border),
-                                  opacity: isDimmedByHighlight ? 0.25 : hasLog ? 1 : 0.5,
-                                }}
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
+                      return (
+                        <div key={`${mIdx}-${dayNum}`} className="flex items-center justify-center" style={{ height: '10px' }} onClick={() => handleDayClick(dateObj, logs)}>
+                          <div
+                            // opacity is set inline below (not via an
+                            // opacity-* class) specifically so the
+                            // dimmed-by-highlight state can win over the
+                            // hasLog/no-log opacity -- an inline style
+                            // always beats a class for the same
+                            // property, so a competing opacity-25 CLASS
+                            // here was silently losing to hasLog's own
+                            // inline opacity:1 and never visibly dimming
+                            // anything.
+                            className={`rounded-full transition-all ${isToday(dateObj) ? 'ring-1 ring-[var(--theme-primary)] ring-offset-1' : ''} ${isHighlightedProject ? 'ring-1 ring-[var(--theme-secondary)]' : ''} ${isDimmedByHighlight ? 'grayscale' : ''}`}
+                            style={{
+                              width: hasLog ? '6px' : '4px',
+                              height: hasLog ? '6px' : '4px',
+                              background: isToday(dateObj) ? 'var(--theme-primary)' : (hasLog ? dotStyle.bg : dotStyle.border),
+                              opacity: isDimmedByHighlight ? 0.25 : hasLog ? 1 : 0.5,
+                            }}
+                          />
+                        </div>
+                      );
+                    }),
+                  ])}
                 </div>
-                </>
                 ) : (
                   // Blocks: 12 mini month-calendars, 3 per row / 4 rows, so
                   // the whole year is visible without scrolling the grid
@@ -3767,6 +3847,7 @@ function App() {
                     onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
                     onGoToGallery={(title, source) => {
                       setPreGalleryViewMode(viewMode);
+                      pushBackEntry({ viewMode, currentDate, galleryTarget });
                       setGalleryTarget({ title, source });
                       setViewMode('gallery');
                     }}
