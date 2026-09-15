@@ -22,9 +22,9 @@ const projectKeyOf = (p) => `${p.source}::${p.title}`;
 const MOBILE_BREAKPOINT = 640;
 
 // A "+ Add Project" row shown at the bottom of one source's project list
-// -- shared between the mobile tap-to-assign list and the desktop
-// select-project step, since both group projects by source the same way
-// and both should be able to add one without leaving Import Photos.
+// in the mobile tap-to-assign step -- desktop's review grid uses a more
+// compact inline form instead (no per-source grouped list there to hang
+// a row off of), but both end up calling the same submitAddProject.
 // Collapses to a single dashed button until tapped, then swaps to a
 // plain inline text input, matching LogTitleEditor's click-to-edit
 // pattern elsewhere in this app.
@@ -78,14 +78,13 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // The project picked in step 1 -- now just the DEFAULT new photos get
-  // assigned, not a batch-wide setting. Each photo carries its own
-  // projectKey (below) and can be reassigned individually in the review
-  // grid, so a single batch can land across several different projects.
-  // On mobile, step 1 is skipped entirely (see the lazy initializer
-  // below) -- there's no "default," every photo is assigned via the
-  // tap-to-assign UI instead.
-  const [defaultProject, setDefaultProject] = useState(null);
+  // Every photo carries its own projectKey, starting unassigned ('') --
+  // set individually (desktop's per-photo dropdown, mobile's tap-to-assign
+  // strip) once photos are already in the batch, not picked up front.
+  // Used to require picking a "default project" before you could even see
+  // an "+ Add Photos" button at all on desktop; dropped in favor of
+  // dump-first-categorize-after everywhere, matching how mobile already
+  // worked.
   const [photos, setPhotos] = useState([]);
   // Opened for a specific day/week on the Android app -- skip straight to
   // the native MediaStore picker instead of landing on the (at that point
@@ -93,8 +92,8 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   // "+ Add Photos" a second time to actually see any photos.
   const [step, setStep] = useState(() => {
     if (isNativePhotoPickerSupported() && fixedDateRange) return 'native-pick';
-    return window.innerWidth < MOBILE_BREAKPOINT ? 'review' : 'select-project';
-  }); // native-pick | select-project | review | uploading | done
+    return 'review';
+  }); // native-pick | review | uploading | done
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [uploadResults, setUploadResults] = useState({ byProject: [], failed: [] });
   const [isDragging, setIsDragging] = useState(false);
@@ -323,7 +322,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
       previewUrl: p.thumbnail,
       date: toDateInputValue(new Date(p.dateTaken)),
       hasExif: true,
-      projectKey: defaultProject ? projectKeyOf(defaultProject) : '',
+      projectKey: '',
     }));
     setPhotos((prev) => [...prev, ...newPhotos]);
     setStep('review');
@@ -396,7 +395,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
       previewUrl,
       date: dateStr,
       hasExif: hasReliableDate,
-      projectKey: defaultProject ? projectKeyOf(defaultProject) : '',
+      projectKey: '',
     };
   };
 
@@ -568,80 +567,13 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   const resetToStart = () => {
     photos.forEach((p) => URL.revokeObjectURL(p.previewUrl));
     setPhotos([]);
-    setDefaultProject(null);
     setSelectedPhotoIds(new Set());
     setArmedProjectKey(null);
     setUploadResults({ byProject: [], failed: [] });
-    // Mobile skips the default-project step entirely (see the `step`
-    // lazy initializer) -- resetting should land back wherever it started.
-    setStep(isMobile ? 'review' : 'select-project');
+    setStep('review');
   };
 
   // -----------------------------------------------------------------
-  // STEP 1: pick a default project for new photos (each photo can still
-  // be reassigned individually once added, in step 2)
-  // -----------------------------------------------------------------
-  if (step === 'select-project') {
-    const bySource = {};
-    effectiveProjects.forEach((p) => {
-      if (!bySource[p.source]) bySource[p.source] = [];
-      bySource[p.source].push(p);
-    });
-
-    return (
-      <div className="flex flex-col h-full w-full min-h-0 max-w-2xl mx-auto">
-        <p className="text-sm opacity-60 mb-4 shrink-0">
-          Which project should backlogged photos default to? You can assign individual photos to a different project once they're added.
-        </p>
-        <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-1">
-          {Object.entries(bySource).map(([source, projs]) => {
-            const isCollapsed = collapsedSources.has(source);
-            return (
-              <div key={source}>
-                <button
-                  onClick={() => toggleSourceCollapse(source)}
-                  className="w-full flex items-center justify-between cursor-pointer mb-1.5"
-                >
-                  <span className="text-[10px] font-black uppercase tracking-wider opacity-50">{source}</span>
-                  <span className="text-[9px] font-mono opacity-50">{isCollapsed ? '▼' : '▲'}</span>
-                </button>
-                {!isCollapsed && (
-                  <div className="space-y-1.5">
-                    {projs.map((p) => (
-                      <button
-                        key={projectKeyOf(p)}
-                        onClick={() => { setDefaultProject(p); setStep('review'); }}
-                        style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
-                        className="w-full text-left p-3 rounded-lg border cursor-pointer transition-colors hover:border-[var(--theme-primary)] flex items-center justify-between"
-                      >
-                        <span className="font-semibold text-sm">{p.title}</span>
-                        <span className="text-xs opacity-50">Select →</span>
-                      </button>
-                    ))}
-                    <AddProjectRow
-                      isActive={addProjectSource === source}
-                      draft={newProjectDraft}
-                      onDraftChange={setNewProjectDraft}
-                      onActivate={() => { setAddProjectSource(source); setNewProjectDraft(''); setCreateProjectError(null); }}
-                      onCancel={cancelAddProject}
-                      onSubmit={() => submitAddProject(source)}
-                      submitting={creatingProject}
-                      error={addProjectSource === source ? createProjectError : null}
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {effectiveProjects.length === 0 && (
-            <div className="text-sm italic opacity-50 text-center py-8">
-              No projects found yet -- sync your calendar first.
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
 
   // -----------------------------------------------------------------
   // NATIVE PICKER (Android app only): MediaStore already filtered this to
@@ -948,21 +880,65 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   }
 
   // -----------------------------------------------------------------
-  // STEP 2 (desktop): add photos, review/fix each one's date and project
+  // STEP 2 (desktop): dump photos in first, categorize after -- same
+  // philosophy as mobile's tap-to-assign step, just via a per-photo
+  // dropdown instead of tap-to-assign (desktop has the screen room for a
+  // grid, so there's no need for mobile's more compact interaction). No
+  // more forced "pick a default project" step first.
   // -----------------------------------------------------------------
   if (step === 'review') {
+    const sources = [...new Set(effectiveProjects.map((p) => p.source))];
+    const unassignedCount = photos.filter((p) => !p.projectKey).length;
+
     return (
       <div className="flex flex-col h-full w-full min-h-0">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4 shrink-0">
-          <div>
-            <button onClick={() => setStep('select-project')} className="text-xs font-semibold cursor-pointer hover:opacity-70" style={{ color: 'var(--theme-primary)' }}>
-              ‹ Change Default Project
-            </button>
-            <div className="text-sm font-bold mt-0.5">New photos default to: {defaultProject.title}</div>
+          <div className="flex items-center gap-2 flex-wrap min-h-[34px]">
+            {!addProjectSource ? (
+              sources.length > 0 && (
+                <select
+                  value=""
+                  onChange={(e) => { if (e.target.value) { setAddProjectSource(e.target.value); setNewProjectDraft(''); setCreateProjectError(null); } }}
+                  style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+                  className="text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer"
+                >
+                  <option value="">+ Add Project…</option>
+                  {sources.map((s) => <option key={s} value={s}>to {s}</option>)}
+                </select>
+              )
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <input
+                  autoFocus
+                  type="text"
+                  value={newProjectDraft}
+                  onChange={(e) => setNewProjectDraft(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') submitAddProject(addProjectSource); if (e.key === 'Escape') cancelAddProject(); }}
+                  placeholder={`New project in ${addProjectSource}`}
+                  style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-primary)', color: 'var(--theme-text)' }}
+                  className="text-xs px-2.5 py-1.5 rounded-lg border outline-none"
+                />
+                <button onClick={cancelAddProject} className="text-xs font-semibold px-2 py-1 rounded cursor-pointer opacity-60 hover:opacity-100 transition-opacity">
+                  Cancel
+                </button>
+                <button
+                  onClick={() => submitAddProject(addProjectSource)}
+                  disabled={creatingProject || !newProjectDraft.trim()}
+                  style={{ backgroundColor: 'var(--theme-primary)' }}
+                  className="text-xs font-bold text-white px-2.5 py-1.5 rounded-lg cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {creatingProject ? 'Adding…' : 'Add'}
+                </button>
+              </div>
+            )}
+            {createProjectError && addProjectSource && (
+              <span className="text-[10px]" style={{ color: 'var(--theme-secondary)' }}>{createProjectError}</span>
+            )}
           </div>
           <button
             onClick={startUpload}
-            disabled={photos.length === 0}
+            disabled={photos.length === 0 || unassignedCount > 0}
+            title={unassignedCount > 0 ? `${unassignedCount} photo${unassignedCount === 1 ? '' : 's'} still need${unassignedCount === 1 ? 's' : ''} a project` : undefined}
             style={{ backgroundColor: 'var(--theme-primary)' }}
             className="w-full sm:w-auto px-4 py-2.5 sm:py-2 text-sm font-bold text-white rounded-lg cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
           >
@@ -997,6 +973,12 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           <div className="text-xs opacity-50 mt-1">Click to browse, or drag and drop -- dates are read from each photo automatically</div>
         </div>
 
+        {effectiveProjects.length === 0 && (
+          <div className="shrink-0 mb-4 text-xs italic opacity-60 text-center">
+            No projects found yet -- sync your calendar first.
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto min-h-0 pr-1">
           {photos.length === 0 ? (
             <div className="h-full flex items-center justify-center text-sm italic opacity-50">
@@ -1020,14 +1002,20 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                         No Date Found
                       </span>
                     )}
+                    {!photo.projectKey && (
+                      <span className="absolute bottom-1 right-1 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded text-white" style={{ backgroundColor: 'var(--theme-secondary)' }}>
+                        Unassigned
+                      </span>
+                    )}
                   </div>
                   <div className="p-2 space-y-1.5">
                     <select
                       value={photo.projectKey}
                       onChange={(e) => updatePhotoProject(photo.id, e.target.value)}
-                      style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+                      style={{ backgroundColor: 'var(--theme-card)', borderColor: photo.projectKey ? 'var(--theme-border)' : 'var(--theme-secondary)', color: 'var(--theme-text)' }}
                       className="w-full text-xs px-1.5 py-1 rounded border truncate"
                     >
+                      <option value="">Choose a project…</option>
                       {effectiveProjects.map((p) => (
                         <option key={projectKeyOf(p)} value={projectKeyOf(p)}>{p.title}</option>
                       ))}

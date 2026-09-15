@@ -2942,15 +2942,6 @@ function App() {
               </button>
 
               <button
-                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1"
-              >
-                <IconFolder />
-                <span>{isSidebarOpen ? 'Hide Projects' : 'Projects'}</span>
-              </button>
-
-              <button
                 onClick={() => {
                   if (viewMode !== 'gallery' && viewMode !== 'import') {
                     setPreGalleryViewMode(viewMode);
@@ -3091,6 +3082,29 @@ function App() {
                   <IconPalette />
                 </button>
               </div>
+
+              {/* Quick access to the same toggle as Settings > View Scale's
+                  "Filter Sidebar to Visible Range" -- only shown for Month
+                  and Week, the two views activeViewRange (below) actually
+                  narrows for, so this doesn't sit around meaninglessly on
+                  Year/Day where it'd have nothing to do. */}
+              {(viewMode === 'month' || viewMode === 'week') && (
+                <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b" style={{ borderColor: 'var(--theme-border)' }}>
+                  <span className="text-[10px] font-semibold opacity-70">
+                    {sidebarFilterToVisible ? `This ${viewMode === 'month' ? 'Month' : 'Week'}` : 'All Time'}
+                  </span>
+                  <button
+                    onClick={() => setSidebarFilterToVisible((prev) => !prev)}
+                    role="switch"
+                    aria-checked={sidebarFilterToVisible}
+                    title={sidebarFilterToVisible ? 'Showing only projects in the visible range -- click to show all time' : 'Showing every project logged all time -- click to filter to the visible range'}
+                    className="relative w-8 h-[18px] rounded-full transition-colors cursor-pointer shrink-0"
+                    style={{ backgroundColor: sidebarFilterToVisible ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-transform ${sidebarFilterToVisible ? 'translate-x-3.5' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+              )}
 
               <div className="flex flex-wrap items-center gap-1.5 pb-2 border-b" style={{ borderColor: 'var(--theme-border)' }}>
                 <button onClick={handleExpandAllCategories} style={{ backgroundColor: 'var(--theme-bg)' }} className="text-[10px] font-bold px-2 py-1 rounded cursor-pointer transition-colors opacity-70 hover:opacity-100">Expand All</button>
@@ -3247,6 +3261,27 @@ function App() {
               />
             </div>
           </aside>
+        )}
+
+        {/* SIDEBAR COLLAPSE TAB -- desktop only (mobile's sidebar is a
+            full-screen overlay with its own dismiss button/backdrop, no
+            room for a flush edge tab). Replaces the old "Hide Projects" /
+            "Projects" header button with a small tab sitting right on the
+            sidebar/canvas boundary, Photoshop-panel-style, instead of a
+            separate button living up in the toolbar. -mx-6 cancels this
+            row's own gap-6 on both sides so it sits flush against
+            whichever it's currently adjacent to (the sidebar when open,
+            straight against the canvas when closed) rather than floating
+            with visible gaps around it. */}
+        {!isMobile && viewMode !== 'import' && (
+          <button
+            onClick={() => setIsSidebarOpen((prev) => !prev)}
+            title={isSidebarOpen ? 'Hide Projects' : 'Show Projects'}
+            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-primary)' }}
+            className="shrink-0 self-center -mx-6 z-20 w-4 h-14 rounded-md border flex items-center justify-center cursor-pointer hover:w-5 hover:border-[var(--theme-primary)] transition-all shadow-sm"
+          >
+            <span className="text-[10px] font-bold leading-none">{isSidebarOpen ? '‹' : '›'}</span>
+          </button>
         )}
 
         {/* CALENDAR CANVAS -- no card frame (border/shadow/rounding/padding)
