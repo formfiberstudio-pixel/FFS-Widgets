@@ -98,26 +98,91 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   const [nativePickLoading, setNativePickLoading] = useState(false);
   const [nativePickError, setNativePickError] = useState(null);
 
+  // Per-date-block results cache (uri+thumbnail included), keyed by
+  // "start::end" -- swiping to a block that's already in here shows
+  // instantly, no MediaStore query or thumbnail decoding on the swipe
+  // itself, which is what was actually causing the lag: each swipe was
+  // triggering that whole pipeline fresh, same as the very first open. A
+  // ref, not state, since populating it should never itself cause a
+  // render (the scan functions below already set state when a render IS
+  // warranted).
+  const nativeScanCacheRef = useRef(new Map());
+  const rangeKey = (r) => `${r.start}::${r.end}`;
+  // Ignore a stale fetch resolving after a newer one (rapid swipes) --
+  // whichever runNativeScan call is most recent wins the state update.
+  const scanRequestIdRef = useRef(0);
+
+  // Mirrors shiftImportDateRange's day-vs-week granularity (App.jsx) --
+  // duplicated rather than imported since this panel only ever sees the
+  // resulting fixedDateRange prop, not that app-level function. Used only
+  // to know what to prefetch, never to actually change the active range.
+  const adjacentRange = (range, direction) => {
+    const [sy, sm, sd] = range.start.split('-').map(Number);
+    const [ey, em, ed] = range.end.split('-').map(Number);
+    const days = (range.start === range.end ? 1 : 7) * direction;
+    const newStart = new Date(sy, sm - 1, sd);
+    newStart.setDate(newStart.getDate() + days);
+    const newEnd = new Date(ey, em - 1, ed);
+    newEnd.setDate(newEnd.getDate() + days);
+    return { start: toDateInputValue(newStart), end: toDateInputValue(newEnd) };
+  };
+
+  const fetchRangePhotos = async (range) => {
+    const results = await queryPhotosByDateRange(range.start, range.end);
+    return Promise.all(results.map(async (p) => {
+      try {
+        const thumbnail = await getPhotoThumbnail(p.uri);
+        return { ...p, thumbnail };
+      } catch {
+        return { ...p, thumbnail: null };
+      }
+    }));
+  };
+
+  // Fetches (or serves from cache) fixedDateRange's photos into the
+  // visible grid, then silently warms the cache for the immediately
+  // adjacent blocks in the background. By the time a swipe actually
+  // lands on one of those, its data is normally already cached, so the
+  // grid updates instantly instead of showing another loading spinner --
+  // the same instant feel as Mandalart's own date-block swiping.
   const runNativeScan = async () => {
-    setNativePickLoading(true);
-    setNativePickError(null);
+    const requestId = ++scanRequestIdRef.current;
+    const range = fixedDateRange;
+    const key = rangeKey(range);
+    const cached = nativeScanCacheRef.current.get(key);
+
     setNativePickSelected(new Set());
-    try {
-      const results = await queryPhotosByDateRange(fixedDateRange.start, fixedDateRange.end);
-      const withThumbs = await Promise.all(results.map(async (p) => {
-        try {
-          const thumbnail = await getPhotoThumbnail(p.uri);
-          return { ...p, thumbnail };
-        } catch {
-          return { ...p, thumbnail: null };
-        }
-      }));
-      setNativePickPhotos(withThumbs);
-    } catch (err) {
-      setNativePickError(err.message || 'Could not load photos from your device.');
-    } finally {
+    setNativePickError(null);
+
+    if (cached) {
+      setNativePickPhotos(cached);
       setNativePickLoading(false);
+    } else {
+      setNativePickLoading(true);
+      try {
+        const withThumbs = await fetchRangePhotos(range);
+        nativeScanCacheRef.current.set(key, withThumbs);
+        if (scanRequestIdRef.current === requestId) setNativePickPhotos(withThumbs);
+      } catch (err) {
+        if (scanRequestIdRef.current === requestId) {
+          setNativePickError(err.message || 'Could not load photos from your device.');
+        }
+      } finally {
+        if (scanRequestIdRef.current === requestId) setNativePickLoading(false);
+      }
     }
+
+    // Fire-and-forget: errors here just mean that neighbor falls back to
+    // the normal (visible) loading path if the user actually swipes
+    // there before it finishes.
+    [1, -1].forEach((direction) => {
+      const neighbor = adjacentRange(range, direction);
+      const neighborKey = rangeKey(neighbor);
+      if (nativeScanCacheRef.current.has(neighborKey)) return;
+      fetchRangePhotos(neighbor)
+        .then((photos) => { nativeScanCacheRef.current.set(neighborKey, photos); })
+        .catch(() => {});
+    });
   };
 
   const openNativePicker = () => {
