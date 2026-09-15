@@ -38,7 +38,14 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   // tap-to-assign UI instead.
   const [defaultProject, setDefaultProject] = useState(null);
   const [photos, setPhotos] = useState([]);
-  const [step, setStep] = useState(() => (window.innerWidth < MOBILE_BREAKPOINT ? 'review' : 'select-project')); // select-project | review | uploading | done
+  // Opened for a specific day/week on the Android app -- skip straight to
+  // the native MediaStore picker instead of landing on the (at that point
+  // still-empty) categorization screen first and making the user tap
+  // "+ Add Photos" a second time to actually see any photos.
+  const [step, setStep] = useState(() => {
+    if (isNativePhotoPickerSupported() && fixedDateRange) return 'native-pick';
+    return window.innerWidth < MOBILE_BREAKPOINT ? 'review' : 'select-project';
+  }); // native-pick | select-project | review | uploading | done
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [uploadResults, setUploadResults] = useState({ byProject: [], failed: [] });
   const [isDragging, setIsDragging] = useState(false);
@@ -91,8 +98,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   const [nativePickLoading, setNativePickLoading] = useState(false);
   const [nativePickError, setNativePickError] = useState(null);
 
-  const openNativePicker = async () => {
-    setStep('native-pick');
+  const runNativeScan = async () => {
     setNativePickLoading(true);
     setNativePickError(null);
     setNativePickSelected(new Set());
@@ -113,6 +119,20 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
       setNativePickLoading(false);
     }
   };
+
+  const openNativePicker = () => {
+    setStep('native-pick');
+    runNativeScan();
+  };
+
+  // Covers the "opened directly into the picker" case (see the step lazy
+  // initializer above) -- openNativePicker() itself handles the scan when
+  // it's the one switching INTO this step, but when native-pick is where
+  // this component already started, nothing would otherwise trigger it.
+  useEffect(() => {
+    if (step === 'native-pick') runNativeScan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggleNativePick = (uri) => {
     setNativePickSelected((prev) => {

@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
 import android.media.ExifInterface;
 import android.net.Uri;
+import android.os.Build;
 import android.provider.MediaStore;
 import android.util.Base64;
 
@@ -34,10 +35,19 @@ import java.io.InputStream;
 // directly -- the same thing Mandalart does -- so the JS side can build its
 // own picker showing only photos actually taken (or, failing that, last
 // modified) within the requested day/week.
+// Two separate aliases, not one alias listing both permission strings --
+// Capacitor's getPermissionState() requires EVERY string under an alias to
+// be granted (AND, not OR), and READ_MEDIA_IMAGES doesn't exist at all
+// below API 33 (pm/checkSelfPermission just reports it as perpetually
+// ungranted there), so a single combined alias could never report GRANTED
+// on any pre-13 device even after the real applicable permission
+// (READ_EXTERNAL_STORAGE) was granted. activeAlias() below picks whichever
+// one actually applies to the OS this is running on.
 @CapacitorPlugin(
     name = "DateFilteredPhotoPicker",
     permissions = {
-        @Permission(alias = "photos", strings = { Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_EXTERNAL_STORAGE })
+        @Permission(alias = "photosModern", strings = { Manifest.permission.READ_MEDIA_IMAGES }),
+        @Permission(alias = "photosLegacy", strings = { Manifest.permission.READ_EXTERNAL_STORAGE }),
     }
 )
 public class DateFilteredPhotoPickerPlugin extends Plugin {
@@ -53,10 +63,15 @@ public class DateFilteredPhotoPickerPlugin extends Plugin {
     private static final int THUMB_MAX_DIM = 240;
     private static final int THUMB_QUALITY = 60;
 
+    private String activeAlias() {
+        return Build.VERSION.SDK_INT >= 33 ? "photosModern" : "photosLegacy";
+    }
+
     @PluginMethod
     public void queryByDateRange(PluginCall call) {
-        if (getPermissionState("photos") != PermissionState.GRANTED) {
-            requestPermissionForAlias("photos", call, "photosPermCallback");
+        String alias = activeAlias();
+        if (getPermissionState(alias) != PermissionState.GRANTED) {
+            requestPermissionForAlias(alias, call, "photosPermCallback");
             return;
         }
         doQuery(call);
@@ -64,7 +79,7 @@ public class DateFilteredPhotoPickerPlugin extends Plugin {
 
     @PermissionCallback
     private void photosPermCallback(PluginCall call) {
-        if (getPermissionState("photos") == PermissionState.GRANTED) {
+        if (getPermissionState(activeAlias()) == PermissionState.GRANTED) {
             doQuery(call);
         } else {
             call.reject("Photo library permission was denied");
