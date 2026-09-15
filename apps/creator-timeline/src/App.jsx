@@ -920,13 +920,18 @@ const MOBILE_MONTH_ROW_HEIGHT = 78;
 const MOBILE_MONTH_ROW_GAP = 4;
 const MOBILE_MONTH_VISIBLE_ROWS = 4;
 
-// Desktop Month view's continuous scroll shows exactly this many week rows
-// at once -- unlike mobile's fixed row height (the rest of a phone screen
+// Desktop Month view's continuous scroll shows this many week rows at
+// once -- unlike mobile's fixed row height (the rest of a phone screen
 // goes to the projects panel below), desktop has no such panel underneath,
 // so instead the row height itself is computed (see desktopMonthRowHeight)
 // to split whatever vertical space the window actually gives it into
-// exactly this many equal rows.
-const DESKTOP_MONTH_VISIBLE_ROWS = 6;
+// exactly this many equal rows. User-adjustable (see
+// desktopMonthVisibleRows/handleMouseDownDesktopMonthRowsResize) between
+// these bounds; DESKTOP_MONTH_DEFAULT_VISIBLE_ROWS is only the starting
+// point for someone who's never dragged the handle.
+const DESKTOP_MONTH_MIN_VISIBLE_ROWS = 2;
+const DESKTOP_MONTH_MAX_VISIBLE_ROWS = 10;
+const DESKTOP_MONTH_DEFAULT_VISIBLE_ROWS = 6;
 
 function App() {
   const today = new Date();
@@ -1016,10 +1021,29 @@ function App() {
   // a single month: whichever row is scrolled nearest the top edge.
   const desktopMonthScrollContainerRef = useRef(null);
   const desktopMonthWeekRowRefs = useRef([]);
-  // Row height that makes exactly DESKTOP_MONTH_VISIBLE_ROWS rows fill the
+  // How many week rows the continuous scroll shows at once -- user-
+  // adjustable via the drag handle at the bottom of the grid (see
+  // handleMouseDownDesktopMonthRowsResize), unlike weekCardHeight's own
+  // resize (a continuous pixel height) this snaps to whole rows so a row
+  // is always either fully in frame or not there at all, never cropped.
+  const [desktopMonthVisibleRows, setDesktopMonthVisibleRows] = useState(() => {
+    const saved = Number(localStorage.getItem('notionWidgetDesktopMonthRows'));
+    return saved >= DESKTOP_MONTH_MIN_VISIBLE_ROWS && saved <= DESKTOP_MONTH_MAX_VISIBLE_ROWS
+      ? saved
+      : DESKTOP_MONTH_DEFAULT_VISIBLE_ROWS;
+  });
+  useEffect(() => {
+    localStorage.setItem('notionWidgetDesktopMonthRows', desktopMonthVisibleRows);
+  }, [desktopMonthVisibleRows]);
+  const [isResizingDesktopMonthRows, setIsResizingDesktopMonthRows] = useState(false);
+  const monthRowDragStartY = useRef(0);
+  const monthRowDragStartCount = useRef(DESKTOP_MONTH_DEFAULT_VISIBLE_ROWS);
+  const monthRowDragStartRowHeight = useRef(130);
+  // Row height that makes exactly desktopMonthVisibleRows rows fill the
   // container's actual rendered height (see the ResizeObserver effect
-  // below) -- recomputed on resize rather than fixed, since "window height
-  // maximized" means the row height itself has to flex with the window.
+  // below) -- recomputed on resize (or a row-count change) rather than
+  // fixed, since "window height maximized" means the row height itself
+  // has to flex with both the window and however many rows are chosen.
   const [desktopMonthRowHeight, setDesktopMonthRowHeight] = useState(130);
   const [desktopMonthVisibleStartIdx, setDesktopMonthVisibleStartIdx] = useState(() => {
     const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === currentDate.toDateString()));
@@ -2317,9 +2341,13 @@ function App() {
     if (closestIdx >= 0) setMobileMonthVisibleStartIdx(closestIdx);
   };
 
-  // Keeps exactly DESKTOP_MONTH_VISIBLE_ROWS rows filling the scroll
+  // Keeps exactly desktopMonthVisibleRows rows filling the scroll
   // container's actual height (itself already maximized via flex-1 in a
-  // h-full column) -- recomputed whenever the container resizes, and
+  // h-full column) -- recomputed whenever the container resizes OR the
+  // row count itself changes (dragging the resize handle doesn't resize
+  // the container, so the ResizeObserver alone wouldn't fire for that;
+  // re-running this effect re-attaches the observer, which fires once
+  // immediately on attach, exactly like a real resize would), and
   // re-attached each time the Month view (re)mounts, since the container
   // only exists in the DOM while viewMode==='month' && !isMobile.
   useEffect(() => {
@@ -2328,12 +2356,57 @@ function App() {
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      const rowHeight = (entry.contentRect.height - (DESKTOP_MONTH_VISIBLE_ROWS - 1) * gap) / DESKTOP_MONTH_VISIBLE_ROWS;
+      const rowHeight = (entry.contentRect.height - (desktopMonthVisibleRows - 1) * gap) / desktopMonthVisibleRows;
       if (rowHeight > 0) setDesktopMonthRowHeight(rowHeight);
     });
     observer.observe(container);
     return () => observer.disconnect();
-  }, [viewMode, isMobile, gap]);
+  }, [viewMode, isMobile, gap, desktopMonthVisibleRows]);
+
+  // Drag-to-resize for desktopMonthVisibleRows -- same mousedown/move/up
+  // pattern as weekCardHeight's own resize below, but converts the drag
+  // distance into a whole-ROW delta (using the row height captured at
+  // drag-start as the "one row" unit) instead of applying the pixel
+  // delta directly, so it always snaps to a whole number of rows rather
+  // than landing on a fractional height that would crop the last row.
+  // Dragging down makes rows bigger (fewer fit) hence count DECREASES;
+  // dragging up makes rows smaller (more fit) hence count increases --
+  // same down-equals-bigger convention as weekCardHeight's own drag.
+  const handleMouseDownDesktopMonthRowsResize = (e) => {
+    e.preventDefault();
+    setIsResizingDesktopMonthRows(true);
+    monthRowDragStartY.current = e.clientY;
+    monthRowDragStartCount.current = desktopMonthVisibleRows;
+    monthRowDragStartRowHeight.current = desktopMonthRowHeight;
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isResizingDesktopMonthRows) return;
+      const deltaY = e.clientY - monthRowDragStartY.current;
+      const rowStep = Math.max(monthRowDragStartRowHeight.current + gap, 24);
+      const deltaRows = Math.round(deltaY / rowStep);
+      const newCount = Math.min(Math.max(monthRowDragStartCount.current - deltaRows, DESKTOP_MONTH_MIN_VISIBLE_ROWS), DESKTOP_MONTH_MAX_VISIBLE_ROWS);
+      setDesktopMonthVisibleRows(newCount);
+    };
+    const handleMouseUp = () => {
+      if (isResizingDesktopMonthRows) {
+        setIsResizingDesktopMonthRows(false);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+    if (isResizingDesktopMonthRows) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizingDesktopMonthRows, gap]);
 
   // Desktop equivalent of handleMonthScroll above -- same "closest row to
   // the container's top edge" technique, separate index/refs since
@@ -2426,7 +2499,7 @@ function App() {
   };
 
   // Desktop equivalent of scrollMobileMonthToDate above -- lands
-  // targetDate's week as the LAST (bottom) of the DESKTOP_MONTH_VISIBLE_ROWS
+  // targetDate's week as the LAST (bottom) of the desktopMonthVisibleRows
   // visible rows instead of the first, same reasoning: landing on a date
   // should show the weeks leading up to it, not that week plus empty rows
   // stretching into the future. Only for the Today button; entry-alignment
@@ -2437,7 +2510,7 @@ function App() {
     const targetIso = targetDate.toDateString();
     const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === targetIso));
     if (idx < 0) return;
-    const topRowIdx = Math.max(0, idx - (DESKTOP_MONTH_VISIBLE_ROWS - 1));
+    const topRowIdx = Math.max(0, idx - (desktopMonthVisibleRows - 1));
     scrollDesktopMonthToRowIndex(topRowIdx);
   };
 
@@ -3540,10 +3613,11 @@ function App() {
                   space that month's row count left) so scroll position
                   maps predictably to a week index for
                   handleDesktopMonthScroll/scrollDesktopMonthToDate. */}
+              <div className="relative flex-1 min-h-0">
               <div
                 ref={desktopMonthScrollContainerRef}
                 onScroll={handleDesktopMonthScroll}
-                className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
+                className="flex flex-col h-full overflow-y-auto overflow-x-hidden"
                 style={{ gap: `${gap}px`, scrollSnapType: 'y mandatory' }}
               >
                 {mobileMonthWeeks.map((weekDays, rowIndex) => (
@@ -3680,6 +3754,43 @@ function App() {
                     </div>
                   </div>
                 ))}
+              </div>
+
+              {/* Drag up/down to change how many week rows are visible
+                  (desktopMonthVisibleRows) -- unlike weekCardHeight's own
+                  resize handle (a free pixel height), the row height here
+                  is always DERIVED from the row count (see the
+                  ResizeObserver effect above), so dragging this snaps to
+                  whole rows instead of landing on a fractional one that
+                  would get cropped. */}
+              <div
+                onMouseDown={handleMouseDownDesktopMonthRowsResize}
+                className={`group/handle absolute left-0 right-0 bottom-0 translate-y-1/2 z-30 h-6 flex items-center justify-between cursor-ns-resize transition-opacity duration-150 ${
+                  isResizingDesktopMonthRows ? 'opacity-100' : 'opacity-0 hover:opacity-100'
+                }`}
+                title="Click & drag up/down to change how many week rows are visible"
+              >
+                <div className="pl-0.5 flex items-center pointer-events-none">
+                  <svg className="w-2.5 h-3 drop-shadow-xs" style={{ fill: 'var(--theme-primary)' }} viewBox="0 0 8 10">
+                    <polygon points="0,0 8,5 0,10" />
+                  </svg>
+                </div>
+
+                <div className={`flex-1 h-[2px] mx-1 transition-all flex items-center justify-center ${
+                  isResizingDesktopMonthRows ? 'shadow-md' : ''
+                }`} style={{ backgroundColor: 'var(--theme-primary)' }}>
+                  <div className="text-white text-[9px] font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 transition-transform" style={{ backgroundColor: 'var(--theme-primary)' }}>
+                    <span>↕ PULL TO RESIZE</span>
+                    <span className="font-mono">({desktopMonthVisibleRows} row{desktopMonthVisibleRows === 1 ? '' : 's'})</span>
+                  </div>
+                </div>
+
+                <div className="pr-0.5 flex items-center pointer-events-none">
+                  <svg className="w-2.5 h-3 drop-shadow-xs" style={{ fill: 'var(--theme-primary)' }} viewBox="0 0 8 10">
+                    <polygon points="8,0 0,5 8,10" />
+                  </svg>
+                </div>
+              </div>
               </div>
             </div>
           )}
