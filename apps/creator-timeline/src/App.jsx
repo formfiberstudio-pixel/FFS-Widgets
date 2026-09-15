@@ -3611,7 +3611,12 @@ function App() {
                               </a>
                             </div>
                             <div className="text-sm font-semibold">{log.title || 'Untitled'}</div>
-                            <LogNoteEditor log={log} tenantId={tenantId} onSaved={handleNoteSaved} />
+                            <LogNoteEditor
+                              log={log}
+                              tenantId={tenantId}
+                              onSaved={handleNoteSaved}
+                              onPhotoAdded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
+                            />
                           </div>
                         </div>
                       );
@@ -4823,7 +4828,12 @@ function App() {
                             </a>
                           </div>
 
-                          <LogNoteEditor log={log} tenantId={tenantId} onSaved={handleNoteSaved} />
+                          <LogNoteEditor
+                            log={log}
+                            tenantId={tenantId}
+                            onSaved={handleNoteSaved}
+                            onPhotoAdded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
+                          />
                         </div>
                       );
                     })
