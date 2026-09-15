@@ -202,13 +202,30 @@ export default async function handler(req, res) {
       const targetDatabaseId = linkedPage.parent?.database_id;
       if (!targetDatabaseId) return res.status(400).json({ error: 'Projects are not stored in a database.' });
 
+      // As of the 2025-09-03 API split, a database object no longer
+      // carries its own property schema -- that moved to a separate
+      // "data source" underneath it (a database can technically have
+      // several, though every database this app deals with only ever has
+      // the one). databases.retrieve now only returns a data_sources
+      // list of {id, name} references; the actual properties (including
+      // which one is the title) have to be read off data_sources.retrieve
+      // instead.
       const dbRes = await notionFetch(`https://api.notion.com/v1/databases/${targetDatabaseId}`, { method: 'GET', headers });
       if (!dbRes.ok) {
         const errData = await dbRes.json().catch(() => ({}));
         return res.status(400).json({ error: errData.message || 'Could not read the projects database.' });
       }
       const targetDb = await dbRes.json();
-      const targetTitlePropName = Object.entries(targetDb.properties || {}).find(([, v]) => v.type === 'title')?.[0];
+      const dataSourceId = targetDb.data_sources?.[0]?.id;
+      if (!dataSourceId) return res.status(400).json({ error: 'The projects database has no data source.' });
+
+      const dataSourceRes = await notionFetch(`https://api.notion.com/v1/data_sources/${dataSourceId}`, { method: 'GET', headers });
+      if (!dataSourceRes.ok) {
+        const errData = await dataSourceRes.json().catch(() => ({}));
+        return res.status(400).json({ error: errData.message || 'Could not read the projects database schema.' });
+      }
+      const dataSource = await dataSourceRes.json();
+      const targetTitlePropName = Object.entries(dataSource.properties || {}).find(([, v]) => v.type === 'title')?.[0];
       if (!targetTitlePropName) return res.status(400).json({ error: 'The projects database has no title property.' });
 
       const createRes = await notionFetch('https://api.notion.com/v1/pages', {

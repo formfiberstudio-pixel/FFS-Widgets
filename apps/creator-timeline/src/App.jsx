@@ -2425,6 +2425,22 @@ function App() {
     setMobileMonthVisibleStartIdx(topRowIdx);
   };
 
+  // Desktop equivalent of scrollMobileMonthToDate above -- lands
+  // targetDate's week as the LAST (bottom) of the DESKTOP_MONTH_VISIBLE_ROWS
+  // visible rows instead of the first, same reasoning: landing on a date
+  // should show the weeks leading up to it, not that week plus empty rows
+  // stretching into the future. Only for the Today button; entry-alignment
+  // uses scrollDesktopMonthToDate and Prev/Next uses
+  // scrollDesktopMonthToMonth, both of which land their target at the TOP
+  // (see their own comments for why those two can't share this one).
+  const scrollDesktopMonthToDateAtBottom = (targetDate) => {
+    const targetIso = targetDate.toDateString();
+    const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === targetIso));
+    if (idx < 0) return;
+    const topRowIdx = Math.max(0, idx - (DESKTOP_MONTH_VISIBLE_ROWS - 1));
+    scrollDesktopMonthToRowIndex(topRowIdx);
+  };
+
   // The continuous list otherwise opens scrolled to its top (6 months back
   // -- see buildContinuousWeeks), not to whatever's relevant. Re-align to
   // currentDate every time Month view is entered -- from Year (tapping a
@@ -2880,7 +2896,16 @@ function App() {
             </div>
 
             <button
-              onClick={() => setCurrentDate(today)}
+              onClick={() => {
+                // Month view tracks its own scroll position independently
+                // of currentDate (see the entry-alignment effect above,
+                // which only re-syncs the two when Month is first ENTERED,
+                // not on every currentDate change) -- setCurrentDate alone
+                // did nothing visible while already sitting in Month view,
+                // which is what made this button look broken there.
+                if (viewMode === 'month') scrollDesktopMonthToDateAtBottom(today);
+                else setCurrentDate(today);
+              }}
               style={{
                 backgroundColor: 'var(--theme-card)',
                 borderColor: 'var(--theme-primary)',
