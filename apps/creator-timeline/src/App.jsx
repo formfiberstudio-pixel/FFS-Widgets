@@ -19,6 +19,7 @@ import FacetedSidebarGroup from './FacetedSidebarGroup.jsx';
 import GalleryMiniCalendar from './GalleryMiniCalendar.jsx';
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
+import LogTitleEditor from './LogTitleEditor.jsx';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -985,6 +986,19 @@ function App() {
   const [mobilePanelCollapsed, setMobilePanelCollapsed] = useState(false);
   const monthScrollContainerRef = useRef(null);
   const monthWeekRowRefs = useRef([]);
+  // Desktop Month view: same continuous-scroll list as mobile
+  // (mobileMonthWeeks, shared verbatim -- it's not actually mobile-specific
+  // data, just named for where it was first built), scrolled with the
+  // mouse wheel instead of paged with Prev/Next. Desktop shows many rows
+  // at once rather than a small fixed window, so unlike mobile's header
+  // (which can straddle two months across its 4 visible rows) this tracks
+  // a single month: whichever row is scrolled nearest the top edge.
+  const desktopMonthScrollContainerRef = useRef(null);
+  const desktopMonthWeekRowRefs = useRef([]);
+  const [desktopMonthVisibleStartIdx, setDesktopMonthVisibleStartIdx] = useState(() => {
+    const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === currentDate.toDateString()));
+    return idx >= 0 ? idx : 0;
+  });
   const [selectedProjectFilters, setSelectedProjectFilters] = useState([]);
   const [selectedLogModal, setSelectedLogModal] = useState(null);
   // Which single project's photo gallery is showing in place of the
@@ -1176,6 +1190,15 @@ function App() {
     localStorage.setItem('notionWidgetShowWeekEntryTitle', String(showWeekEntryTitle));
   }, [showWeekEntryTitle]);
 
+  // Off by default: the Categories sidebar normally lists every project
+  // logged anywhere in the current YEAR (see getYearProjects), regardless
+  // of which slice of it the calendar itself is currently showing. This
+  // narrows that list to just whatever date range is actually on screen.
+  const [sidebarFilterToVisible, setSidebarFilterToVisible] = useState(() => localStorage.getItem('notionWidgetSidebarFilterToVisible') === 'true');
+  useEffect(() => {
+    localStorage.setItem('notionWidgetSidebarFilterToVisible', String(sidebarFilterToVisible));
+  }, [sidebarFilterToVisible]);
+
   // Derived baseline component dimensions
   const monthDotPx = Math.round(24 * scaleFactor);
   const monthDotFontPx = Math.round(11 * scaleFactor);
@@ -1289,6 +1312,59 @@ function App() {
       window.removeEventListener('mouseup', handleMouseUp);
     };
   }, [isResizingCardHeight]);
+
+  // --- DAY-DETAIL MODAL PHOTO FRAME HEIGHT & RESIZING STATE ---
+  // Same drag-to-resize pattern as the Week view's weekCardHeight above,
+  // just a separate persisted value since the modal's cards are a
+  // different shape (one wide card at a time in a carousel, not a grid of
+  // day columns).
+  const [dayModalImageHeight, setDayModalImageHeight] = useState(() => {
+    const saved = localStorage.getItem('notionWidgetDayModalImageHeight');
+    return saved ? Number(saved) : 210;
+  });
+  const [isResizingDayModalHeight, setIsResizingDayModalHeight] = useState(false);
+  const dayModalDragStartY = useRef(0);
+  const dayModalDragStartHeight = useRef(210);
+
+  useEffect(() => {
+    localStorage.setItem('notionWidgetDayModalImageHeight', dayModalImageHeight);
+  }, [dayModalImageHeight]);
+
+  const handleMouseDownDayModalResize = (e) => {
+    e.preventDefault();
+    e.stopPropagation(); // the card itself is clickable (sets the thumbnail) -- dragging the handle shouldn't trigger that
+    setIsResizingDayModalHeight(true);
+    dayModalDragStartY.current = e.clientY;
+    dayModalDragStartHeight.current = dayModalImageHeight;
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isResizingDayModalHeight) return;
+      const deltaY = e.clientY - dayModalDragStartY.current;
+      const newHeight = Math.min(Math.max(dayModalDragStartHeight.current + deltaY, 70), 400);
+      setDayModalImageHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      if (isResizingDayModalHeight) {
+        setIsResizingDayModalHeight(false);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+
+    if (isResizingDayModalHeight) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizingDayModalHeight]);
 
   // --- API STATE VARS ---
   const [timelineLogs, setTimelineLogs] = useState([]);
@@ -1605,6 +1681,12 @@ function App() {
     )));
   };
 
+  // Same mirroring as handleNoteSaved above, for backlog-photo.js's
+  // updateTitle action.
+  const handleTitleSaved = (logId, newTitle) => {
+    setTimelineLogs(prev => prev.map(l => (l.id === logId ? { ...l, title: newTitle } : l)));
+  };
+
   // Deleting a saved view only prunes a label/bookmark over already-visible
   // config -- it can't grant or reveal access -- so unlike reconfiguring the
   // Notion connection itself, this doesn't require the license key (see
@@ -1846,15 +1928,26 @@ function App() {
   };
 
   // The sidebar's topic/type list narrows to whatever date range is
-  // actually on screen -- the whole year in Year view, just the visible
-  // month in Month view, just the visible week in Week view -- rather than
+  // actually on screen -- just the visible day/week/month -- rather than
   // always listing every topic/type from the whole year regardless of
-  // which slice of it is showing. Comparing real Date objects (not
+  // which slice of it is showing. Off by default (see the "Filter Sidebar
+  // to Visible Range" Settings toggle, sidebarFilterToVisible) -- opt-in,
+  // not the other way around. Comparing real Date objects (not
   // log.year/currentDate's year as strings) keeps a week that crosses a
   // month or year boundary (e.g. Dec 29 - Jan 4) correct.
   const activeViewRange = (() => {
+    if (!sidebarFilterToVisible) return null;
+    if (viewMode === 'day') {
+      return { start: currentDate, end: currentDate };
+    }
     if (viewMode === 'month') {
-      return { start: new Date(year, month, 1), end: new Date(year, month + 1, 0) };
+      // Both Month views are a continuous scroll now (see
+      // mobileMonthWeeks), not one page per month -- currentDate/month no
+      // longer necessarily matches what's actually scrolled into view, so
+      // this keys off the same scroll-tracked row the header label itself
+      // reads (mobileMonthVisibleStartIdx / desktopMonthVisibleStartIdx).
+      const labelDate = (isMobile ? mobileMonthWeeks[mobileMonthVisibleStartIdx]?.[3] : mobileMonthWeeks[desktopMonthVisibleStartIdx]?.[3]) || currentDate;
+      return { start: new Date(labelDate.getFullYear(), labelDate.getMonth(), 1), end: new Date(labelDate.getFullYear(), labelDate.getMonth() + 1, 0) };
     }
     if (viewMode === 'week') {
       const start = new Date(currentDate);
@@ -1864,7 +1957,7 @@ function App() {
       end.setDate(start.getDate() + 6);
       return { start, end };
     }
-    return null; // Year view: the existing per-year filter is already the active view.
+    return null; // Year view (and gallery/import, where "visible" doesn't apply): the existing per-year filter already is the active view.
   })();
   const isLogInActiveView = (log) => {
     if (!activeViewRange) return true;
@@ -1872,15 +1965,27 @@ function App() {
     return logDate >= activeViewRange.start && logDate <= activeViewRange.end;
   };
 
-  const getYearProjects = (targetYear) => {
+  // Same tree-shaped project list getYearProjects always returned, just
+  // scoped to an arbitrary [startDate, endDate] (inclusive) instead of one
+  // calendar year -- getYearProjects below is just this called with
+  // Jan 1/Dec 31, and the sidebar's "visible only" option (see
+  // sidebarFilterToVisible) calls it directly with whatever range the
+  // current calendar view actually has on screen.
+  const getProjectsInDateRange = (startDate, endDate) => {
     if (!Array.isArray(timelineLogs)) return [];
+    const startTime = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate()).getTime();
+    const endTime = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), 23, 59, 59, 999).getTime();
     // Faceted sources (3+ independent tags, e.g. a food log) have no
     // source -> type -> project tree to join -- keep them out of this
     // entirely rather than letting a synthesized Projects/type leak in.
-    const yearLogs = filterTreeLogs(timelineLogs, facetSchemas).filter(log => Number(log.year) === targetYear && isLogInActiveView(log));
+    const rangeLogs = filterTreeLogs(timelineLogs, facetSchemas).filter(log => {
+      if (!isLogInActiveView(log)) return false;
+      const t = new Date(Number(log.year), Number(log.monthNumber) - 1, Number(log.dayNumber)).getTime();
+      return t >= startTime && t <= endTime;
+    });
 
     const projectMap = {};
-    yearLogs.forEach(log => {
+    rangeLogs.forEach(log => {
       const projectName = log.Projects || 'Untitled Project';
       const source = log.source || 'Activity Log';
       const key = source + '::' + projectName + '::' + (log.projectType || 'General');
@@ -1909,6 +2014,8 @@ function App() {
     });
     return projects;
   };
+
+  const getYearProjects = (targetYear) => getProjectsInDateRange(new Date(targetYear, 0, 1), new Date(targetYear, 11, 31));
 
   // Every tree-mode project across all time (not scoped to one year, unlike
   // getYearProjects) -- for the photo-backlog importer's project picker,
@@ -2056,23 +2163,36 @@ function App() {
     }
   }
 
-  const rows = [];
-  if (viewMode === 'month') {
-    for (let i = 0; i < slots.length; i += 7) {
-      rows.push(slots.slice(i, i + 7));
-    }
-  }
-
   const handlePrev = () => {
     if (viewMode === 'day') { const d = new Date(currentDate); d.setDate(currentDate.getDate() - 1); setCurrentDate(d); }
-    else if (viewMode === 'month') setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
+    else if (viewMode === 'month') {
+      // Desktop's Month view is a continuous scroll now (see
+      // desktopMonthWeeks below), not one page per month -- relative to
+      // whichever month is actually scrolled into view, not currentDate,
+      // which this view no longer re-renders from. Index [3] (Wednesday),
+      // not [0] (Sunday) -- has to match whatever day the header label
+      // above keys off of, or a top row whose Sunday/Wednesday straddle a
+      // month boundary computes a different "current month" than what's
+      // actually displayed, and Prev/Next skips or repeats a month.
+      const anchor = !isMobile ? (mobileMonthWeeks[desktopMonthVisibleStartIdx]?.[3] || currentDate) : currentDate;
+      const target = new Date(anchor.getFullYear(), anchor.getMonth() - 1, 1);
+      setCurrentDate(target);
+      if (!isMobile) scrollDesktopMonthToMonth(target.getFullYear(), target.getMonth());
+      else scrollMobileMonthToDate(target);
+    }
     else if (viewMode === 'week') { const d = new Date(currentDate); d.setDate(currentDate.getDate() - 7); setCurrentDate(d); }
     else setCurrentDate(new Date(currentDate.getFullYear() - 1, currentDate.getMonth(), 1));
   };
 
   const handleNext = () => {
     if (viewMode === 'day') { const d = new Date(currentDate); d.setDate(currentDate.getDate() + 1); setCurrentDate(d); }
-    else if (viewMode === 'month') setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+    else if (viewMode === 'month') {
+      const anchor = !isMobile ? (mobileMonthWeeks[desktopMonthVisibleStartIdx]?.[3] || currentDate) : currentDate;
+      const target = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 1);
+      setCurrentDate(target);
+      if (!isMobile) scrollDesktopMonthToMonth(target.getFullYear(), target.getMonth());
+      else scrollMobileMonthToDate(target);
+    }
     else if (viewMode === 'week') { const d = new Date(currentDate); d.setDate(currentDate.getDate() + 7); setCurrentDate(d); }
     else setCurrentDate(new Date(currentDate.getFullYear() + 1, currentDate.getMonth(), 1));
   };
@@ -2134,6 +2254,77 @@ function App() {
     if (closestIdx >= 0) setMobileMonthVisibleStartIdx(closestIdx);
   };
 
+  // Desktop equivalent of handleMonthScroll above -- same "closest row to
+  // the container's top edge" technique, separate index/refs since
+  // desktop's visible window is a different (and non-fixed) size. Ignored
+  // while a programmatic scroll from scrollDesktopMonthToDate is in
+  // flight (see desktopMonthProgrammaticScrollRef) -- that function
+  // already knows the exact correct index, and this handler's own
+  // DOM-measurement-based guess raced with it: a getBoundingClientRect()
+  // read here could land mid-reflow, computing a slightly-off index that
+  // clobbered the correct one Prev/Next had just set, corrupting the
+  // anchor the NEXT click's month math started from.
+  const desktopMonthProgrammaticScrollRef = useRef(false);
+  const handleDesktopMonthScroll = () => {
+    if (desktopMonthProgrammaticScrollRef.current) return;
+    const container = desktopMonthScrollContainerRef.current;
+    if (!container) return;
+    const containerTop = container.getBoundingClientRect().top;
+    let closestIdx = -1;
+    let closestDist = Infinity;
+    desktopMonthWeekRowRefs.current.forEach((el, idx) => {
+      if (!el) return;
+      const dist = Math.abs(el.getBoundingClientRect().top - containerTop);
+      if (dist < closestDist) { closestDist = dist; closestIdx = idx; }
+    });
+    if (closestIdx >= 0) setDesktopMonthVisibleStartIdx(closestIdx);
+  };
+
+  // Scrolls the continuous list so mobileMonthWeeks[idx] lands at the top
+  // of the container, suppressing handleDesktopMonthScroll for the scroll
+  // events that move triggers (see desktopMonthProgrammaticScrollRef) --
+  // shared by both scroll-to-date and scroll-to-month below.
+  const scrollDesktopMonthToRowIndex = (idx) => {
+    if (idx < 0) return;
+    const el = desktopMonthWeekRowRefs.current[idx];
+    if (el) {
+      desktopMonthProgrammaticScrollRef.current = true;
+      // behavior: 'instant' (not the default 'auto', which follows the
+      // container's own scroll-behavior CSS) -- an animated scroll here
+      // would leave the suppression flag below cleared well before the
+      // scroll (and its own scroll events) actually finished.
+      el.scrollIntoView({ block: 'start', behavior: 'instant' });
+      requestAnimationFrame(() => { desktopMonthProgrammaticScrollRef.current = false; });
+    }
+    setDesktopMonthVisibleStartIdx(idx);
+  };
+
+  // Desktop equivalent of scrollMobileMonthToDate -- lands targetDate's
+  // own week at the TOP of the view (desktop shows many rows at once, so
+  // there's no small fixed window to land it at the bottom of the way
+  // mobile does). Only for landing on a SPECIFIC date (the entry-alignment
+  // effect below) -- Prev/Next use scrollDesktopMonthToMonth instead, see
+  // its own comment for why the two can't share this one.
+  const scrollDesktopMonthToDate = (targetDate) => {
+    const targetIso = targetDate.toDateString();
+    const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === targetIso));
+    scrollDesktopMonthToRowIndex(idx);
+  };
+
+  // For Prev/Next: finds the row that will actually be LABELED as
+  // {year, month} -- i.e. whose index [3] (Wednesday, matching the header
+  // label logic above) falls in that month -- rather than the row
+  // containing that month's 1st the way scrollDesktopMonthToDate works.
+  // Those two aren't always the same row: when the 1st lands on a
+  // Thu/Fri/Sat, that row's own Wednesday is still in the PREVIOUS month,
+  // so scrolling to "the row with the 1st in it" would land on a row the
+  // header reads as last month, and the next Prev/Next click -- anchored
+  // on that mislabeled row -- would skip or repeat a month.
+  const scrollDesktopMonthToMonth = (year, month) => {
+    const idx = mobileMonthWeeks.findIndex((week) => week[3].getFullYear() === year && week[3].getMonth() === month);
+    scrollDesktopMonthToRowIndex(idx);
+  };
+
   // Scrolls the continuous list so targetDate's week becomes the LAST
   // (bottom) of the MOBILE_MONTH_VISIBLE_ROWS visible rows, not the first
   // -- landing on a date should show the weeks leading up to it (the
@@ -2163,6 +2354,7 @@ function App() {
   // on entry regardless of how you got there.
   useEffect(() => {
     if (isMobile && viewMode === 'month') scrollMobileMonthToDate(currentDate);
+    else if (!isMobile && viewMode === 'month') scrollDesktopMonthToDate(currentDate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, isMobile]);
 
@@ -2351,7 +2543,17 @@ function App() {
               {(() => {
                 const { year: mYear, label: mLabel } = isMobile
                   ? getMobileMonthHeaderLabel(mobileMonthVisibleStartIdx)
-                  : { year: String(currentDate.getFullYear()), label: currentDate.toLocaleDateString('en-US', { month: 'long' }) };
+                  : (() => {
+                      // Desktop's continuous scroll (see desktopMonthWeeks
+                      // below) means there's no single "current" month from
+                      // currentDate alone either -- label whichever week is
+                      // scrolled nearest the top, same idea as mobile just
+                      // without needing a multi-month range (desktop shows
+                      // enough rows at once that straddling two months
+                      // matters less).
+                      const topRowDate = mobileMonthWeeks[desktopMonthVisibleStartIdx]?.[3] || currentDate;
+                      return { year: String(topRowDate.getFullYear()), label: topRowDate.toLocaleDateString('en-US', { month: 'long' }) };
+                    })();
                 return (
                   <>
                     <button
@@ -3218,11 +3420,31 @@ function App() {
                 </div>
               </div>
 
-              <div className="flex flex-col flex-1 min-h-0" style={{ gap: `${gap}px` }}>
-                {rows.map((rowSlots, rowIndex) => (
-                  <div key={rowIndex} className="flex-1 flex items-stretch gap-2 min-h-0">
+              {/* Continuous vertical scroll (see mobileMonthWeeks, shared
+                  verbatim with the mobile view above) instead of one page
+                  per month -- a week row is always 7 real dates, so
+                  scrolling from e.g. August into September shows real
+                  trailing/leading days instead of snapping to a new
+                  blank-padded grid. Rows get a fixed height (the old
+                  single-month grid's rows were flex-1, filling whatever
+                  space that month's row count left) so scroll position
+                  maps predictably to a week index for
+                  handleDesktopMonthScroll/scrollDesktopMonthToDate. */}
+              <div
+                ref={desktopMonthScrollContainerRef}
+                onScroll={handleDesktopMonthScroll}
+                className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
+                style={{ gap: `${gap}px` }}
+              >
+                {mobileMonthWeeks.map((weekDays, rowIndex) => (
+                  <div
+                    key={rowIndex}
+                    ref={(el) => { desktopMonthWeekRowRefs.current[rowIndex] = el; }}
+                    className="flex items-stretch gap-2 shrink-0"
+                    style={{ height: `${Math.round(130 * scaleFactor)}px` }}
+                  >
                     <button
-                      onClick={() => { const targetSlot = rowSlots.find(s => s.isValid && s.dateObj) || rowSlots[0]; if (targetSlot && targetSlot.dateObj) { setCurrentDate(targetSlot.dateObj); setViewMode('week'); } }}
+                      onClick={() => { setCurrentDate(weekDays[0]); setViewMode('week'); }}
                       title="Open Weekly View"
                       style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
                       className="w-5 shrink-0 rounded-md transition-all flex items-center justify-center cursor-pointer group border shadow-sm hover:border-[var(--theme-primary)]"
@@ -3230,32 +3452,31 @@ function App() {
                       <span className="text-[10px] font-bold group-hover:scale-125 transition-transform">›</span>
                     </button>
                     <div className="grid w-full flex-1 min-w-0 h-full" style={{ gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: `${gap}px` }}>
-                      {rowSlots.map((slot, slotIndex) => {
-                        if (!slot.isValid) return <div key={slotIndex} className="h-full w-full opacity-5 rounded-md" style={{ backgroundColor: 'var(--theme-bg)' }} />;
-                        const logs = getLogsForDate(slot.dateObj);
+                      {weekDays.map((dateObj, slotIndex) => {
+                        const logs = getLogsForDate(dateObj);
                         const hasLog = logs.length > 0;
                         const uniqueProjects = new Set(logs.map(l => l.Projects || 'Untitled Project'));
                         const hasMultipleProjects = uniqueProjects.size > 1;
-                        const { primaryLog, isHalftoned } = getThumbnailLogForDate(slot.dateObj, logs);
-                        const displayDotHex = getDisplayDotColor(logs, slot.dateObj);
+                        const { primaryLog, isHalftoned } = getThumbnailLogForDate(dateObj, logs);
+                        const displayDotHex = getDisplayDotColor(logs, dateObj);
                         // displayDotHex is null specifically for a multi-value colorFacet
                         // (see getDotColor) -- resolve it to an actual paintable
                         // background (solid or conic-gradient) before it touches any style prop.
                         const pillBackground = hasLog && primaryLog ? getPillBackground(primaryLog, displayDotHex) : displayDotHex;
                         const secondaryFacetKeys = hasLog && primaryLog?.facets ? getSecondaryFacetKeys(primaryLog.source) : [];
-                        const specialDay = getSpecialDayForDate(slot.dateObj, specialDays);
-                        const dotStyle = getDayDotStyling(slot.dateObj, hasLog, pillBackground, specialDay);
+                        const specialDay = getSpecialDayForDate(dateObj, specialDays);
+                        const dotStyle = getDayDotStyling(dateObj, hasLog, pillBackground, specialDay);
 
                         const isHoveredProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
                         const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
 
                         return (
-                          <div 
-                            key={slotIndex} 
-                            onClick={() => slot.dateObj && setSelectedLogModal({ dateObj: slot.dateObj, logs })}
+                          <div
+                            key={slotIndex}
+                            onClick={() => setSelectedLogModal({ dateObj, logs })}
                             onMouseEnter={() => { if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }}
                             onMouseLeave={() => setHoveredProjectTitle(null)}
-                            style={{ 
+                            style={{
                               borderRadius: `${cardRadius}px`,
                               backgroundColor: 'var(--theme-bg)',
                               borderColor: isHoveredProject ? 'var(--theme-secondary)' : 'var(--theme-border)'
@@ -3266,7 +3487,7 @@ function App() {
                               // the grid's own edge past this <main>'s
                               // overflow-hidden boundary, visibly clipping
                               // them instead of highlighting them.
-                              isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] shadow-md z-20' : isToday(slot.dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''
+                              isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] shadow-md z-20' : isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 z-10' : ''
                             }`}
                           >
                             {hasLog && primaryLog?.imageUrl && (
@@ -3275,24 +3496,25 @@ function App() {
                                 className={`absolute inset-0 w-full h-full object-cover z-0 transition-opacity duration-200 ${isHalftoned ? 'opacity-40' : ''}`}
                                 alt=""
                                 decoding="async"
+                                loading="lazy"
                               />
                             )}
 
                             <div className="absolute top-2 left-2 right-2 flex items-center gap-1.5 z-10 pointer-events-none">
-                              <div 
+                              <div
                                 className={`rounded-full flex items-center justify-center font-bold shadow-sm border transition-opacity duration-200 pointer-events-auto relative shrink-0 ${
-                                  isToday(slot.dateObj) ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''
-                                } ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`} 
+                                  isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''
+                                } ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
                                 style={{
                                   width: `${monthDotPx}px`,
                                   height: `${monthDotPx}px`,
                                   fontSize: `${monthDotFontPx}px`,
-                                  background: isToday(slot.dateObj) ? 'var(--theme-primary)' : dotStyle.bg,
-                                  color: isToday(slot.dateObj) ? '#FFFFFF' : dotStyle.text,
+                                  background: isToday(dateObj) ? 'var(--theme-primary)' : dotStyle.bg,
+                                  color: isToday(dateObj) ? '#FFFFFF' : dotStyle.text,
                                   borderColor: dotStyle.border
                                 }}
                               >
-                                {slot.dayNum}
+                                {dateObj.getDate()}
                                 {hasMultipleProjects && (
                                   <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full text-white text-[7px] font-black flex items-center justify-center leading-none p-0 border border-white shadow-sm select-none" style={{ backgroundColor: 'var(--theme-secondary)' }}>
                                     +
@@ -3610,7 +3832,7 @@ function App() {
                                 Open in Notion ↗
                               </a>
                             </div>
-                            <div className="text-sm font-semibold">{log.title || 'Untitled'}</div>
+                            <LogTitleEditor log={log} tenantId={tenantId} onSaved={handleTitleSaved} className="text-sm font-semibold" />
                             <LogNoteEditor
                               log={log}
                               tenantId={tenantId}
@@ -4464,6 +4686,25 @@ function App() {
                   </button>
                 </div>
 
+                <div className="p-3 border rounded-lg flex items-center justify-between gap-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                  <div>
+                    <h3 className="text-xs font-bold">Filter Sidebar to Visible Range</h3>
+                    <p className="text-[11px] opacity-60">Sidebar only lists projects logged within the visible day/week/month, instead of the whole year.</p>
+                  </div>
+                  <button
+                    onClick={() => setSidebarFilterToVisible(prev => !prev)}
+                    role="switch"
+                    aria-checked={sidebarFilterToVisible}
+                    title={sidebarFilterToVisible ? 'Show the whole year again' : 'Filter to the visible range'}
+                    className="relative w-9 h-5 rounded-full transition-colors cursor-pointer shrink-0"
+                    style={{ backgroundColor: sidebarFilterToVisible ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${sidebarFilterToVisible ? 'translate-x-4' : 'translate-x-0'}`}
+                    />
+                  </button>
+                </div>
+
                 <div className="p-4 border rounded-xl space-y-3 shadow-xs" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                   <div className="flex items-center justify-between border-b pb-2" style={{ borderColor: 'var(--theme-border)' }}>
                     <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Live Baseline Preview ({viewScale}%)</span>
@@ -4803,18 +5044,66 @@ function App() {
                             </span>
                           </div>
 
-                          {log.imageUrl && (
-                            <img 
-                              src={log.imageUrl} 
-                              className="h-[210px] w-full rounded-md object-cover border" 
-                              style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
-                              alt="" 
-                            />
-                          )}
+                          <div className="relative shrink-0" style={{ height: `${dayModalImageHeight}px` }}>
+                            {log.imageUrl ? (
+                              <img
+                                src={log.imageUrl}
+                                className="h-full w-full rounded-md object-cover border"
+                                style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
+                                alt=""
+                              />
+                            ) : (
+                              // No photo -- the note fills the same frame
+                              // instead of leaving it visually blank. A
+                              // static preview, not editable here; the
+                              // LogNoteEditor below is still the one place
+                              // that actually writes a note back to Notion.
+                              <div
+                                className="h-full w-full rounded-md border overflow-y-auto p-3"
+                                style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
+                              >
+                                {log.pageContent ? (
+                                  <p className="text-sm whitespace-pre-wrap" style={{ color: 'var(--theme-text)' }}>{log.pageContent}</p>
+                                ) : (
+                                  <p className="text-sm italic opacity-40">No photo or note yet.</p>
+                                )}
+                              </div>
+                            )}
+
+                            <div
+                              onMouseDown={handleMouseDownDayModalResize}
+                              onClick={(e) => e.stopPropagation()}
+                              className={`group/handle absolute left-0 right-0 bottom-0 translate-y-1/2 z-30 h-6 flex items-center justify-between cursor-ns-resize transition-opacity duration-150 ${
+                                isResizingDayModalHeight ? 'opacity-100' : 'opacity-0 hover:opacity-100'
+                              }`}
+                              title="Click & Drag down/up to scale entry card aspect ratio"
+                            >
+                              <div className="pl-0.5 flex items-center pointer-events-none">
+                                <svg className="w-2.5 h-3 drop-shadow-xs" style={{ fill: 'var(--theme-primary)' }} viewBox="0 0 8 10">
+                                  <polygon points="0,0 8,5 0,10" />
+                                </svg>
+                              </div>
+
+                              <div className={`flex-1 h-[2px] mx-1 transition-all flex items-center justify-center ${
+                                isResizingDayModalHeight ? 'shadow-md' : ''
+                              }`} style={{ backgroundColor: 'var(--theme-primary)' }}>
+                                <div className="text-white text-[9px] font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 transition-transform" style={{ backgroundColor: 'var(--theme-primary)' }}>
+                                  <span>↕ PULL TO RESIZE</span>
+                                  <span className="font-mono">({Math.round(dayModalImageHeight)}px)</span>
+                                </div>
+                              </div>
+
+                              <div className="pr-0.5 flex items-center pointer-events-none">
+                                <svg className="w-2.5 h-3 drop-shadow-xs" style={{ fill: 'var(--theme-primary)' }} viewBox="0 0 8 10">
+                                  <polygon points="8,0 0,5 8,10" />
+                                </svg>
+                              </div>
+                            </div>
+                          </div>
 
                           <div className="flex items-center justify-between gap-2">
-                            <h3 className="text-base font-bold truncate">{log.title}</h3>
-                            <a 
+                            <LogTitleEditor log={log} tenantId={tenantId} onSaved={handleTitleSaved} className="text-base font-bold" />
+                            <a
                               href={notionPageUrl} 
                               target="_blank" 
                               rel="noopener noreferrer" 

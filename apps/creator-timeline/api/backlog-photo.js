@@ -37,13 +37,16 @@ const NOTION_VERSION = '2026-03-11';
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, dateTaken, text, imageBase64 } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64 } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
 
   if (action === 'updateNote') {
     if (!pageId) return res.status(400).json({ error: 'Missing pageId' });
     if (typeof text !== 'string') return res.status(400).json({ error: 'Missing text' });
+  } else if (action === 'updateTitle') {
+    if (!pageId) return res.status(400).json({ error: 'Missing pageId' });
+    if (typeof newTitle !== 'string' || !newTitle.trim()) return res.status(400).json({ error: 'Title cannot be empty' });
   } else {
     if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
     if (!pageId) {
@@ -127,6 +130,36 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, blockId: newBlockId, blockType: newBlockId ? 'paragraph' : null });
     } catch (err) {
       console.error('[backlog-photo] updateNote failed:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  if (action === 'updateTitle') {
+    try {
+      // The title PROPERTY's name varies per database ("Name", "Title",
+      // whatever the tenant's own database calls it) -- has to be read off
+      // the page itself rather than assumed, the same way backlog-photo's
+      // create path below copies property shape from a reference page
+      // instead of hardcoding one.
+      const pageRes = await notionFetch(`https://api.notion.com/v1/pages/${pageId}`, { method: 'GET', headers });
+      if (!pageRes.ok) {
+        const errData = await pageRes.json().catch(() => ({}));
+        return res.status(400).json({ error: errData.message || 'Could not read this entry.' });
+      }
+      const page = await pageRes.json();
+      const titlePropName = Object.entries(page.properties || {}).find(([, v]) => v.type === 'title')?.[0];
+      if (!titlePropName) return res.status(400).json({ error: 'This entry has no title property.' });
+
+      const updateRes = await notionFetch(`https://api.notion.com/v1/pages/${pageId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ properties: { [titlePropName]: { title: [{ text: { content: newTitle } }] } } }),
+      });
+      const updateData = await updateRes.json();
+      if (updateData.object === 'error') return res.status(400).json({ error: updateData.message });
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      console.error('[backlog-photo] updateTitle failed:', err.message);
       return res.status(500).json({ error: err.message });
     }
   }
