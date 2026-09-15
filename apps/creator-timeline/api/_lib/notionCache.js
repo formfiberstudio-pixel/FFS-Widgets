@@ -14,10 +14,17 @@ const redis = new Redis({
 // to "cache never hits," not a crash.
 
 // A related page's title (used for a log's Projects/topic field) rarely
-// changes -- caching it for a day trades a small, self-correcting display
-// delay after a rename for skipping a whole extra Notion request per
-// distinct related page on every sync after the first.
-const RELATION_TITLE_TTL_SECONDS = 24 * 60 * 60;
+// changes -- caching it trades a small, self-correcting display delay
+// after a rename for skipping a whole extra Notion request per distinct
+// related page on every sync after the first. Originally a day; dropped
+// to an hour after a renamed project stayed stale through several manual
+// Sync clicks in the same sitting -- there's no way to validate this
+// against the related page's own last_edited_time the way block data
+// (getCachedBlockData below) does without an extra fetch that defeats
+// the whole point of caching it, so this is a pure time-bound guess, and
+// a day turned out to be a much longer guess than a "Sync" click reads
+// as to someone who just renamed something in Notion.
+const RELATION_TITLE_TTL_SECONDS = 60 * 60;
 
 // Block-derived data (the day's photo + preview text) is cached per page,
 // keyed by that exact page's last_edited_time -- already present on every
@@ -36,8 +43,12 @@ const BLOCK_CACHE_TTL_SECONDS = 90 * 24 * 60 * 60;
 // regardless of how long the page's content itself has stayed cached.
 const IMAGE_URL_FRESH_MS = 45 * 60 * 1000;
 
+// v1 -> v2: forces every already-cached title to miss once (rather than
+// serve out its old 24h TTL to the bitter end) the moment this shorter-TTL
+// version ships, so a rename made before the fix still shows up on the
+// very next sync instead of however much of a day happened to be left.
 function relationTitleKey(pageId) {
-  return `notionRelTitle:${pageId}`;
+  return `notionRelTitle:v2:${pageId}`;
 }
 
 // Bumped twice now: v1 -> v2 for the recursive/paginated block search
