@@ -37,7 +37,7 @@ const NOTION_VERSION = '2026-03-11';
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64 } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
 
@@ -47,6 +47,9 @@ export default async function handler(req, res) {
   } else if (action === 'updateTitle') {
     if (!pageId) return res.status(400).json({ error: 'Missing pageId' });
     if (typeof newTitle !== 'string' || !newTitle.trim()) return res.status(400).json({ error: 'Title cannot be empty' });
+  } else if (action === 'createProject') {
+    if (!referenceLogId) return res.status(400).json({ error: 'Missing referenceLogId' });
+    if (typeof newProjectTitle !== 'string' || !newProjectTitle.trim()) return res.status(400).json({ error: 'Project name cannot be empty' });
   } else {
     if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
     if (!pageId) {
@@ -164,6 +167,68 @@ export default async function handler(req, res) {
     }
   }
 
+  // Creates a brand-new page in whatever database a project's relation
+  // property actually points to (the same "Projects"-shaped database the
+  // create-a-log-entry path above copies a relation value FROM) -- this
+  // is what lets Import Photos offer projects that don't have any log
+  // entries yet instead of only ever listing ones that already do.
+  //
+  // referenceLogId only needs to be ANY existing log entry from the same
+  // Notion database as the project list being added to -- it's read
+  // purely to find which of ITS properties is the relation and where
+  // that relation points, never for its own relation VALUE (unlike the
+  // create-a-log-entry path, which copies that value verbatim). Mirrors
+  // the "always exactly one relation" assumption get-notion-logs.js's own
+  // progress-tracking detection already makes for this app's supported
+  // database shapes.
+  if (action === 'createProject') {
+    try {
+      const refRes = await notionFetch(`https://api.notion.com/v1/pages/${referenceLogId}`, { method: 'GET', headers });
+      if (!refRes.ok) {
+        const errData = await refRes.json().catch(() => ({}));
+        return res.status(400).json({ error: errData.message || 'Could not read the reference log entry.' });
+      }
+      const refPage = await refRes.json();
+      const relationEntry = Object.entries(refPage.properties || {}).find(([, v]) => v.type === 'relation' && v.relation?.length > 0);
+      if (!relationEntry) return res.status(400).json({ error: 'Could not find a project relation on this database.' });
+      const [, relationVal] = relationEntry;
+
+      const linkedRes = await notionFetch(`https://api.notion.com/v1/pages/${relationVal.relation[0].id}`, { method: 'GET', headers });
+      if (!linkedRes.ok) {
+        const errData = await linkedRes.json().catch(() => ({}));
+        return res.status(400).json({ error: errData.message || 'Could not read an existing project.' });
+      }
+      const linkedPage = await linkedRes.json();
+      const targetDatabaseId = linkedPage.parent?.database_id;
+      if (!targetDatabaseId) return res.status(400).json({ error: 'Projects are not stored in a database.' });
+
+      const dbRes = await notionFetch(`https://api.notion.com/v1/databases/${targetDatabaseId}`, { method: 'GET', headers });
+      if (!dbRes.ok) {
+        const errData = await dbRes.json().catch(() => ({}));
+        return res.status(400).json({ error: errData.message || 'Could not read the projects database.' });
+      }
+      const targetDb = await dbRes.json();
+      const targetTitlePropName = Object.entries(targetDb.properties || {}).find(([, v]) => v.type === 'title')?.[0];
+      if (!targetTitlePropName) return res.status(400).json({ error: 'The projects database has no title property.' });
+
+      const createRes = await notionFetch('https://api.notion.com/v1/pages', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          parent: { database_id: targetDatabaseId },
+          properties: { [targetTitlePropName]: { title: [{ text: { content: newProjectTitle.trim() } }] } },
+        }),
+      });
+      const createData = await createRes.json();
+      if (createData.object === 'error') return res.status(400).json({ error: createData.message });
+
+      return res.status(200).json({ success: true, projectPageId: createData.id });
+    } catch (err) {
+      console.error('[backlog-photo] createProject failed:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
   try {
     const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, '').replace(/[\r\n\s]/g, '');
     const isPng = cleanBase64.startsWith('iVBORw');
@@ -212,7 +277,16 @@ export default async function handler(req, res) {
         // prevent.
         properties[propName] = { date: { start: dateTaken } };
       } else if (propVal.type === 'relation' && propVal.relation?.length > 0) {
-        properties[propName] = { relation: propVal.relation.map((r) => ({ id: r.id })) };
+        // projectPageId overrides the reference entry's OWN relation value
+        // -- set only when the frontend created this project just now (see
+        // action: 'createProject' above) via a referenceLogId that
+        // necessarily belongs to a DIFFERENT, pre-existing project, purely
+        // to learn this database's shape. Without the override, every
+        // photo would end up linked to that unrelated reference project
+        // instead of the new one.
+        properties[propName] = projectPageId
+          ? { relation: [{ id: projectPageId }] }
+          : { relation: propVal.relation.map((r) => ({ id: r.id })) };
       }
     }
 

@@ -21,6 +21,55 @@ const projectKeyOf = (p) => `${p.source}::${p.title}`;
 // used elsewhere for the same narrow/wide split.
 const MOBILE_BREAKPOINT = 640;
 
+// A "+ Add Project" row shown at the bottom of one source's project list
+// -- shared between the mobile tap-to-assign list and the desktop
+// select-project step, since both group projects by source the same way
+// and both should be able to add one without leaving Import Photos.
+// Collapses to a single dashed button until tapped, then swaps to a
+// plain inline text input, matching LogTitleEditor's click-to-edit
+// pattern elsewhere in this app.
+function AddProjectRow({ isActive, draft, onDraftChange, onActivate, onCancel, onSubmit, submitting, error }) {
+  if (!isActive) {
+    return (
+      <button
+        onClick={onActivate}
+        style={{ borderColor: 'var(--theme-border)' }}
+        className="w-full text-left p-3 rounded-lg border border-dashed cursor-pointer transition-colors hover:border-[var(--theme-primary)] text-sm font-semibold opacity-60 hover:opacity-100"
+      >
+        + Add Project
+      </button>
+    );
+  }
+  return (
+    <div onClick={(e) => e.stopPropagation()} style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-primary)' }} className="p-3 rounded-lg border space-y-2">
+      <input
+        autoFocus
+        type="text"
+        value={draft}
+        onChange={(e) => onDraftChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') onSubmit(); if (e.key === 'Escape') onCancel(); }}
+        placeholder="New project name"
+        style={{ borderColor: 'var(--theme-border)', color: 'var(--theme-text)', backgroundColor: 'var(--theme-card)' }}
+        className="w-full text-sm px-2 py-1.5 rounded border outline-none"
+      />
+      {error && <div className="text-[10px]" style={{ color: 'var(--theme-secondary)' }}>{error}</div>}
+      <div className="flex items-center justify-end gap-1.5">
+        <button onClick={onCancel} className="text-xs font-semibold px-2 py-1 rounded cursor-pointer opacity-60 hover:opacity-100 transition-opacity">
+          Cancel
+        </button>
+        <button
+          onClick={onSubmit}
+          disabled={submitting || !draft.trim()}
+          style={{ backgroundColor: 'var(--theme-primary)' }}
+          className="text-xs font-bold text-white px-2.5 py-1 rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+        >
+          {submitting ? 'Adding…' : 'Add'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, fixedDateRange }) {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < MOBILE_BREAKPOINT);
   useEffect(() => {
@@ -72,6 +121,60 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
       if (next.has(source)) next.delete(source); else next.add(source);
       return next;
     });
+  };
+
+  // Projects created THIS session via "+ Add Project" (see AddProjectRow)
+  // -- allProjects only ever lists projects that already have at least
+  // one synced log entry, so a brand-new one has nowhere else to live
+  // until the user eventually logs something under it and re-syncs.
+  // Merged into every {source: [...]} grouping and into startUpload's
+  // own project lookup right alongside allProjects.
+  const [newlyCreatedProjects, setNewlyCreatedProjects] = useState([]);
+  const effectiveProjects = [...allProjects, ...newlyCreatedProjects];
+  // Which source's inline "+ Add Project" input is currently open --
+  // only one at a time, mirroring armedProjectKey's single-active-mode
+  // pattern above.
+  const [addProjectSource, setAddProjectSource] = useState(null);
+  const [newProjectDraft, setNewProjectDraft] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [createProjectError, setCreateProjectError] = useState(null);
+
+  const cancelAddProject = () => {
+    setAddProjectSource(null);
+    setNewProjectDraft('');
+    setCreateProjectError(null);
+  };
+
+  // referenceLogId is only ever used structurally (which property is the
+  // relation, which database it points to) -- ANY existing project in
+  // the same source works, including one added earlier this same session,
+  // so a database with zero synced projects is the only case with truly
+  // nothing to bootstrap a new one from.
+  const submitAddProject = async (source) => {
+    const title = newProjectDraft.trim();
+    if (!title) return;
+    const reference = effectiveProjects.find((p) => p.source === source);
+    if (!reference) {
+      setCreateProjectError('Need at least one existing project in this database first.');
+      return;
+    }
+    setCreatingProject(true);
+    setCreateProjectError(null);
+    try {
+      const response = await fetch('/api/backlog-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId, action: 'createProject', referenceLogId: reference.referenceLogId, newProjectTitle: title }),
+      });
+      const result = await response.json();
+      if (!result.success) throw new Error(result.error || 'Could not create project');
+      setNewlyCreatedProjects((prev) => [...prev, { title, source, referenceLogId: reference.referenceLogId, projectPageId: result.projectPageId }]);
+      cancelAddProject();
+    } catch (err) {
+      setCreateProjectError(err.message);
+    } finally {
+      setCreatingProject(false);
+    }
   };
 
   // Object URLs are only good until the tab/component goes away -- clean
@@ -387,13 +490,13 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
     for (const groupPhotos of groups.values()) {
       const { date, projectKey } = groupPhotos[0];
-      const groupProject = allProjects.find((p) => projectKeyOf(p) === projectKey);
+      const groupProject = effectiveProjects.find((p) => projectKeyOf(p) === projectKey);
       let pageId = null;
 
       if (!groupProject) {
         // Shouldn't happen (every photo's projectKey comes from
-        // allProjects), but fail that group's photos explicitly rather
-        // than silently dropping them if it ever does.
+        // effectiveProjects), but fail that group's photos explicitly
+        // rather than silently dropping them if it ever does.
         groupPhotos.forEach((photo) => {
           failed.push({ name: photo.file?.name || photo.displayName || 'photo', error: 'No project selected for this photo' });
           doneCount++;
@@ -424,7 +527,18 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
             : await resizeImageForUpload(photo.file);
           const body = pageId
             ? { tenantId, pageId, imageBase64 }
-            : { tenantId, referenceLogId: groupProject.referenceLogId, title: `${groupProject.title} — ${formattedDate}`, dateTaken: date, imageBase64 };
+            : {
+                tenantId,
+                referenceLogId: groupProject.referenceLogId,
+                title: `${groupProject.title} — ${formattedDate}`,
+                dateTaken: date,
+                imageBase64,
+                // Only set for a project created THIS session via
+                // "+ Add Project" -- tells backlog-photo.js to link this
+                // entry to the newly-created project page instead of
+                // copying referenceLogId's own (unrelated) project.
+                ...(groupProject.projectPageId ? { projectPageId: groupProject.projectPageId } : {}),
+              };
 
           const response = await fetch('/api/backlog-photo', {
             method: 'POST',
@@ -469,7 +583,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   // -----------------------------------------------------------------
   if (step === 'select-project') {
     const bySource = {};
-    allProjects.forEach((p) => {
+    effectiveProjects.forEach((p) => {
       if (!bySource[p.source]) bySource[p.source] = [];
       bySource[p.source].push(p);
     });
@@ -504,12 +618,22 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                         <span className="text-xs opacity-50">Select →</span>
                       </button>
                     ))}
+                    <AddProjectRow
+                      isActive={addProjectSource === source}
+                      draft={newProjectDraft}
+                      onDraftChange={setNewProjectDraft}
+                      onActivate={() => { setAddProjectSource(source); setNewProjectDraft(''); setCreateProjectError(null); }}
+                      onCancel={cancelAddProject}
+                      onSubmit={() => submitAddProject(source)}
+                      submitting={creatingProject}
+                      error={addProjectSource === source ? createProjectError : null}
+                    />
                   </div>
                 )}
               </div>
             );
           })}
-          {allProjects.length === 0 && (
+          {effectiveProjects.length === 0 && (
             <div className="text-sm italic opacity-50 text-center py-8">
               No projects found yet -- sync your calendar first.
             </div>
@@ -609,7 +733,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   // -----------------------------------------------------------------
   if (step === 'review' && isMobile) {
     const bySource = {};
-    allProjects.forEach((p) => {
+    effectiveProjects.forEach((p) => {
       if (!bySource[p.source]) bySource[p.source] = [];
       bySource[p.source].push(p);
     });
@@ -682,7 +806,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
             <div className="flex gap-2 pb-1" style={{ width: 'max-content' }}>
               {visiblePhotos.map((photo) => {
                 const isSelected = selectedPhotoIds.has(photo.id);
-                const assignedProject = photo.projectKey ? allProjects.find((p) => projectKeyOf(p) === photo.projectKey) : null;
+                const assignedProject = photo.projectKey ? effectiveProjects.find((p) => projectKeyOf(p) === photo.projectKey) : null;
                 return (
                   <div key={photo.id} className="shrink-0" style={{ width: '92px' }}>
                     <div
@@ -739,7 +863,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
         <div className="text-xs opacity-60 mb-2 shrink-0">
           {armedProjectKey
-            ? `Assigning to "${allProjects.find((p) => projectKeyOf(p) === armedProjectKey)?.title}" — tap photos, or tap the project again to stop.`
+            ? `Assigning to "${effectiveProjects.find((p) => projectKeyOf(p) === armedProjectKey)?.title}" — tap photos, or tap the project again to stop.`
             : selectedPhotoIds.size > 0
               ? `${selectedPhotoIds.size} photo${selectedPhotoIds.size === 1 ? '' : 's'} selected — tap a project below to assign.`
               : 'Tap photos to select them, or tap a project to start assigning.'}
@@ -798,12 +922,22 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                         </button>
                       );
                     })}
+                    <AddProjectRow
+                      isActive={addProjectSource === source}
+                      draft={newProjectDraft}
+                      onDraftChange={setNewProjectDraft}
+                      onActivate={() => { setAddProjectSource(source); setNewProjectDraft(''); setCreateProjectError(null); }}
+                      onCancel={cancelAddProject}
+                      onSubmit={() => submitAddProject(source)}
+                      submitting={creatingProject}
+                      error={addProjectSource === source ? createProjectError : null}
+                    />
                   </div>
                 )}
               </div>
             );
           })}
-          {allProjects.length === 0 && (
+          {effectiveProjects.length === 0 && (
             <div className="text-sm italic opacity-50 text-center py-8">
               No projects found yet -- sync your calendar first.
             </div>
@@ -894,7 +1028,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                       style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
                       className="w-full text-xs px-1.5 py-1 rounded border truncate"
                     >
-                      {allProjects.map((p) => (
+                      {effectiveProjects.map((p) => (
                         <option key={projectKeyOf(p)} value={projectKeyOf(p)}>{p.title}</option>
                       ))}
                     </select>
