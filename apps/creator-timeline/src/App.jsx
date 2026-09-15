@@ -952,10 +952,21 @@ function App() {
   // one "more" button instead of showing all four inline -- there isn't
   // vertical room to spare for a phone screen the way there is on desktop.
   const [showMobileMenu, setShowMobileMenu] = useState(false);
-  // Mobile's Month view: a continuously-scrolling list of real weeks
-  // (built once, anchored at load time -- see buildContinuousWeeks)
-  // instead of one page per month.
-  const mobileMonthWeeks = useMemo(() => buildContinuousWeeks(new Date(), 6, 6), []);
+  // Mobile's Month view (and desktop's -- see mobileMonthWeeks' many other
+  // call sites, it's shared verbatim) is a continuously-scrolling list of
+  // real weeks instead of one page per month. 10 years each way (20 years
+  // total, ~1050 week rows) rather than a truly unbounded/dynamically-
+  // extending list -- desktop renders every one of those rows as real DOM
+  // (no windowing/virtualization the way mobile's own 4-visible-row slice
+  // gets), and appending more rows on the fly as someone approaches either
+  // edge would mean shifting every already-rendered row's index on a
+  // prepend (and, worse, compensating scrollTop for it to avoid a visible
+  // jump) -- real complexity for a boundary no realistic use of a personal
+  // content calendar will ever actually reach. 20 years of real DOM rows
+  // measured fine interactively in testing (a Today-button jump completed
+  // in ~30ms); built once at load, anchored to whatever "now" was when the
+  // tab opened, not recomputed as time passes within the session.
+  const mobileMonthWeeks = useMemo(() => buildContinuousWeeks(new Date(), 120, 120), []);
   // Index of whichever week row is snapped to the top of the scroll --
   // with exactly MOBILE_MONTH_VISIBLE_ROWS rows visible and scroll-snap
   // keeping that top row's start aligned to the container, the visible
