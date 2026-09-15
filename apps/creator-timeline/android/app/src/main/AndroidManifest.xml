@@ -39,9 +39,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- For DateFilteredPhotoPickerPlugin's MediaStore query -- the
-         granular photos permission on 13+, the legacy storage permission
-         (capped at 32) for anything older. -->
+    <!-- For DateFilteredPhotoPickerPlugin's MediaStore query: the granular
+         photos permission on 13+, the legacy storage permission (capped at
+         32) for anything older. -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
 </manifest>
