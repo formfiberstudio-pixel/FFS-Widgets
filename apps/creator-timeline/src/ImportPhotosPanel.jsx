@@ -551,6 +551,18 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     });
     const unassignedCount = photos.filter((p) => !p.projectKey).length;
 
+    // Swiping to an adjacent date block (see shiftImportDateRange in
+    // App.jsx) only moves fixedDateRange -- it doesn't touch `photos`
+    // itself, so anything already staged for a different date would
+    // otherwise keep showing in the strip no matter which block's header
+    // is displayed. Scoping the strip to just what falls in the CURRENT
+    // block is what actually makes the swipe read as "now looking at a
+    // different date's photos" -- nothing staged for other blocks is lost,
+    // it's just not shown until swiping back to that date.
+    const visiblePhotos = fixedDateRange
+      ? photos.filter((p) => p.date >= fixedDateRange.start && p.date <= fixedDateRange.end)
+      : photos;
+
     return (
       <div className="flex flex-col h-full w-full min-h-0">
         <input
@@ -592,11 +604,15 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
         {/* Horizontal photo strip */}
         <div className="shrink-0 mb-2 -mx-1 px-1 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
-          {photos.length === 0 ? (
-            <div className="text-xs italic opacity-50 py-8 text-center">No photos yet — tap "+ Add Photos" above.</div>
+          {visiblePhotos.length === 0 ? (
+            <div className="text-xs italic opacity-50 py-8 text-center">
+              {photos.length > 0
+                ? 'No photos staged for this date yet — swipe back, or tap "+ Add Photos" above.'
+                : 'No photos yet — tap "+ Add Photos" above.'}
+            </div>
           ) : (
             <div className="flex gap-2 pb-1" style={{ width: 'max-content' }}>
-              {photos.map((photo) => {
+              {visiblePhotos.map((photo) => {
                 const isSelected = selectedPhotoIds.has(photo.id);
                 const assignedProject = photo.projectKey ? allProjects.find((p) => projectKeyOf(p) === photo.projectKey) : null;
                 return (
