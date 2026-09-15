@@ -122,17 +122,20 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
   const openNativePicker = () => {
     setStep('native-pick');
-    runNativeScan();
   };
 
-  // Covers the "opened directly into the picker" case (see the step lazy
-  // initializer above) -- openNativePicker() itself handles the scan when
-  // it's the one switching INTO this step, but when native-pick is where
-  // this component already started, nothing would otherwise trigger it.
+  // Runs the MediaStore scan whenever the native-pick step becomes
+  // active -- covers both "opened directly into the picker" (see the step
+  // lazy initializer above) and openNativePicker() switching into it from
+  // elsewhere -- AND whenever fixedDateRange itself changes while already
+  // sitting on this step, which is what actually makes swiping to an
+  // adjacent date block (shiftImportDateRange in App.jsx) show that
+  // date's photos instead of leaving the grid frozen on whatever was
+  // queried at mount time.
   useEffect(() => {
     if (step === 'native-pick') runNativeScan();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [step, fixedDateRange?.start, fixedDateRange?.end]);
 
   const toggleNativePick = (uri) => {
     setNativePickSelected((prev) => {
