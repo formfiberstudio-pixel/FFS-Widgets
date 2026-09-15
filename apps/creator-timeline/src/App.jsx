@@ -2255,10 +2255,23 @@ function App() {
   // redesign). Month is excluded: it's a continuous vertical scroll (see
   // mobileMonthWeeks below) rather than one page per month, so it has no
   // "next/prev page" for a horizontal swipe to mean.
+  // A touch starting within this many px of the left/right edge is left
+  // untracked for Import specifically -- that's also where Android/Chrome's
+  // own system back gesture (see the in-app back stack below) starts,
+  // and Import is a drill-down pushed onto that stack, so an edge swipe
+  // there should be free to mean "go back" rather than racing this
+  // handler to shift the date block instead. Day/Week/Year don't need
+  // this: they're the top-level tabs a back gesture would exit past
+  // anyway, not screens with their own back-stack entry to contend for.
+  const IMPORT_EDGE_SWIPE_EXCLUSION_PX = 24;
   const swipeStartRef = useRef(null);
   const handleCalendarTouchStart = (e) => {
     if (!isMobile || !['day', 'week', 'year', 'import'].includes(viewMode)) { swipeStartRef.current = null; return; }
     const t = e.touches[0];
+    if (viewMode === 'import' && (t.clientX < IMPORT_EDGE_SWIPE_EXCLUSION_PX || t.clientX > window.innerWidth - IMPORT_EDGE_SWIPE_EXCLUSION_PX)) {
+      swipeStartRef.current = null;
+      return;
+    }
     swipeStartRef.current = { x: t.clientX, y: t.clientY, time: Date.now() };
   };
   const handleCalendarTouchEnd = (e) => {
