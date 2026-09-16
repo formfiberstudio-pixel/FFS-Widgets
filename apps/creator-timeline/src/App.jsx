@@ -933,6 +933,34 @@ const DESKTOP_MONTH_MIN_VISIBLE_ROWS = 2;
 const DESKTOP_MONTH_MAX_VISIBLE_ROWS = 10;
 const DESKTOP_MONTH_DEFAULT_VISIBLE_ROWS = 6;
 
+// Floating jump-to-cluster arrows for Month view's continuous scroll
+// (mobile and desktop both use this same component) -- fades in only on
+// whichever end actually has somewhere to jump to (hasPrev/hasNext), so
+// there's never a dead click at either edge of the whole 20-year range.
+function ClusterJumpButtons({ hasPrev, hasNext, onPrev, onNext }) {
+  // Solid theme-primary fill (not the card/border treatment most other
+  // floating controls here use) -- this one sits directly on top of the
+  // busy calendar grid rather than at a clean panel edge, and needed the
+  // extra contrast to actually read as a button there instead of
+  // blending into whatever day cells happen to be behind it.
+  const buttonClass = 'absolute left-1/2 -translate-x-1/2 z-20 w-8 h-8 rounded-full flex items-center justify-center cursor-pointer shadow-lg text-white opacity-85 hover:opacity-100 transition-opacity';
+  const buttonStyle = { backgroundColor: 'var(--theme-primary)' };
+  return (
+    <>
+      {hasPrev && (
+        <button onClick={onPrev} title="Jump to the previous cluster of entries" className={`${buttonClass} top-1.5`} style={buttonStyle}>
+          <span className="text-sm font-bold leading-none">▲</span>
+        </button>
+      )}
+      {hasNext && (
+        <button onClick={onNext} title="Jump to the next cluster of entries" className={`${buttonClass} bottom-1.5`} style={buttonStyle}>
+          <span className="text-sm font-bold leading-none">▼</span>
+        </button>
+      )}
+    </>
+  );
+}
+
 function App() {
   const today = new Date();
   const [currentDate, setCurrentDate] = useState(today);
@@ -1076,6 +1104,13 @@ function App() {
   // YYYY-MM-DD strings, matching how the panel already represents dates
   // internally (toDateInputValue).
   const [importDateRange, setImportDateRange] = useState(null);
+  // Which step ImportPhotosPanel is currently showing (reported via its
+  // onStepChange prop) -- lets the swipe handler below tell "still
+  // picking photos for a date block" (native-pick, where a horizontal
+  // swipe changing the block makes sense) apart from "already staged,
+  // now categorizing them" (review, where that same swipe needs to
+  // scroll the photo strip instead, not fight it for the gesture).
+  const [importPanelStep, setImportPanelStep] = useState(null);
   // Shared between the gallery's photo grid and its mini-calendar side
   // panel so hovering either highlights the other.
   const [hoveredGalleryLogId, setHoveredGalleryLogId] = useState(null);
@@ -1988,6 +2023,45 @@ function App() {
     return { primaryLog, isHalftoned: false };
   };
 
+  // Which week rows in mobileMonthWeeks (shared by both mobile and
+  // desktop Month view) have at least one logged entry -- lets the jump
+  // arrows below skip straight over an empty stretch instead of making
+  // someone scroll through it one row at a time. logsByDateKey is a Map
+  // (see getLogsForDate), so this is 1050-ish O(1) lookups, not an actual
+  // linear search over every log -- cheap enough to just recompute
+  // whenever the synced data itself changes.
+  const monthWeekHasEntries = useMemo(
+    () => mobileMonthWeeks.map((week) => week.some((d) => getLogsForDate(d).length > 0)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [logsByDateKey]
+  );
+
+  // A "cluster" is a contiguous run of weeks that have at least one entry,
+  // as opposed to the empty gap between two of them. Both walk two steps
+  // from fromIdx: first past whatever's left of the CURRENT cluster (a
+  // no-op if fromIdx is already sitting in a gap), then past the gap
+  // itself, landing on the first entry-bearing row on the other side --
+  // so clicking "next" while already inside a cluster skips past the rest
+  // of it rather than just nudging down one row within the same one.
+  // findPrevClusterRowIdx takes one extra step back from there (a plain
+  // gap-skip alone would land on that cluster's LAST row, not its first)
+  // so both directions consistently land on a cluster's start.
+  const findNextClusterRowIdx = (fromIdx) => {
+    const n = monthWeekHasEntries.length;
+    let i = Math.max(fromIdx, 0);
+    while (i < n && monthWeekHasEntries[i]) i++;
+    while (i < n && !monthWeekHasEntries[i]) i++;
+    return i < n ? i : null;
+  };
+  const findPrevClusterRowIdx = (fromIdx) => {
+    let i = Math.min(fromIdx, monthWeekHasEntries.length - 1);
+    while (i >= 0 && monthWeekHasEntries[i]) i--;
+    while (i >= 0 && !monthWeekHasEntries[i]) i--;
+    if (i < 0) return null;
+    while (i - 1 >= 0 && monthWeekHasEntries[i - 1]) i--;
+    return i;
+  };
+
   // The sidebar's topic/type list narrows to whatever date range is
   // actually on screen -- just the visible day/week/month -- rather than
   // always listing every topic/type from the whole year regardless of
@@ -2290,6 +2364,15 @@ function App() {
   // redesign). Month is excluded: it's a continuous vertical scroll (see
   // mobileMonthWeeks below) rather than one page per month, so it has no
   // "next/prev page" for a horizontal swipe to mean.
+  //
+  // Import only actually wants this on native-pick (see importPanelStep,
+  // reported by ImportPhotosPanel's onStepChange): that's the only step
+  // with no horizontal scroll of its own to compete with. Once photos are
+  // staged, the review step's photo strip owns horizontal swipes for
+  // scrolling itself -- letting this handler also claim them there was
+  // literally detracking that scroll, one gesture stealing from the
+  // other every time.
+  //
   // A touch starting within this many px of the left/right edge is left
   // untracked for Import specifically -- that's also where Android/Chrome's
   // own system back gesture (see the in-app back stack below) starts,
@@ -2301,9 +2384,10 @@ function App() {
   const IMPORT_EDGE_SWIPE_EXCLUSION_PX = 24;
   const swipeStartRef = useRef(null);
   const handleCalendarTouchStart = (e) => {
-    if (!isMobile || !['day', 'week', 'year', 'import'].includes(viewMode)) { swipeStartRef.current = null; return; }
+    const importSwipeActive = viewMode === 'import' && importPanelStep === 'native-pick';
+    if (!isMobile || !(['day', 'week', 'year'].includes(viewMode) || importSwipeActive)) { swipeStartRef.current = null; return; }
     const t = e.touches[0];
-    if (viewMode === 'import' && (t.clientX < IMPORT_EDGE_SWIPE_EXCLUSION_PX || t.clientX > window.innerWidth - IMPORT_EDGE_SWIPE_EXCLUSION_PX)) {
+    if (importSwipeActive && (t.clientX < IMPORT_EDGE_SWIPE_EXCLUSION_PX || t.clientX > window.innerWidth - IMPORT_EDGE_SWIPE_EXCLUSION_PX)) {
       swipeStartRef.current = null;
       return;
     }
@@ -2488,6 +2572,16 @@ function App() {
   const scrollDesktopMonthToMonth = (year, month) => {
     const idx = mobileMonthWeeks.findIndex((week) => week[3].getFullYear() === year && week[3].getMonth() === month);
     scrollDesktopMonthToRowIndex(idx);
+  };
+
+  // Desktop equivalent already exists (scrollDesktopMonthToRowIndex) --
+  // this is the same "land row idx at the TOP" primitive for mobile,
+  // used by the cluster-jump arrows below (unlike scrollMobileMonthToDate
+  // below, which deliberately lands its target at the BOTTOM instead).
+  const scrollMobileMonthToRowIndex = (idx) => {
+    const el = monthWeekRowRefs.current[idx];
+    if (el) el.scrollIntoView({ block: 'start', behavior: 'instant' });
+    setMobileMonthVisibleStartIdx(idx);
   };
 
   // Scrolls the continuous list so targetDate's week becomes the LAST
@@ -3326,6 +3420,7 @@ function App() {
               sharedPhotos={pendingSharedPhotos}
               onConsumedSharedPhotos={() => setPendingSharedPhotos(null)}
               fixedDateRange={importDateRange}
+              onStepChange={setImportPanelStep}
             />
           )}
 
@@ -3489,17 +3584,19 @@ function App() {
                   ))}
                 </div>
 
+                <div className={mobilePanelCollapsed ? 'relative flex-1 min-h-0' : 'relative shrink-0'}>
                 <div
                   ref={monthScrollContainerRef}
                   onScroll={handleMonthScroll}
-                  className={mobilePanelCollapsed ? 'flex flex-col flex-1 min-h-0' : 'flex flex-col shrink-0'}
+                  className={mobilePanelCollapsed ? 'flex flex-col h-full' : 'flex flex-col'}
                   style={{
                     gap: `${MOBILE_MONTH_ROW_GAP}px`,
                     // Fixed 4-row height normally; once the panel below is
-                    // collapsed, flex-1 (className above) takes over and
-                    // this height is ignored, letting the grid grow into
-                    // whatever space that freed up -- more full 78px rows
-                    // fit automatically, no separate "how many rows" math
+                    // collapsed, h-full (className above, filling the
+                    // wrapper's own flex-1) takes over and this height is
+                    // ignored, letting the grid grow into whatever space
+                    // that freed up -- more full 78px rows fit
+                    // automatically, no separate "how many rows" math
                     // needed for the expanded state.
                     height: mobilePanelCollapsed ? undefined : `${MOBILE_MONTH_VISIBLE_ROWS * MOBILE_MONTH_ROW_HEIGHT + (MOBILE_MONTH_VISIBLE_ROWS - 1) * MOBILE_MONTH_ROW_GAP}px`,
                     // Explicit hidden (not just "not set") -- the 7-column
@@ -3599,6 +3696,20 @@ function App() {
                     </div>
                     );
                   })}
+                </div>
+
+                <ClusterJumpButtons
+                  hasPrev={findPrevClusterRowIdx(mobileMonthVisibleStartIdx) !== null}
+                  hasNext={findNextClusterRowIdx(mobileMonthVisibleStartIdx) !== null}
+                  onPrev={() => {
+                    const idx = findPrevClusterRowIdx(mobileMonthVisibleStartIdx);
+                    if (idx !== null) scrollMobileMonthToRowIndex(idx);
+                  }}
+                  onNext={() => {
+                    const idx = findNextClusterRowIdx(mobileMonthVisibleStartIdx);
+                    if (idx !== null) scrollMobileMonthToRowIndex(idx);
+                  }}
+                />
                 </div>
 
                 {/* Tap to collapse the panel all the way down and hand its
@@ -3802,6 +3913,19 @@ function App() {
                   </div>
                 ))}
               </div>
+
+              <ClusterJumpButtons
+                hasPrev={findPrevClusterRowIdx(desktopMonthVisibleStartIdx) !== null}
+                hasNext={findNextClusterRowIdx(desktopMonthVisibleStartIdx) !== null}
+                onPrev={() => {
+                  const idx = findPrevClusterRowIdx(desktopMonthVisibleStartIdx);
+                  if (idx !== null) scrollDesktopMonthToRowIndex(idx);
+                }}
+                onNext={() => {
+                  const idx = findNextClusterRowIdx(desktopMonthVisibleStartIdx);
+                  if (idx !== null) scrollDesktopMonthToRowIndex(idx);
+                }}
+              />
 
               {/* Drag up/down to change how many week rows are visible
                   (desktopMonthVisibleRows) -- unlike weekCardHeight's own

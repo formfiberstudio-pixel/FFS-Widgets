@@ -173,7 +173,7 @@ function ProjectAssignList({
   );
 }
 
-export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, fixedDateRange, projectColorMap }) {
+export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, fixedDateRange, projectColorMap, onStepChange }) {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < MOBILE_BREAKPOINT);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
@@ -197,6 +197,15 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     if (isNativePhotoPickerSupported() && fixedDateRange) return 'native-pick';
     return 'review';
   }); // native-pick | review | uploading | done
+  // Reports which step is active up to App.jsx -- swiping to change the
+  // fixed date range (see shiftImportDateRange there) should only work on
+  // native-pick, where a horizontal swipe has nothing else to mean. Once
+  // photos are staged and the mobile review step's own horizontal photo
+  // strip is on screen, the same swipe needs to scroll THAT instead of
+  // being hijacked into changing the date block out from under it.
+  useEffect(() => {
+    onStepChange?.(step);
+  }, [step, onStepChange]);
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [uploadResults, setUploadResults] = useState({ byProject: [], failed: [] });
   const [isDragging, setIsDragging] = useState(false);
