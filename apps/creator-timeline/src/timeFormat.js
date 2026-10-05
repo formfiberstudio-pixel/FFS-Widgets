@@ -105,3 +105,55 @@ export function buildSessionNoteText({ minutes, startLabel, endLabel, notes = []
   for (const note of notes) lines.push(note.at ? `${note.at} · ${note.text}` : note.text);
   return lines.join('\n');
 }
+
+// The Week view's summary: one row per project (source + title) that has
+// anything logged in the week, busiest first. `days` is [{ dateObj, logs }],
+// one per day of the week. A log with minutes is a timer session (adds to
+// `minutes` and `sessions`); any other log is an ordinary entry.
+// `sampleLog` / `sampleDayLogs` are one real entry of the project and its
+// day, so the caller can colour the row the way the calendar colours it.
+export function summarizeWeekProjects(days) {
+  const byKey = new Map();
+  for (const { dateObj, logs } of days) {
+    for (const log of logs) {
+      const source = log.source || 'Activity Log';
+      const title = log.Projects || 'Untitled Project';
+      const key = projectTimerKey(source, title);
+      let row = byKey.get(key);
+      if (!row) {
+        row = { key, source, title, minutes: 0, sessions: 0, entries: 0, dayKeys: new Set(), sampleLog: log, sampleDayLogs: logs, sampleDate: dateObj };
+        byKey.set(key, row);
+      }
+      const minutes = Number(log.minutes) || 0;
+      if (minutes > 0) {
+        row.minutes += minutes;
+        row.sessions += 1;
+      } else {
+        row.entries += 1;
+      }
+      row.dayKeys.add(localDateString(dateObj));
+    }
+  }
+  const rows = [...byKey.values()].map(({ dayKeys, ...row }) => ({ ...row, days: dayKeys.size }));
+  rows.sort((a, b) => b.minutes - a.minutes || b.days - a.days || a.title.localeCompare(b.title));
+  return { rows, totalMinutes: rows.reduce((sum, row) => sum + row.minutes, 0) };
+}
+
+// Tracked time for one project (source + title) from its log entries: all
+// time, the calendar year and month of `now`, and how many sessions made it
+// up. Matches projects the same way the gallery and sumProjectMinutes do.
+export function projectTimeSummary(logs, source, title, now = new Date()) {
+  const summary = { allTime: 0, thisYear: 0, thisMonth: 0, sessions: 0 };
+  for (const log of logs) {
+    const minutes = Number(log.minutes) || 0;
+    if (minutes <= 0) continue;
+    if ((log.source || 'Activity Log') !== source || (log.Projects || 'Untitled Project') !== title) continue;
+    summary.allTime += minutes;
+    summary.sessions += 1;
+    if (Number(log.year) === now.getFullYear()) {
+      summary.thisYear += minutes;
+      if (Number(log.monthNumber) === now.getMonth() + 1) summary.thisMonth += minutes;
+    }
+  }
+  return summary;
+}

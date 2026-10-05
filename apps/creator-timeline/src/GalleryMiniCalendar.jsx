@@ -51,7 +51,7 @@ function MonthBlock({ year, monthIndex, logsByDay, hoveredLogId, onHoverLog }) {
                   width: '16px',
                   height: '16px',
                   fontWeight: log ? 700 : 400,
-                  color: log ? '#FFFFFF' : 'var(--theme-text)',
+                  color: log ? (isHovered ? 'var(--theme-on-secondary)' : 'var(--theme-on-primary)') : 'var(--theme-text)',
                   backgroundColor: log ? (isHovered ? 'var(--theme-secondary)' : 'var(--theme-primary)') : 'transparent',
                   opacity: log ? 1 : 0.35,
                   transform: isHovered ? 'scale(1.25)' : 'scale(1)',

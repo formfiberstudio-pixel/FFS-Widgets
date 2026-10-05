@@ -9,6 +9,8 @@ import {
   buildSessionNoteText,
   buildSessionTitle,
   MAX_SESSION_TITLE_PROJECT_LENGTH as CLIENT_MAX_TITLE_PROJECT,
+  projectTimeSummary,
+  summarizeWeekProjects,
   cleanNoteText,
   MAX_SESSION_NOTES as CLIENT_MAX_NOTES,
   MAX_SESSION_NOTE_LENGTH as CLIENT_MAX_NOTE_LENGTH,
@@ -143,4 +145,57 @@ test('the client entry title matches what the server writes to Notion', () => {
     assert.equal(buildSessionTitle(input), buildServerSessionTitle(input));
   }
   assert.equal(CLIENT_MAX_TITLE_PROJECT, MAX_SESSION_TITLE_PROJECT_LENGTH);
+});
+
+const projectLogs = [
+  { source: 'Work', Projects: 'Site', year: 2026, monthNumber: 10, dayNumber: 3, minutes: 60 },
+  { source: 'Work', Projects: 'Site', year: 2026, monthNumber: 10, dayNumber: 4, minutes: 20 },
+  { source: 'Work', Projects: 'Site', year: 2026, monthNumber: 9, dayNumber: 20, minutes: 30 },
+  { source: 'Work', Projects: 'Site', year: 2025, monthNumber: 12, dayNumber: 1, minutes: 45 },
+  { source: 'Work', Projects: 'Site', year: 2026, monthNumber: 10, dayNumber: 5 }, // an ordinary photo entry
+  { source: 'Work', Projects: 'Blog', year: 2026, monthNumber: 10, dayNumber: 4, minutes: 15 },
+  { source: 'Home', Projects: 'Site', year: 2026, monthNumber: 10, dayNumber: 4, minutes: 5 },
+];
+
+test('projectTimeSummary totals one project: all time, this year, this month, sessions', () => {
+  const now = new Date(2026, 9, 5); // Oct 5 2026
+  assert.deepEqual(projectTimeSummary(projectLogs, 'Work', 'Site', now), { allTime: 155, thisYear: 110, thisMonth: 80, sessions: 4 });
+  assert.deepEqual(projectTimeSummary(projectLogs, 'Work', 'Blog', now), { allTime: 15, thisYear: 15, thisMonth: 15, sessions: 1 });
+  assert.deepEqual(projectTimeSummary(projectLogs, 'Work', 'Nothing', now), { allTime: 0, thisYear: 0, thisMonth: 0, sessions: 0 });
+  // Same title in another source is another project; missing labels fall back like the sidebar.
+  assert.equal(projectTimeSummary(projectLogs, 'Home', 'Site', now).allTime, 5);
+  assert.equal(projectTimeSummary([{ year: 2026, monthNumber: 10, dayNumber: 1, minutes: 9 }], 'Activity Log', 'Untitled Project', now).allTime, 9);
+});
+
+test('summarizeWeekProjects gives one row per project, busiest first, with time and days', () => {
+  const day = (d, logs) => ({ dateObj: new Date(2026, 9, d), logs });
+  const week = [
+    day(4, [
+      { source: 'Work', Projects: 'Site', minutes: 60 },
+      { source: 'Work', Projects: 'Blog' }, // an entry with no time
+    ]),
+    day(5, []),
+    day(6, [
+      { source: 'Work', Projects: 'Site', minutes: 25 },
+      { source: 'Work', Projects: 'Site' },
+      { source: 'Home', Projects: 'Garden' },
+      { source: 'Work', Projects: 'Blog' },
+    ]),
+    day(8, [{ source: 'Work', Projects: 'Blog' }]),
+  ];
+  const { rows, totalMinutes } = summarizeWeekProjects(week);
+  assert.equal(totalMinutes, 85);
+  assert.deepEqual(
+    rows.map(({ title, source, minutes, sessions, entries, days }) => ({ title, source, minutes, sessions, entries, days })),
+    [
+      { title: 'Site', source: 'Work', minutes: 85, sessions: 2, entries: 1, days: 2 },
+      { title: 'Blog', source: 'Work', minutes: 0, sessions: 0, entries: 3, days: 3 },
+      { title: 'Garden', source: 'Home', minutes: 0, sessions: 0, entries: 1, days: 1 },
+    ]
+  );
+  // Rows carry one real entry (and its day) for colouring.
+  assert.equal(rows[0].sampleLog.Projects, 'Site');
+  assert.equal(rows[0].sampleDate.getDate(), 4);
+  assert.equal(rows[0].sampleDayLogs.length, 2);
+  assert.deepEqual(summarizeWeekProjects([day(4, [])]), { rows: [], totalMinutes: 0 });
 });

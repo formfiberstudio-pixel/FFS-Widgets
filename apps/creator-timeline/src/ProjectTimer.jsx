@@ -488,3 +488,37 @@ export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, 
     </section>
   );
 }
+
+// What the project's own gallery shows above its year-by-year calendar: the
+// total time tracked on it (see projectTimeSummary in timeFormat.js).
+export function ProjectTimeSummary({ summary }) {
+  const stat = (label, minutes) => (
+    <div>
+      <div className="text-[10px] font-bold uppercase tracking-wider opacity-60">{label}</div>
+      <div className="text-sm font-semibold tabular-nums">{formatMinutes(minutes)}</div>
+    </div>
+  );
+  return (
+    <section
+      aria-label="Time worked on this project"
+      className="mb-5 border p-3"
+      style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', borderRadius: 'var(--theme-radius-md, 0.5rem)' }}
+    >
+      <div className="text-[10px] font-bold uppercase tracking-wider opacity-70">Time worked</div>
+      {summary.allTime > 0 ? (
+        <>
+          <div className="mt-1 flex items-baseline gap-2 flex-wrap">
+            <span className="text-2xl font-bold tabular-nums leading-none">{formatMinutes(summary.allTime)}</span>
+            <span className="text-xs opacity-70">all time · {summary.sessions} session{summary.sessions === 1 ? '' : 's'}</span>
+          </div>
+          <div className="mt-3 flex gap-6">
+            {stat('This year', summary.thisYear)}
+            {stat('This month', summary.thisMonth)}
+          </div>
+        </>
+      ) : (
+        <div className="mt-1 text-xs opacity-60">Nothing tracked yet. Start the timer from this project in the sidebar list.</div>
+      )}
+    </section>
+  );
+}

@@ -3,8 +3,8 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 // Relative imports matching your folder structure
 import themeTokens from '../tokens.json';
 import ActivationPanel from './ActivationPanel.jsx';
-import { useProjectTimer, TimerChip, ActiveTimerCard } from './ProjectTimer.jsx';
-import { buildSessionNoteText, buildSessionTitle, formatMinutes, projectTimerKey, sumProjectMinutes } from './timeFormat.js';
+import { useProjectTimer, TimerChip, ActiveTimerCard, ProjectTimeSummary } from './ProjectTimer.jsx';
+import { buildSessionNoteText, buildSessionTitle, formatMinutes, projectTimeSummary, projectTimerKey, summarizeWeekProjects, sumProjectMinutes } from './timeFormat.js';
 import { copyToClipboard } from './clipboard.js';
 import {
   isFacetedSource,
@@ -19,6 +19,7 @@ import {
 } from './facets.js';
 import FacetedSidebarGroup from './FacetedSidebarGroup.jsx';
 import GalleryMiniCalendar from './GalleryMiniCalendar.jsx';
+import WeekSummary from './WeekSummary.jsx';
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
@@ -2416,6 +2417,17 @@ function App() {
     }
   }
 
+  // Week view's summary of the projects worked on that week (see
+  // summarizeWeekProjects); null outside Week view.
+  const weekSummary = viewMode === 'week'
+    ? summarizeWeekProjects(slots.map((slot) => ({ dateObj: slot.dateObj, logs: getLogsForDate(slot.dateObj) })))
+    : null;
+  const weekSummaryLabel = viewMode === 'week'
+    ? (slots.some((slot) => isToday(slot.dateObj))
+        ? 'This week'
+        : `${startOfWeek.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${endOfWeek.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`)
+    : '';
+
   const handlePrev = () => {
     if (viewMode === 'day') { const d = new Date(currentDate); d.setDate(currentDate.getDate() - 1); setCurrentDate(d); }
     else if (viewMode === 'month') {
@@ -3452,6 +3464,9 @@ function App() {
                 new Date(Number(a.year), Number(a.monthNumber) - 1, Number(a.dayNumber)) -
                 new Date(Number(b.year), Number(b.monthNumber) - 1, Number(b.dayNumber))
               ));
+            // Time tracked on this project by the timer (these entries have no
+            // photo, so they aren't in galleryLogs).
+            const timeSummary = projectTimeSummary(Array.isArray(timelineLogs) ? timelineLogs : [], galleryTarget.source, galleryTarget.title);
 
             return (
               // No mini-calendar to share space with on mobile any more
@@ -3461,7 +3476,10 @@ function App() {
               <div className="flex h-full w-full min-h-0 gap-4">
                 <div className="flex flex-col flex-1 min-w-0 min-h-0 h-full">
                   <div className="flex items-center justify-between mb-3 shrink-0">
-                    <span className="text-sm opacity-60">{galleryLogs.length} photo{galleryLogs.length === 1 ? '' : 's'}</span>
+                    <span className="text-sm opacity-60">
+                      {galleryLogs.length} photo{galleryLogs.length === 1 ? '' : 's'}
+                      {isMobile && timeSummary.allTime > 0 ? ` · ${formatMinutes(timeSummary.allTime)} tracked` : ''}
+                    </span>
                     <button
                       onClick={() => setGalleryNewestFirst((v) => !v)}
                       title={galleryNewestFirst ? 'Showing newest first -- click to show oldest first' : 'Showing oldest first -- click to show newest first'}
@@ -3540,17 +3558,20 @@ function App() {
                     photo list, and the Year view's own "blocks" layout now
                     covers the same at-a-glance purpose without repeating it
                     inside every single project's gallery. */}
-                {galleryLogs.length > 0 && !isMobile && (
+                {(galleryLogs.length > 0 || timeSummary.allTime > 0) && !isMobile && (
                   <div
                     className="w-[380px] shrink-0 h-full min-h-0 overflow-y-auto pr-1 border-l pl-4"
                     style={{ borderColor: 'var(--theme-border)' }}
                   >
-                    <GalleryMiniCalendar
-                      logs={galleryLogs}
-                      hoveredLogId={hoveredGalleryLogId}
-                      onHoverLog={setHoveredGalleryLogId}
-                      newestFirst={galleryNewestFirst}
-                    />
+                    <ProjectTimeSummary summary={timeSummary} />
+                    {galleryLogs.length > 0 && (
+                      <GalleryMiniCalendar
+                        logs={galleryLogs}
+                        hoveredLogId={hoveredGalleryLogId}
+                        onHoverLog={setHoveredGalleryLogId}
+                        newestFirst={galleryNewestFirst}
+                      />
+                    )}
                   </div>
                 )}
               </div>
@@ -4041,7 +4062,7 @@ function App() {
                 {!mobilePanelCollapsed && (
                   <div className="shrink-0 flex flex-col" style={{ maxHeight: '160px' }}>
                     <VisibleProjectsPanel
-                      title="Logged this week"
+                      title={weekSummary.totalMinutes > 0 ? `Logged this week · ${formatMinutes(weekSummary.totalMinutes)} tracked` : 'Logged this week'}
                       emptyMessage="Nothing logged this week."
                       visibleBySource={visibleBySource}
                       showSourceHeaders={showSourceHeaders}
@@ -4050,6 +4071,11 @@ function App() {
                       hoveredProjectTitle={hoveredProjectTitle}
                       onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
                       {...timerPanelProps}
+                      // This week's tracked time on each pill, not the sidebar range's.
+                      getTimeLabel={(source, name) => {
+                        const minutes = weekSummary.rows.find((r) => r.key === projectTimerKey(source, name))?.minutes || 0;
+                        return minutes > 0 ? formatMinutes(minutes) : '';
+                      }}
                       onGoToGallery={(title, source) => {
                         setPreGalleryViewMode(viewMode);
                         pushBackEntry({ viewMode, currentDate, galleryTarget });
@@ -4150,6 +4176,14 @@ function App() {
                   );
                 })}
               </div>
+
+              <WeekSummary
+                summary={weekSummary}
+                rangeLabel={weekSummaryLabel}
+                selectedTitle={hoveredProjectTitle}
+                onToggle={(title) => setHoveredProjectTitle(hoveredProjectTitle === title ? null : title)}
+                getDot={(row) => getPillBackground(row.sampleLog, getDisplayDotColor(row.sampleDayLogs, row.sampleDate))}
+              />
             </div>
           )}
 
