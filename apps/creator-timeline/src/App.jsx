@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 // Relative imports matching your folder structure
 import themeTokens from '../tokens.json';
 import ActivationPanel from './ActivationPanel.jsx';
-import { useProjectTimer, TimerChip } from './ProjectTimer.jsx';
+import { useProjectTimer, TimerChip, ActiveTimerCard } from './ProjectTimer.jsx';
 import { formatMinutes, projectTimerKey, sumProjectMinutes } from './timeFormat.js';
 import { copyToClipboard } from './clipboard.js';
 import {
@@ -2161,6 +2161,9 @@ function App() {
       projectTypeColor: meta?.projectTypeColor ?? referenceLog.projectTypeColor,
     });
   };
+  // The sidebar's spotlight card replaces the header chip whenever the
+  // sidebar is on screen (it's the same aside on the phone's overlay).
+  const showTimerCard = !!projectTimer.timer && isSidebarOpen && viewMode !== 'import';
   const isTimerRunningFor = (source, title) => (
     !!projectTimer.timer && !projectTimer.timer.endedAt && projectTimer.timer.project.key === projectTimerKey(source, title)
   );
@@ -2999,8 +3002,9 @@ function App() {
       </header>
 
       {/* PROJECT TIMER -- appears only while a timer is running (or just
-          saved/failed to save); see ProjectTimer.jsx. */}
-      {(projectTimer.timer || projectTimer.notice) && viewMode !== 'import' && (
+          saved/failed to save); see ProjectTimer.jsx. Hidden while the
+          sidebar is open and showing the ActiveTimerCard instead. */}
+      {(projectTimer.timer || projectTimer.notice) && viewMode !== 'import' && !showTimerCard && (
         <div className="shrink-0 flex justify-end mb-2">
           <TimerChip
             timer={projectTimer.timer}
@@ -3083,6 +3087,20 @@ function App() {
             >
               <div className="w-0.5 h-8 rounded-full bg-[var(--theme-border)] group-hover:bg-[var(--theme-primary)] transition-colors" />
             </div>}
+
+            {showTimerCard && (
+              <div className={isMobile ? 'pt-8' : ''}>
+                <ActiveTimerCard
+                  timer={projectTimer.timer}
+                  saving={projectTimer.saving}
+                  notice={projectTimer.notice}
+                  loggedMinutes={projectTimeTotals.all.get(projectTimer.timer.project.key) || 0}
+                  onStop={projectTimer.stop}
+                  onDiscard={projectTimer.discard}
+                  onRetry={projectTimer.retry}
+                />
+              </div>
+            )}
 
             <div className="mb-3 shrink-0">
               <div className="flex items-center justify-between mb-2">

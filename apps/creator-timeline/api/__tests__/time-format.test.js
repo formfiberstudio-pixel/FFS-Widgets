@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   projectTimerKey,
   formatDuration,
+  formatClock,
+  dialSweepDegrees,
   formatMinutes,
   clockLabel,
   localDateString,
@@ -16,6 +18,23 @@ test('formatDuration renders the running clock', () => {
   assert.equal(formatDuration(65_000), '0:01:05');
   assert.equal(formatDuration(3_725_000), '1:02:05');
   assert.equal(formatDuration(-500), '0:00:00');
+});
+
+test('formatClock pads the hour for the dial', () => {
+  assert.equal(formatClock(2_724_000), '00:45:24');
+  assert.equal(formatClock(0), '00:00:00');
+  assert.equal(formatClock(3_725_000), '01:02:05');
+  assert.equal(formatClock(12 * 3600_000 + 5_000), '12:00:05');
+});
+
+test('dialSweepDegrees sweeps once round per hour and never reaches 360', () => {
+  assert.equal(dialSweepDegrees(0), 0);
+  assert.equal(dialSweepDegrees(15 * 60_000), 90);
+  assert.equal(dialSweepDegrees(2_724_000), 272.4); // 45:24 into the hour
+  assert.equal(dialSweepDegrees(3_599_000), 359.9);
+  assert.equal(dialSweepDegrees(3_600_000), 0); // wraps at the hour
+  assert.equal(dialSweepDegrees(3_600_000 + 30 * 60_000), 180);
+  assert.equal(dialSweepDegrees(-5_000), 0);
 });
 
 test('formatMinutes matches the server-side session title format', () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { clockLabel, formatDuration, formatMinutes, localDateString } from './timeFormat.js';
+import { clockLabel, dialSweepDegrees, formatClock, formatDuration, formatMinutes, localDateString } from './timeFormat.js';
 
 // One running timer per tenant, kept in localStorage so a reload (or the
 // Android WebView being reclaimed) doesn't lose it. Elapsed time is always
@@ -154,6 +154,32 @@ function useNow(active) {
   return now;
 }
 
+// Show the running time in the browser tab, and put the title back after.
+// Whichever of the chip / sidebar card is on screen calls this -- never both
+// at once (see App), or they would fight over document.title.
+function useTabTitle(running, elapsedSeconds, projectTitle) {
+  useEffect(() => {
+    if (!running) return undefined;
+    const original = document.title;
+    document.title = `${formatDuration(elapsedSeconds * 1000)} · ${projectTitle}`;
+    return () => { document.title = original; };
+  }, [running, elapsedSeconds, projectTitle]);
+}
+
+// Two-step discard: the first press arms it, and it disarms by itself.
+function useTwoStepDiscard(onDiscard) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return undefined;
+    const id = setTimeout(() => setArmed(false), 3000);
+    return () => clearTimeout(id);
+  }, [armed]);
+  const press = () => {
+    if (armed) { setArmed(false); onDiscard(); } else setArmed(true);
+  };
+  return [armed, press];
+}
+
 const chipButtonClass = 'shrink-0 px-2 py-0.5 rounded-full border text-[11px] font-bold cursor-pointer disabled:opacity-50';
 
 export function TimerChip({ timer, saving, notice, onStop, onDiscard, onRetry }) {
@@ -161,23 +187,8 @@ export function TimerChip({ timer, saving, notice, onStop, onDiscard, onRetry })
   const now = useNow(running);
   const elapsed = timer ? (timer.endedAt ?? now) - timer.startedAt : 0;
   const elapsedSeconds = Math.floor(elapsed / 1000);
-  const [discardArmed, setDiscardArmed] = useState(false);
-
-  // Two-step discard: the first tap arms it, and it disarms by itself.
-  useEffect(() => {
-    if (!discardArmed) return undefined;
-    const id = setTimeout(() => setDiscardArmed(false), 3000);
-    return () => clearTimeout(id);
-  }, [discardArmed]);
-
-  // Show the running time in the browser tab, and put the title back after.
-  const projectTitle = timer?.project.title;
-  useEffect(() => {
-    if (!running) return undefined;
-    const original = document.title;
-    document.title = `${formatDuration(elapsedSeconds * 1000)} · ${projectTitle}`;
-    return () => { document.title = original; };
-  }, [running, elapsedSeconds, projectTitle]);
+  const [discardArmed, pressDiscard] = useTwoStepDiscard(onDiscard);
+  useTabTitle(running, elapsedSeconds, timer?.project.title);
 
   if (!timer && !notice) return null;
 
@@ -206,7 +217,7 @@ export function TimerChip({ timer, saving, notice, onStop, onDiscard, onRetry })
             </button>
           )}
           <button
-            onClick={() => { if (discardArmed) { setDiscardArmed(false); onDiscard(); } else setDiscardArmed(true); }}
+            onClick={pressDiscard}
             disabled={saving}
             title="Discard this session without saving it"
             style={outline}
@@ -220,5 +231,104 @@ export function TimerChip({ timer, saving, notice, onStop, onDiscard, onRetry })
         <span className="truncate min-w-0">{notice}</span>
       )}
     </div>
+  );
+}
+
+// Pie sector from 12 o'clock clockwise by `degrees` (0 < degrees < 360).
+function sectorPath(cx, cy, r, degrees) {
+  const rad = (degrees * Math.PI) / 180;
+  const x = cx + r * Math.sin(rad);
+  const y = cy - r * Math.cos(rad);
+  return `M ${cx} ${cy} L ${cx} ${cy - r} A ${r} ${r} 0 ${degrees > 180 ? 1 : 0} 1 ${x.toFixed(2)} ${y.toFixed(2)} Z`;
+}
+
+const roundButtonClass = 'w-11 h-11 rounded-full border-2 flex items-center justify-center text-base leading-none cursor-pointer disabled:opacity-50 transition-transform hover:scale-105';
+
+// The sidebar's spotlight on the project being tracked: a dial that fills
+// round the hour (45:24 in is three-quarters full) with the clock in its
+// middle, echoing the Life Log timer. Tints come from --theme-primary at a
+// partial opacity rather than a fixed colour, so the digits (--theme-text)
+// stay readable on every theme preset. Rendered instead of TimerChip while
+// the sidebar is open, so only one of them ever ticks.
+export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry }) {
+  const running = !timer.endedAt;
+  const now = useNow(running);
+  const elapsed = (timer.endedAt ?? now) - timer.startedAt;
+  const elapsedSeconds = Math.floor(elapsed / 1000);
+  const [discardArmed, pressDiscard] = useTwoStepDiscard(onDiscard);
+  useTabTitle(running, elapsedSeconds, timer.project.title);
+
+  const degrees = dialSweepDegrees(elapsed);
+  const detail = [
+    timer.project.source !== 'Activity Log' ? timer.project.source : '',
+    `Started ${clockLabel(new Date(timer.startedAt))}`,
+  ].filter(Boolean).join(' · ');
+  const outline = { backgroundColor: 'var(--theme-card)', color: 'var(--theme-text)' };
+
+  return (
+    <section
+      aria-label="Active project timer"
+      className="shrink-0 mb-3 rounded-2xl border p-3 flex flex-col items-center text-center gap-1"
+      style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-primary)', color: 'var(--theme-text)' }}
+    >
+      <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider opacity-70">
+        <span className={`w-2 h-2 rounded-full ${running ? 'animate-pulse' : ''}`} style={{ backgroundColor: 'var(--theme-primary)' }} />
+        {running ? 'Now tracking' : 'Not saved yet'}
+      </div>
+      <div className="w-full text-sm font-bold leading-snug line-clamp-2 break-words" title={timer.project.title}>{timer.project.title}</div>
+
+      <div className="relative w-[136px] h-[136px] my-1">
+        <svg viewBox="0 0 160 160" className="absolute inset-0 w-full h-full" aria-hidden="true">
+          <circle cx="80" cy="80" r="74" fill="var(--theme-primary)" fillOpacity="0.14" stroke="var(--theme-primary)" strokeOpacity="0.5" strokeWidth="2" />
+          {degrees > 0 && <path d={sectorPath(80, 80, 74, degrees)} fill="var(--theme-primary)" fillOpacity="0.45" />}
+          {[0, 90, 180, 270].map((deg) => (
+            <line key={deg} x1="80" y1="9" x2="80" y2="17" stroke="var(--theme-text)" strokeOpacity="0.35" strokeWidth="2" strokeLinecap="round" transform={`rotate(${deg} 80 80)`} />
+          ))}
+          {/* Marker on the sweep's leading edge, kept to the rim so it never crosses the digits. */}
+          <line x1="80" y1="6" x2="80" y2="22" stroke="var(--theme-primary)" strokeWidth="3.5" strokeLinecap="round" transform={`rotate(${degrees} 80 80)`} />
+        </svg>
+        <div
+          role="timer"
+          aria-label={`Elapsed ${formatDuration(elapsed)}`}
+          className="absolute inset-0 flex items-center justify-center text-[23px] font-bold tabular-nums tracking-tight"
+        >
+          {formatClock(elapsed)}
+        </div>
+      </div>
+
+      <div className="text-[11px] opacity-70">{detail}</div>
+      {loggedMinutes > 0 && <div className="text-[11px] opacity-70">{formatMinutes(loggedMinutes)} logged before this</div>}
+
+      {timer.error && (
+        <div className="text-[11px] font-semibold mt-1 w-full break-words" title={timer.error}>
+          Couldn&rsquo;t save the {formatMinutes(Math.round(elapsed / 60000))} &mdash; it&rsquo;s kept here until you retry.
+        </div>
+      )}
+
+      <div className="flex items-start justify-center gap-5 mt-2">
+        <div className="flex flex-col items-center gap-1">
+          {timer.error ? (
+            <button onClick={onRetry} disabled={saving} aria-label="Retry saving this session" style={{ ...outline, borderColor: 'var(--theme-primary)' }} className={roundButtonClass}>{saving ? '…' : '↻'}</button>
+          ) : (
+            <button onClick={onStop} disabled={saving} aria-label={`Stop and save the timer on ${timer.project.title}`} style={{ ...outline, borderColor: 'var(--theme-primary)' }} className={roundButtonClass}>{saving ? '…' : '■'}</button>
+          )}
+          <span className="text-[10px] font-semibold opacity-70">{timer.error ? 'Retry' : saving ? 'Saving…' : 'Stop & save'}</span>
+        </div>
+        <div className="flex flex-col items-center gap-1">
+          <button
+            onClick={pressDiscard}
+            disabled={saving}
+            aria-label="Discard this session without saving it"
+            style={{ ...outline, borderColor: discardArmed ? 'var(--theme-text)' : 'var(--theme-border)' }}
+            className={roundButtonClass}
+          >
+            ✕
+          </button>
+          <span className="text-[10px] font-semibold opacity-70">{discardArmed ? 'Tap again' : 'Discard'}</span>
+        </div>
+      </div>
+
+      {notice && <div className="text-[11px] opacity-70 mt-1">{notice}</div>}
+    </section>
   );
 }

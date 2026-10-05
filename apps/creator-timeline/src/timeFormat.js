@@ -16,6 +16,17 @@ export function formatDuration(ms) {
   return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+// Same clock with a two-digit hour, as the big dial shows it: "00:45:24"
+export const formatClock = (ms) => formatDuration(ms).padStart(8, '0');
+
+// How far round the dial's hour the sweep has gone, in degrees clockwise
+// from 12 o'clock: 45:24 into the hour is 272.4. It wraps each hour, and is
+// always below 360 so the sector never has to draw a closed circle.
+export function dialSweepDegrees(ms) {
+  const secondsIntoHour = Math.max(0, Math.floor(ms / 1000)) % 3600;
+  return (secondsIntoHour * 360) / 3600;
+}
+
 // Totals: 80 -> "1h 20m", 45 -> "45m", 120 -> "2h"
 export function formatMinutes(minutes) {
   const total = Math.max(0, Math.round(Number(minutes) || 0));
