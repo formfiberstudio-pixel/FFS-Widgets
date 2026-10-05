@@ -8,6 +8,8 @@ import {
   extractMinutes,
   buildSessionProperties,
   sanitizeSessionNotes,
+  buildSessionTitle,
+  MAX_SESSION_TITLE_PROJECT_LENGTH,
   toRichTextChunks,
   MAX_SESSION_NOTES,
   MAX_SESSION_NOTE_LENGTH,
@@ -159,4 +161,19 @@ test('toRichTextChunks stays under the limit, breaks only between lines, and los
   for (const chunk of chunks) assert.ok(chunk.text.content.length <= 2000);
   assert.equal(chunks.map((c) => c.text.content).join(''), text);
   assert.equal(toRichTextChunks('one line').length, 1);
+});
+
+test('buildSessionTitle is date_project_length, with dots in the date', () => {
+  assert.equal(buildSessionTitle({ dateStr: '2026-10-05', projectTitle: 'Personal Blog', minutes: 80 }), '2026.10.05_Personal Blog_1h 20m');
+  assert.equal(buildSessionTitle({ dateStr: '2026-01-09', projectTitle: 'Site', minutes: 45 }), '2026.01.09_Site_45m');
+  assert.equal(buildSessionTitle({ dateStr: '2026-01-09', projectTitle: 'Site', minutes: 120 }), '2026.01.09_Site_2h');
+});
+
+test('buildSessionTitle tidies the project name and falls back without one', () => {
+  assert.equal(buildSessionTitle({ dateStr: '2026-10-05', projectTitle: '  Two\n  lines  ', minutes: 5 }), '2026.10.05_Two lines_5m');
+  const long = buildSessionTitle({ dateStr: '2026-10-05', projectTitle: 'x'.repeat(300), minutes: 5 });
+  assert.equal(long, `2026.10.05_${'x'.repeat(MAX_SESSION_TITLE_PROJECT_LENGTH)}_5m`);
+  // No project name (an older client): the previous title format.
+  assert.equal(buildSessionTitle({ dateStr: '2026-10-05', minutes: 80 }), '⏱ 1h 20m');
+  assert.equal(buildSessionTitle({ dateStr: '2026-10-05', projectTitle: '   ', minutes: 80 }), '⏱ 1h 20m');
 });

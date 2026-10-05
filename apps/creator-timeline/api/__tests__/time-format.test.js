@@ -7,6 +7,8 @@ import {
   dialSweepDegrees,
   timerElapsedMs,
   buildSessionNoteText,
+  buildSessionTitle,
+  MAX_SESSION_TITLE_PROJECT_LENGTH as CLIENT_MAX_TITLE_PROJECT,
   cleanNoteText,
   MAX_SESSION_NOTES as CLIENT_MAX_NOTES,
   MAX_SESSION_NOTE_LENGTH as CLIENT_MAX_NOTE_LENGTH,
@@ -19,6 +21,8 @@ import {
   formatMinutesLabel,
   buildSessionNote,
   sanitizeSessionNotes,
+  buildSessionTitle as buildServerSessionTitle,
+  MAX_SESSION_TITLE_PROJECT_LENGTH,
   MAX_SESSION_NOTES,
   MAX_SESSION_NOTE_LENGTH,
 } from '../_lib/timeTracking.js';
@@ -126,4 +130,17 @@ test('client and server agree on the note caps and cleaning', () => {
   assert.equal(cleanNoteText(messy), sanitizeSessionNotes([{ at: '10:00', text: messy }])[0].text);
   assert.equal(cleanNoteText('   '), '');
   assert.equal(cleanNoteText(undefined), '');
+});
+
+test('the client entry title matches what the server writes to Notion', () => {
+  for (const input of [
+    { dateStr: '2026-10-05', projectTitle: 'Personal Blog', minutes: 80 },
+    { dateStr: '2026-01-09', projectTitle: '  Two\n  lines ', minutes: 45 },
+    { dateStr: '2026-12-31', projectTitle: 'x'.repeat(300), minutes: 120 },
+    { dateStr: '2026-10-05', projectTitle: '', minutes: 7 },
+    { dateStr: '2026-10-05', minutes: 7 },
+  ]) {
+    assert.equal(buildSessionTitle(input), buildServerSessionTitle(input));
+  }
+  assert.equal(CLIENT_MAX_TITLE_PROJECT, MAX_SESSION_TITLE_PROJECT_LENGTH);
 });

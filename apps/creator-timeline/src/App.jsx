@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import themeTokens from '../tokens.json';
 import ActivationPanel from './ActivationPanel.jsx';
 import { useProjectTimer, TimerChip, ActiveTimerCard } from './ProjectTimer.jsx';
-import { buildSessionNoteText, formatMinutes, projectTimerKey, sumProjectMinutes } from './timeFormat.js';
+import { buildSessionNoteText, buildSessionTitle, formatMinutes, projectTimerKey, sumProjectMinutes } from './timeFormat.js';
 import { copyToClipboard } from './clipboard.js';
 import {
   isFacetedSource,
@@ -1522,7 +1522,7 @@ function App() {
       year: y,
       monthNumber: m,
       dayNumber: d,
-      title: `⏱ ${formatMinutes(minutes)}`,
+      title: buildSessionTitle({ dateStr, projectTitle: project.title, minutes }),
       Projects: project.title,
       projectType: project.projectType || 'General',
       projectTypeColor: project.projectTypeColor,

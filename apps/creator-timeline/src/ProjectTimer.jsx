@@ -89,6 +89,7 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
             tenantId,
             action: 'logTime',
             referenceLogId: session.project.referenceLogId,
+            projectTitle: session.project.title,
             minutes,
             dateTaken: dateStr,
             startLabel,

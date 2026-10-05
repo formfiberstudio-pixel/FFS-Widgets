@@ -31,6 +31,19 @@ export function formatMinutesLabel(minutes) {
   return `${rest}m`;
 }
 
+// The entry's title: "2026.10.05_Personal Blog_1h 20m" -- the session's date,
+// the project, and the length of the log. The project name is collapsed to
+// one line and capped; with no project name (an older client) it falls back
+// to the previous "⏱ 1h 20m". client: src/timeFormat.js mirrors this.
+export const MAX_SESSION_TITLE_PROJECT_LENGTH = 100;
+
+export function buildSessionTitle({ dateStr, projectTitle, minutes }) {
+  const length = formatMinutesLabel(minutes);
+  const project = String(projectTitle ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_SESSION_TITLE_PROJECT_LENGTH);
+  if (!project) return `${TIME_MARKER} ${length}`;
+  return `${String(dateStr).replace(/-/g, '.')}_${project}_${length}`;
+}
+
 // Notes jotted while the timer ran: [{ at: "14:12", text }] in, a cleaned
 // list out. Anything that isn't a non-empty text note is dropped, runs of
 // whitespace (incl. newlines) collapse so each note stays one line, and the

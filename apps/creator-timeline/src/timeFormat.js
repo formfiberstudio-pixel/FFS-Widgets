@@ -75,6 +75,18 @@ export function sumProjectMinutes(logs, range) {
   return { all, inRange };
 }
 
+// The entry's title, "2026.10.05_Personal Blog_1h 20m": session date, project
+// and length of the log. Mirrors buildSessionTitle in api/_lib/timeTracking.js
+// (same cap on the project name; a test keeps the two in step).
+export const MAX_SESSION_TITLE_PROJECT_LENGTH = 100;
+
+export function buildSessionTitle({ dateStr, projectTitle, minutes }) {
+  const length = formatMinutes(minutes);
+  const project = String(projectTitle ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_SESSION_TITLE_PROJECT_LENGTH);
+  if (!project) return `⏱ ${length}`;
+  return `${String(dateStr).replace(/-/g, '.')}_${project}_${length}`;
+}
+
 // Notes jotted while a timer runs, saved with the session. Caps mirror
 // MAX_SESSION_NOTES / MAX_SESSION_NOTE_LENGTH in api/_lib/timeTracking.js.
 export const MAX_SESSION_NOTES = 50;

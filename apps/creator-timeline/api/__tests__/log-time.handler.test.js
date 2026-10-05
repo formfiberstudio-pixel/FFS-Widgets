@@ -170,3 +170,20 @@ test('logTime rejects notes that are not a list', async () => {
   assert.match(res.body.error, /notes/i);
   assert.equal(notionCalls.length, 0);
 });
+
+test('logTime titles the entry date_project_length when the project name is sent', async () => {
+  reset();
+  const res = await call({ ...VALID, projectTitle: 'Personal Blog' });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(res.body.title, '2026.10.05_Personal Blog_1h 20m');
+  const create = notionCalls.find((c) => c.method === 'POST');
+  assert.deepEqual(create.body.properties.Name, { title: [{ text: { content: '2026.10.05_Personal Blog_1h 20m' } }] });
+});
+
+test('logTime rejects a project name that is not text', async () => {
+  reset();
+  const res = await call({ ...VALID, projectTitle: { name: 'x' } });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /project name/i);
+  assert.equal(notionCalls.length, 0);
+});
