@@ -352,6 +352,30 @@ const DEFAULT_THEME_PRESETS = [
       secondary: '#22D3EE',
     },
   },
+  // Life Log design system (design-tokens.json), connected to the Create
+  // pillar: bg=paper, card=surface, border=hairline, text=ink,
+  // primary=pillar-create, secondary=pillar-create-ink.
+  {
+    id: 'life-log-workshop',
+    name: 'Life Log Workshop',
+    isCustom: false,
+    light: {
+      bg: '#FAF6F5',
+      card: '#FFFDFC',
+      border: '#DDD4D2',
+      text: '#28242A',
+      primary: '#E2A12F',
+      secondary: '#8A5A0E',
+    },
+    dark: {
+      bg: '#1B1A1D',
+      card: '#222024',
+      border: '#3E3A3F',
+      text: '#F1ECEA',
+      primary: '#E2A12F',
+      secondary: '#E2A12F',
+    },
+  },
 ];
 
 // -------------------------------------------------------------
