@@ -140,16 +140,19 @@ export function summarizeWeekProjects(days) {
 }
 
 // Tracked time for one project (source + title) from its log entries: all
-// time, the calendar year and month of `now`, and how many sessions made it
-// up. Matches projects the same way the gallery and sumProjectMinutes do.
+// time, the calendar year and month of `now`, how many sessions made it up,
+// and the minutes per year (byYear: { 2026: 80, ... }). Matches projects the
+// same way the gallery and sumProjectMinutes do.
 export function projectTimeSummary(logs, source, title, now = new Date()) {
-  const summary = { allTime: 0, thisYear: 0, thisMonth: 0, sessions: 0 };
+  const summary = { allTime: 0, thisYear: 0, thisMonth: 0, sessions: 0, byYear: {} };
   for (const log of logs) {
     const minutes = Number(log.minutes) || 0;
     if (minutes <= 0) continue;
     if ((log.source || 'Activity Log') !== source || (log.Projects || 'Untitled Project') !== title) continue;
     summary.allTime += minutes;
     summary.sessions += 1;
+    const logYear = Number(log.year);
+    summary.byYear[logYear] = (summary.byYear[logYear] || 0) + minutes;
     if (Number(log.year) === now.getFullYear()) {
       summary.thisYear += minutes;
       if (Number(log.monthNumber) === now.getMonth() + 1) summary.thisMonth += minutes;

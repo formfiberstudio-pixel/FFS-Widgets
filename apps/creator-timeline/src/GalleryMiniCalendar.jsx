@@ -11,6 +11,9 @@
 // calendar's Month view uses, just parameterized by an explicit
 // year/month instead of `currentDate`, since this renders many months at
 // once rather than one at a time.
+import { useState } from 'react';
+import { formatMinutes } from './timeFormat.js';
+
 function buildMonthSlots(year, monthIndex) {
   const startDayOffset = new Date(year, monthIndex, 1).getDay();
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
@@ -67,7 +70,12 @@ function MonthBlock({ year, monthIndex, logsByDay, hoveredLogId, onHoverLog }) {
   );
 }
 
-export default function GalleryMiniCalendar({ logs, hoveredLogId, onHoverLog, newestFirst }) {
+// minutesByYear: { 2026: 80, ... } of timer-tracked minutes per year, shown at
+// the right of each year heading; a year that has tracked time but no photos
+// still gets its heading (with an empty calendar). Each year heading toggles
+// that year's months open or closed.
+export default function GalleryMiniCalendar({ logs, hoveredLogId, onHoverLog, newestFirst, minutesByYear = {} }) {
+  const [collapsedYears, setCollapsedYears] = useState({});
   const byYear = {};
   logs.forEach((log) => {
     const y = Number(log.year);
@@ -83,7 +91,11 @@ export default function GalleryMiniCalendar({ logs, hoveredLogId, onHoverLog, ne
   // currently sorted in (see App.jsx's shared galleryNewestFirst toggle) --
   // the two disagreeing on chronological direction was the actual
   // confusion this was built to fix.
-  const years = Object.keys(byYear).map(Number).sort((a, b) => (newestFirst ? b - a : a - b));
+  const allYears = new Set(Object.keys(byYear).map(Number));
+  for (const [year, minutes] of Object.entries(minutesByYear)) {
+    if (minutes > 0) allYears.add(Number(year));
+  }
+  const years = [...allYears].sort((a, b) => (newestFirst ? b - a : a - b));
 
   if (years.length === 0) {
     return <div className="text-xs italic opacity-50 p-3">No dated entries yet.</div>;
@@ -91,23 +103,42 @@ export default function GalleryMiniCalendar({ logs, hoveredLogId, onHoverLog, ne
 
   return (
     <div className="space-y-5">
-      {years.map((year) => (
-        <div key={year}>
-          <div className="text-xs font-black opacity-70 mb-2">{year}</div>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-            {Array.from({ length: 12 }, (_, m) => (
-              <MonthBlock
-                key={m}
-                year={year}
-                monthIndex={m}
-                logsByDay={byYear[year][m] || {}}
-                hoveredLogId={hoveredLogId}
-                onHoverLog={onHoverLog}
-              />
-            ))}
+      {years.map((year) => {
+        const collapsed = collapsedYears[year] === true;
+        const yearMinutes = minutesByYear[year] || 0;
+        return (
+          <div key={year}>
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <button
+                onClick={() => setCollapsedYears((prev) => ({ ...prev, [year]: !prev[year] }))}
+                aria-expanded={!collapsed}
+                title={collapsed ? `Show ${year}` : `Hide ${year}`}
+                className="flex items-center gap-1.5 text-xs font-black opacity-70 hover:opacity-100 cursor-pointer"
+              >
+                <span>{year}</span>
+                <span className="inline-block text-[10px] transition-transform" style={{ transform: collapsed ? 'rotate(-90deg)' : 'none' }}>▾</span>
+              </button>
+              {yearMinutes > 0 && (
+                <span className="text-xs font-semibold tabular-nums opacity-70" title={`Time tracked in ${year}`}>{formatMinutes(yearMinutes)}</span>
+              )}
+            </div>
+            {!collapsed && (
+              <div className="grid grid-cols-2 gap-x-6 gap-y-4">
+                {Array.from({ length: 12 }, (_, m) => (
+                  <MonthBlock
+                    key={m}
+                    year={year}
+                    monthIndex={m}
+                    logsByDay={byYear[year]?.[m] || {}}
+                    hoveredLogId={hoveredLogId}
+                    onHoverLog={onHoverLog}
+                  />
+                ))}
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

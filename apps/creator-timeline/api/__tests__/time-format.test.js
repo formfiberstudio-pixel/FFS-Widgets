@@ -159,9 +159,9 @@ const projectLogs = [
 
 test('projectTimeSummary totals one project: all time, this year, this month, sessions', () => {
   const now = new Date(2026, 9, 5); // Oct 5 2026
-  assert.deepEqual(projectTimeSummary(projectLogs, 'Work', 'Site', now), { allTime: 155, thisYear: 110, thisMonth: 80, sessions: 4 });
-  assert.deepEqual(projectTimeSummary(projectLogs, 'Work', 'Blog', now), { allTime: 15, thisYear: 15, thisMonth: 15, sessions: 1 });
-  assert.deepEqual(projectTimeSummary(projectLogs, 'Work', 'Nothing', now), { allTime: 0, thisYear: 0, thisMonth: 0, sessions: 0 });
+  assert.deepEqual(projectTimeSummary(projectLogs, 'Work', 'Site', now), { allTime: 155, thisYear: 110, thisMonth: 80, sessions: 4, byYear: { 2026: 110, 2025: 45 } });
+  assert.deepEqual(projectTimeSummary(projectLogs, 'Work', 'Blog', now), { allTime: 15, thisYear: 15, thisMonth: 15, sessions: 1, byYear: { 2026: 15 } });
+  assert.deepEqual(projectTimeSummary(projectLogs, 'Work', 'Nothing', now), { allTime: 0, thisYear: 0, thisMonth: 0, sessions: 0, byYear: {} });
   // Same title in another source is another project; missing labels fall back like the sidebar.
   assert.equal(projectTimeSummary(projectLogs, 'Home', 'Site', now).allTime, 5);
   assert.equal(projectTimeSummary([{ year: 2026, monthNumber: 10, dayNumber: 1, minutes: 9 }], 'Activity Log', 'Untitled Project', now).allTime, 9);

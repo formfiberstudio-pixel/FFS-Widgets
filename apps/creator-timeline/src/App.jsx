@@ -274,9 +274,11 @@ const DEFAULT_THEME_PRESETS = [
   // Life Log design system (design-tokens.json), connected to the Create
   // pillar: bg=paper, card=surface, border=hairline, text=ink,
   // primary=pillar-create, secondary=pillar-create-ink. onPrimary and
-  // onSecondary are the text colours for sitting ON those two fills -- the
-  // doc's rule is dark ink on a pillar fill, never white (white on the
-  // Create amber measures 2.24:1). `design` carries what colours can't:
+  // onSecondary are the text colours for sitting ON those two fills. They
+  // are white by choice (the owner prefers it to dark ink); white on the
+  // Create amber measures 2.24:1, so a darker brown ink such as #4A2F05
+  // (5.5:1) is the accessible alternative -- one token to change here.
+  // `design` carries what colours can't:
   // the type families (Reflection serif / Utility sans) and the corner
   // radii (radius-md for cards and cells, radius-lg for panels); it is
   // only applied to presets that have it, and buttons become pills (see
@@ -299,7 +301,7 @@ const DEFAULT_THEME_PRESETS = [
       text: '#28242A',
       primary: '#E2A12F',
       secondary: '#8A5A0E',
-      onPrimary: '#28242A',
+      onPrimary: '#FFFFFF',
       onSecondary: '#FFFFFF',
     },
     dark: {
@@ -309,8 +311,8 @@ const DEFAULT_THEME_PRESETS = [
       text: '#F1ECEA',
       primary: '#E2A12F',
       secondary: '#E2A12F',
-      onPrimary: '#1B1A1D',
-      onSecondary: '#1B1A1D',
+      onPrimary: '#FFFFFF',
+      onSecondary: '#FFFFFF',
     },
   },
   {
@@ -3563,15 +3565,18 @@ function App() {
                     className="w-[380px] shrink-0 h-full min-h-0 overflow-y-auto pr-1 border-l pl-4"
                     style={{ borderColor: 'var(--theme-border)' }}
                   >
-                    <ProjectTimeSummary summary={timeSummary} />
-                    {galleryLogs.length > 0 && (
-                      <GalleryMiniCalendar
-                        logs={galleryLogs}
-                        hoveredLogId={hoveredGalleryLogId}
-                        onHoverLog={setHoveredGalleryLogId}
-                        newestFirst={galleryNewestFirst}
-                      />
-                    )}
+                    {/* Stays in view while the years scroll underneath. Its own
+                        background (the panel's) hides what passes behind it. */}
+                    <div className="sticky top-0 z-10 pb-4" style={{ backgroundColor: 'var(--theme-card)' }}>
+                      <ProjectTimeSummary summary={timeSummary} />
+                    </div>
+                    <GalleryMiniCalendar
+                      logs={galleryLogs}
+                      hoveredLogId={hoveredGalleryLogId}
+                      onHoverLog={setHoveredGalleryLogId}
+                      newestFirst={galleryNewestFirst}
+                      minutesByYear={timeSummary.byYear}
+                    />
                   </div>
                 )}
               </div>

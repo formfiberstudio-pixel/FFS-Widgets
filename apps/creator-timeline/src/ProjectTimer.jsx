@@ -501,7 +501,7 @@ export function ProjectTimeSummary({ summary }) {
   return (
     <section
       aria-label="Time worked on this project"
-      className="mb-5 border p-3"
+      className="border px-3 py-2.5 shadow-sm"
       style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', borderRadius: 'var(--theme-radius-md, 0.5rem)' }}
     >
       <div className="text-[10px] font-bold uppercase tracking-wider opacity-70">Time worked</div>
@@ -511,7 +511,7 @@ export function ProjectTimeSummary({ summary }) {
             <span className="text-2xl font-bold tabular-nums leading-none">{formatMinutes(summary.allTime)}</span>
             <span className="text-xs opacity-70">all time · {summary.sessions} session{summary.sessions === 1 ? '' : 's'}</span>
           </div>
-          <div className="mt-3 flex gap-6">
+          <div className="mt-2 flex gap-6">
             {stat('This year', summary.thisYear)}
             {stat('This month', summary.thisMonth)}
           </div>
