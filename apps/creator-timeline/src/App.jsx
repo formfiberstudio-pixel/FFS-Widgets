@@ -3,6 +3,8 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 // Relative imports matching your folder structure
 import themeTokens from '../tokens.json';
 import ActivationPanel from './ActivationPanel.jsx';
+import { useProjectTimer, TimerChip } from './ProjectTimer.jsx';
+import { formatMinutes, projectTimerKey, sumProjectMinutes } from './timeFormat.js';
 import { copyToClipboard } from './clipboard.js';
 import {
   isFacetedSource,
@@ -520,6 +522,12 @@ function VisibleProjectsPanel({
   hoveredProjectTitle,
   onTogglePill,
   onGoToGallery,
+  // Project timer (see App's timerPanelProps): getTimeLabel(source, name)
+  // returns "" when there's no tracked time yet.
+  getTimeLabel,
+  isTimerRunningFor,
+  onStartTimer,
+  onStopTimer,
 }) {
   const highlightedProjectSource = hoveredProjectTitle
     ? Array.from(visibleBySource.entries()).find(([, projects]) => projects.has(hoveredProjectTitle))?.[0]
@@ -562,7 +570,7 @@ function VisibleProjectsPanel({
                             className={`inline-flex items-center font-bold text-white px-2.5 py-1 rounded-full leading-none cursor-pointer transition-all ${isActive ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1' : hoveredProjectTitle ? 'opacity-40' : ''}`}
                             style={{ background: bg, fontSize: '11px' }}
                           >
-                            {name}
+                            {name}{getTimeLabel?.(source, name) ? ` · ${getTimeLabel(source, name)}` : ''}
                           </button>
                         );
                       })}
@@ -579,14 +587,29 @@ function VisibleProjectsPanel({
           project's own photo gallery, same destination the sidebar's
           gallery icon opens on desktop. */}
       {hoveredProjectTitle && highlightedProjectSource && (
-        <button
-          onClick={() => onGoToGallery(hoveredProjectTitle, highlightedProjectSource)}
-          style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
-          className="shrink-0 mt-2 w-full py-2.5 rounded-lg border text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5"
-        >
-          <span>Go to "{hoveredProjectTitle}" Gallery</span>
-          <span>→</span>
-        </button>
+        <div className="shrink-0 mt-2 flex gap-2">
+          <button
+            onClick={() => onGoToGallery(hoveredProjectTitle, highlightedProjectSource)}
+            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
+            className="min-w-0 flex-1 py-2.5 rounded-lg border text-sm font-bold cursor-pointer flex items-center justify-center gap-1.5"
+          >
+            <span className="truncate">Go to "{hoveredProjectTitle}" Gallery</span>
+            <span>→</span>
+          </button>
+          {onStartTimer && (() => {
+            const timing = isTimerRunningFor(highlightedProjectSource, hoveredProjectTitle);
+            return (
+              <button
+                onClick={() => (timing ? onStopTimer() : onStartTimer(highlightedProjectSource, hoveredProjectTitle))}
+                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-text)' }}
+                className="shrink-0 px-3.5 py-2.5 rounded-lg border text-sm font-bold cursor-pointer flex items-center gap-1.5"
+              >
+                <span>{timing ? '■' : '▶︎'}</span>
+                <span>{timing ? 'Stop' : 'Timer'}</span>
+              </button>
+            );
+          })()}
+        </div>
       )}
     </>
   );
@@ -1456,6 +1479,32 @@ function App() {
   const [copiedViewId, setCopiedViewId] = useState('');
   const [showReconfigure, setShowReconfigure] = useState(false);
   const isDemoMode = new URLSearchParams(window.location.search).get('demo') === '1';
+
+  // Project timer (see ProjectTimer.jsx). A stopped session is already
+  // saved to Notion by the time this runs; this just mirrors it into local
+  // state as a log entry (same shape the sync returns) so the calendar and
+  // the per-project totals update without waiting for the next sync, whose
+  // full replace of timelineLogs brings the same page back by id.
+  const handleSessionSaved = ({ id, project, minutes, dateStr, startLabel, endLabel }) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    setTimelineLogs((prev) => [...prev, {
+      id,
+      source: project.source,
+      year: y,
+      monthNumber: m,
+      dayNumber: d,
+      title: `⏱ ${formatMinutes(minutes)}`,
+      Projects: project.title,
+      projectType: project.projectType || 'General',
+      projectTypeColor: project.projectTypeColor,
+      imageUrl: null,
+      pageContent: `⏱ ${minutes} min · ${startLabel}–${endLabel}`,
+      pageContentBlockId: null,
+      pageContentBlockType: null,
+      minutes,
+    }]);
+  };
+  const projectTimer = useProjectTimer({ tenantId, isDemoMode, onSessionSaved: handleSessionSaved });
   // ?blank=1 forces the setup screen to ignore any license this browser
   // already has cached -- lets the owner share (or preview on their own
   // device) a guaranteed-blank activation link instead of it picking up
@@ -1980,6 +2029,10 @@ function App() {
   const getThumbnailLogForDate = (dateObj, logs) => {
     if (!logs || logs.length === 0) return { primaryLog: null, isHalftoned: false };
     const dateKey = dateObj.toISOString().split('T')[0];
+    // A tracked-time session (see ProjectTimer.jsx) is a text-only entry, so
+    // by default it shouldn't take the day's thumbnail from a real entry --
+    // the sync's ordering would otherwise decide that arbitrarily.
+    const defaultLog = logs.find((l) => !(l.minutes > 0)) || logs[0];
 
     if (hoveredProjectTitle) {
       const matchingProjectLog = logs.find(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
@@ -1987,13 +2040,13 @@ function App() {
         return { primaryLog: matchingProjectLog, isHalftoned: false };
       } else {
         const overrideId = thumbnailOverrides[dateKey];
-        const primaryLog = overrideId ? logs.find(l => l.id === overrideId) || logs[0] : logs[0];
+        const primaryLog = overrideId ? logs.find(l => l.id === overrideId) || defaultLog : defaultLog;
         return { primaryLog, isHalftoned: true };
       }
     }
 
     const overrideId = thumbnailOverrides[dateKey];
-    const primaryLog = overrideId ? logs.find(l => l.id === overrideId) || logs[0] : logs[0];
+    const primaryLog = overrideId ? logs.find(l => l.id === overrideId) || defaultLog : defaultLog;
     return { primaryLog, isHalftoned: false };
   };
 
@@ -2073,6 +2126,50 @@ function App() {
     if (!activeViewRange) return true;
     const logDate = new Date(Number(log.year), Number(log.monthNumber) - 1, Number(log.dayNumber));
     return logDate >= activeViewRange.start && logDate <= activeViewRange.end;
+  };
+
+  // Project timer: tracked time per project. The sidebar's visible-range
+  // toggle decides which total a row leads with (the range being viewed
+  // when it's on, all time otherwise); the tooltip always gives both.
+  const projectTimeTotals = sumProjectMinutes(timelineLogs, activeViewRange);
+  const timerRangeLabel = viewMode === 'month' ? 'This month' : viewMode === 'week' ? 'This week' : 'This day';
+  const getProjectTimeLabel = (source, title) => {
+    const key = projectTimerKey(source, title);
+    const minutes = projectTimeTotals.inRange ? projectTimeTotals.inRange.get(key) : projectTimeTotals.all.get(key);
+    return minutes > 0 ? formatMinutes(minutes) : '';
+  };
+  const getProjectTimeTooltip = (source, title) => {
+    const key = projectTimerKey(source, title);
+    const all = projectTimeTotals.all.get(key) || 0;
+    if (all <= 0) return '';
+    const range = projectTimeTotals.inRange ? ` · ${timerRangeLabel}: ${formatMinutes(projectTimeTotals.inRange.get(key) || 0)}` : '';
+    return `All time: ${formatMinutes(all)}${range}`;
+  };
+  const startProjectTimer = (source, title, meta) => {
+    // Any existing entry of the project is a usable reference: it tells the
+    // server which database to write to and which project to link.
+    const referenceLog = timelineLogs.find((l) => (l.source || 'Activity Log') === source && (l.Projects || 'Untitled Project') === title && !l.facets);
+    if (!referenceLog) return;
+    // meta is the sidebar row's own type group, so the finished session
+    // lands under the same heading the user started it from.
+    projectTimer.start({
+      key: projectTimerKey(source, title),
+      title,
+      source,
+      referenceLogId: referenceLog.id,
+      projectType: meta?.projectType ?? referenceLog.projectType,
+      projectTypeColor: meta?.projectTypeColor ?? referenceLog.projectTypeColor,
+    });
+  };
+  const isTimerRunningFor = (source, title) => (
+    !!projectTimer.timer && !projectTimer.timer.endedAt && projectTimer.timer.project.key === projectTimerKey(source, title)
+  );
+  // Passed to every mobile VisibleProjectsPanel.
+  const timerPanelProps = {
+    getTimeLabel: getProjectTimeLabel,
+    isTimerRunningFor,
+    onStartTimer: startProjectTimer,
+    onStopTimer: projectTimer.stop,
   };
 
   // Same tree-shaped project list getYearProjects always returned, just
@@ -2901,6 +2998,21 @@ function App() {
         )}
       </header>
 
+      {/* PROJECT TIMER -- appears only while a timer is running (or just
+          saved/failed to save); see ProjectTimer.jsx. */}
+      {(projectTimer.timer || projectTimer.notice) && viewMode !== 'import' && (
+        <div className="shrink-0 flex justify-end mb-2">
+          <TimerChip
+            timer={projectTimer.timer}
+            saving={projectTimer.saving}
+            notice={projectTimer.notice}
+            onStop={projectTimer.stop}
+            onDiscard={projectTimer.discard}
+            onRetry={projectTimer.retry}
+          />
+        </div>
+      )}
+
       {/* GLOBAL LOADING / ERROR ALERTS */}
       {isLoading && (
         <div style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="absolute top-20 left-1/2 -translate-x-1/2 z-40 backdrop-blur border px-6 py-3 rounded-full shadow-lg flex items-center gap-3 text-sm font-semibold">
@@ -3119,6 +3231,31 @@ function App() {
                                     >
                                       <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20 shadow-sm" style={{ backgroundColor: projectDotHex }} />
                                       <span className="truncate flex-1">{p.title}</span>
+                                      {getProjectTimeLabel(source, p.title) && (
+                                        <span
+                                          title={getProjectTimeTooltip(source, p.title)}
+                                          className="shrink-0 text-[10px] font-semibold tabular-nums opacity-60"
+                                        >
+                                          {getProjectTimeLabel(source, p.title)}
+                                        </span>
+                                      )}
+                                      {(() => {
+                                        const timing = isTimerRunningFor(source, p.title);
+                                        return (
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              if (timing) projectTimer.stop(); else startProjectTimer(source, p.title, { projectType: p.projectType, projectTypeColor: p.projectTypeColor });
+                                            }}
+                                            title={timing ? `Stop and save the timer on "${p.title}"` : `Start a timer on "${p.title}"`}
+                                            aria-label={timing ? `Stop timer on ${p.title}` : `Start timer on ${p.title}`}
+                                            style={timing ? { color: 'var(--theme-primary)' } : undefined}
+                                            className={`shrink-0 w-5 h-5 flex items-center justify-center rounded cursor-pointer text-[10px] leading-none hover:opacity-100 hover:scale-110 transition-all ${timing ? 'opacity-100 font-black' : 'opacity-50'}`}
+                                          >
+                                            {timing ? '■' : '▶︎'}
+                                          </button>
+                                        );
+                                      })()}
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
@@ -3536,6 +3673,7 @@ function App() {
                     onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
                     hoveredProjectTitle={hoveredProjectTitle}
                     onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
+                    {...timerPanelProps}
                     onGoToGallery={(title, source) => {
                       setPreGalleryViewMode(viewMode);
                       pushBackEntry({ viewMode, currentDate, galleryTarget });
@@ -3829,6 +3967,7 @@ function App() {
                       onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
                       hoveredProjectTitle={hoveredProjectTitle}
                       onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
+                      {...timerPanelProps}
                       onGoToGallery={(title, source) => {
                         setPreGalleryViewMode(viewMode);
                         pushBackEntry({ viewMode, currentDate, galleryTarget });
@@ -4205,6 +4344,7 @@ function App() {
                     onToggleSource={(source) => setMobilePanelCollapsedSources((prev) => ({ ...prev, [source]: !prev[source] }))}
                     hoveredProjectTitle={hoveredProjectTitle}
                     onTogglePill={(name) => setHoveredProjectTitle(hoveredProjectTitle === name ? null : name)}
+                    {...timerPanelProps}
                     onGoToGallery={(title, source) => {
                       setPreGalleryViewMode(viewMode);
                       pushBackEntry({ viewMode, currentDate, galleryTarget });

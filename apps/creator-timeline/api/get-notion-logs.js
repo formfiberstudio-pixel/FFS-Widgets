@@ -4,6 +4,7 @@ import { getTenant, saveTenant, LICENSE_REVERIFY_MS } from './_lib/tenantStore.j
 import { verifyGumroadLicense } from './_lib/gumroad.js';
 import { getCachedRelationTitle, setCachedRelationTitle, getCachedBlockData, setCachedBlockData } from './_lib/notionCache.js';
 import { notionFetch, mapWithConcurrency } from './_lib/notionFetch.js';
+import { extractMinutes } from './_lib/timeTracking.js';
 
 // Notion's own rate limit is an average of ~3 requests/second per
 // integration -- this bounds how many rows' relation/block/cross-check
@@ -620,6 +621,11 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
 
       const imageUrl = toThumbnailUrl(rawImageUrl);
 
+      // Tracked time (see _lib/timeTracking.js) -- only attached to rows
+      // that actually have some, so the many ordinary entries stay as light
+      // as before.
+      const minutes = extractMinutes(props, pageContent);
+
       return {
         id: page.id,
         source: sourceLabel,
@@ -631,6 +637,7 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
         projectType: typeName,
         projectTypeColor: typeColor,
         ...(facets ? { facets } : {}),
+        ...(minutes > 0 ? { minutes } : {}),
         imageUrl,
         pageContent,
         pageContentBlockId,

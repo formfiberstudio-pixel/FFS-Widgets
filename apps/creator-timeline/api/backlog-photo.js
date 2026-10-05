@@ -3,6 +3,7 @@ import { getTenant, saveTenant, LICENSE_REVERIFY_MS } from './_lib/tenantStore.j
 import { verifyGumroadLicense } from './_lib/gumroad.js';
 import { notionFetch } from './_lib/notionFetch.js';
 import { uploadImageToNotion } from './_lib/notionUpload.js';
+import { buildSessionNote, buildSessionProperties, formatMinutesLabel } from './_lib/timeTracking.js';
 
 // Needs the newer version for file_uploads (see notionUpload.js) -- used
 // for every call in this file, including the plain pages.retrieve/pages.create
@@ -34,10 +35,15 @@ const NOTION_VERSION = '2026-03-11';
 // file rather than its own route purely to stay under Vercel Hobby's
 // 12-serverless-function ceiling; it shares nothing with the photo path
 // except the tenant/license/token boilerplate below.
+//
+// And action: 'logTime' -- saving a stopped project-timer session as a
+// text-only log page (title "⏱ 1h 20m", a "⏱ 80 min" body line, and a
+// minutes Number property when the database has one), shaped from the
+// same kind of reference page the photo path uses. See _lib/timeTracking.js.
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
 
@@ -50,6 +56,11 @@ export default async function handler(req, res) {
   } else if (action === 'createProject') {
     if (!referenceLogId) return res.status(400).json({ error: 'Missing referenceLogId' });
     if (typeof newProjectTitle !== 'string' || !newProjectTitle.trim()) return res.status(400).json({ error: 'Project name cannot be empty' });
+  } else if (action === 'logTime') {
+    if (!referenceLogId) return res.status(400).json({ error: 'Missing referenceLogId' });
+    // 24h cap: a timer left running overnight shouldn't silently log days.
+    if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) return res.status(400).json({ error: 'Time must be between 1 minute and 24 hours' });
+    if (typeof dateTaken !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateTaken)) return res.status(400).json({ error: 'Missing or invalid date' });
   } else {
     if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
     if (!pageId) {
@@ -242,6 +253,51 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, projectPageId: createData.id });
     } catch (err) {
       console.error('[backlog-photo] createProject failed:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  if (action === 'logTime') {
+    try {
+      const refRes = await notionFetch(`https://api.notion.com/v1/pages/${referenceLogId}`, { method: 'GET', headers });
+      if (!refRes.ok) {
+        const errData = await refRes.json().catch(() => ({}));
+        return res.status(400).json({ error: errData.message || 'Could not read the reference log entry.' });
+      }
+      const refPage = await refRes.json();
+      const databaseId = refPage.parent?.database_id;
+      if (!databaseId) return res.status(400).json({ error: 'Reference log entry is not part of a database.' });
+
+      const sessionTitle = `⏱ ${formatMinutesLabel(minutes)}`;
+      const { properties, hasRelation } = buildSessionProperties(refPage.properties, {
+        title: sessionTitle,
+        dateStr: dateTaken,
+        minutes,
+        projectPageId,
+      });
+      // An entry with no project link would just float unattributed on the
+      // calendar and never count toward any project's total.
+      if (!hasRelation) return res.status(400).json({ error: 'Could not find the project link on this database.' });
+
+      const createRes = await notionFetch('https://api.notion.com/v1/pages', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          parent: { database_id: databaseId },
+          properties,
+          children: [{
+            object: 'block',
+            type: 'paragraph',
+            paragraph: { rich_text: [{ text: { content: buildSessionNote({ minutes, startLabel, endLabel }) } }] },
+          }],
+        }),
+      });
+      const createData = await createRes.json();
+      if (createData.object === 'error') return res.status(400).json({ error: createData.message });
+
+      return res.status(200).json({ success: true, pageId: createData.id, title: sessionTitle });
+    } catch (err) {
+      console.error('[backlog-photo] logTime failed:', err.message);
       return res.status(500).json({ error: err.message });
     }
   }
