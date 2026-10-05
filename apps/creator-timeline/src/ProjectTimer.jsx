@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { clockLabel, dialSweepDegrees, formatClock, formatDuration, formatMinutes, localDateString } from './timeFormat.js';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { clockLabel, dialSweepDegrees, formatClock, formatDuration, formatMinutes, localDateString, timerElapsedMs } from './timeFormat.js';
 
 // One running timer per tenant, kept in localStorage so a reload (or the
 // Android WebView being reclaimed) doesn't lose it. Elapsed time is always
@@ -29,8 +29,11 @@ function writeStored(key, timer) {
 }
 
 // timer shape: { project: { key, title, source, referenceLogId }, startedAt,
-// endedAt?, error? }. endedAt/error only exist while a finished session
-// failed to save and is waiting on Retry or Discard.
+// pausedMs?, pausedAt?, endedAt?, error? }. pausedAt is set only while the
+// timer is paused and pausedMs totals the pauses already resumed from, so
+// time spent = timerElapsedMs() (see timeFormat.js), never wall-clock span.
+// endedAt/error only exist while a finished session failed to save and is
+// waiting on Retry or Discard.
 export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
   // Demo mode has no tenant; the timer then runs entirely locally.
   const key = tenantId || (isDemoMode ? 'demo' : null);
@@ -62,7 +65,7 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
   // Saves a finished session; true on success. On failure the session stays
   // in the chip (with the error) so no tracked time is lost.
   const save = useCallback(async (session, endedAt) => {
-    const minutes = Math.round((endedAt - session.startedAt) / 60000);
+    const minutes = Math.round(timerElapsedMs({ ...session, endedAt }) / 60000);
     const started = new Date(session.startedAt);
     const ended = new Date(endedAt);
     const dateStr = localDateString(started);
@@ -105,8 +108,10 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
 
   const stop = useCallback(async () => {
     if (!timer || timer.endedAt) return false;
-    const endedAt = Date.now();
-    if (endedAt - timer.startedAt < 60000) {
+    // Stopping while paused ends the session at the moment of the pause, so
+    // the time spent paused isn't counted.
+    const endedAt = timer.pausedAt ?? Date.now();
+    if (timerElapsedMs({ ...timer, endedAt }) < 60000) {
       commit(null);
       flash('Under a minute, so it wasn’t logged');
       return true;
@@ -126,12 +131,23 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
 
   const discard = useCallback(() => commit(null), [commit]);
 
+  const pause = useCallback(() => {
+    if (!timer || timer.endedAt || timer.pausedAt) return;
+    commit({ ...timer, pausedAt: Date.now() });
+  }, [timer, commit]);
+
+  const resume = useCallback(() => {
+    if (!timer || timer.endedAt || !timer.pausedAt) return;
+    const { pausedAt, ...running } = timer;
+    commit({ ...running, pausedMs: (timer.pausedMs || 0) + (Date.now() - pausedAt) });
+  }, [timer, commit]);
+
   const retry = useCallback(() => {
     if (!timer?.endedAt) return;
-    save({ project: timer.project, startedAt: timer.startedAt }, timer.endedAt);
+    save({ project: timer.project, startedAt: timer.startedAt, pausedMs: timer.pausedMs }, timer.endedAt);
   }, [timer, save]);
 
-  return { timer, saving, notice, start, stop, discard, retry };
+  return { timer, saving, notice, start, stop, discard, retry, pause, resume };
 }
 
 // Ticks once a second, only while `active`, and re-reads the clock when the
@@ -140,9 +156,11 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
 // re-rendering the whole calendar.
 function useNow(active) {
   const [now, setNow] = useState(() => Date.now());
+  // Refresh before paint when ticking (re)starts, so resuming from a pause
+  // never shows a frame computed from the stale pre-pause clock.
+  useLayoutEffect(() => { if (active) setNow(Date.now()); }, [active]);
   useEffect(() => {
     if (!active) return undefined;
-    setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     const onVisible = () => setNow(Date.now());
     document.addEventListener('visibilitychange', onVisible);
@@ -157,13 +175,13 @@ function useNow(active) {
 // Show the running time in the browser tab, and put the title back after.
 // Whichever of the chip / sidebar card is on screen calls this -- never both
 // at once (see App), or they would fight over document.title.
-function useTabTitle(running, elapsedSeconds, projectTitle) {
+function useTabTitle(live, paused, elapsedSeconds, projectTitle) {
   useEffect(() => {
-    if (!running) return undefined;
+    if (!live) return undefined;
     const original = document.title;
-    document.title = `${formatDuration(elapsedSeconds * 1000)} · ${projectTitle}`;
+    document.title = `${paused ? 'Paused ' : ''}${formatDuration(elapsedSeconds * 1000)} · ${projectTitle}`;
     return () => { document.title = original; };
-  }, [running, elapsedSeconds, projectTitle]);
+  }, [live, paused, elapsedSeconds, projectTitle]);
 }
 
 // Two-step discard: the first press arms it, and it disarms by itself.
@@ -182,13 +200,14 @@ function useTwoStepDiscard(onDiscard) {
 
 const chipButtonClass = 'shrink-0 px-2 py-0.5 rounded-full border text-[11px] font-bold cursor-pointer disabled:opacity-50';
 
-export function TimerChip({ timer, saving, notice, onStop, onDiscard, onRetry }) {
-  const running = !!timer && !timer.endedAt;
-  const now = useNow(running);
-  const elapsed = timer ? (timer.endedAt ?? now) - timer.startedAt : 0;
+export function TimerChip({ timer, saving, notice, onStop, onDiscard, onRetry, onPause, onResume }) {
+  const live = !!timer && !timer.endedAt; // not finished (running or paused)
+  const paused = live && !!timer.pausedAt;
+  const now = useNow(live && !paused);
+  const elapsed = timer ? timerElapsedMs(timer, now) : 0;
   const elapsedSeconds = Math.floor(elapsed / 1000);
   const [discardArmed, pressDiscard] = useTwoStepDiscard(onDiscard);
-  useTabTitle(running, elapsedSeconds, timer?.project.title);
+  useTabTitle(live, paused, elapsedSeconds, timer?.project.title);
 
   if (!timer && !notice) return null;
 
@@ -203,9 +222,21 @@ export function TimerChip({ timer, saving, notice, onStop, onDiscard, onRetry })
     >
       {timer ? (
         <>
-          <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'animate-pulse' : ''}`} style={{ backgroundColor: 'var(--theme-primary)' }} />
+          <span className={`w-2 h-2 rounded-full shrink-0 ${live && !paused ? 'animate-pulse' : ''}`} style={{ backgroundColor: 'var(--theme-primary)' }} />
           <span className="truncate min-w-0 font-semibold" title={timer.project.title}>{timer.project.title}</span>
-          <span className="shrink-0 font-bold tabular-nums">{formatDuration(elapsed)}</span>
+          <span className={`shrink-0 font-bold tabular-nums ${paused ? 'opacity-60' : ''}`}>{formatDuration(elapsed)}</span>
+          {live && (
+            <button
+              onClick={paused ? onResume : onPause}
+              disabled={saving}
+              title={paused ? 'Resume the timer' : 'Pause the timer'}
+              aria-label={paused ? `Resume the timer on ${timer.project.title}` : `Pause the timer on ${timer.project.title}`}
+              style={{ ...outline, borderColor: 'var(--theme-primary)' }}
+              className={`${chipButtonClass} flex items-center`}
+            >
+              {paused ? <PlayIcon size={12} /> : <PauseIcon size={12} />}
+            </button>
+          )}
           {timer.error ? (
             <>
               <span className="truncate min-w-0 opacity-70" title={timer.error}>Couldn&rsquo;t save</span>
@@ -244,19 +275,38 @@ function sectorPath(cx, cy, r, degrees) {
 
 const roundButtonClass = 'w-11 h-11 rounded-full border-2 flex items-center justify-center text-base leading-none cursor-pointer disabled:opacity-50 transition-transform hover:scale-105';
 
+const PauseIcon = ({ size = 18 }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true">
+    <rect x="6" y="5" width="4" height="14" rx="1" />
+    <rect x="14" y="5" width="4" height="14" rx="1" />
+  </svg>
+);
+
+const PlayIcon = ({ size = 18 }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true">
+    <path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" />
+  </svg>
+);
+
 // The sidebar's spotlight on the project being tracked: a dial that fills
 // round the hour (45:24 in is three-quarters full) with the clock in its
 // middle, echoing the Life Log timer. Tints come from --theme-primary at a
 // partial opacity rather than a fixed colour, so the digits (--theme-text)
 // stay readable on every theme preset. Rendered instead of TimerChip while
 // the sidebar is open, so only one of them ever ticks.
-export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry }) {
-  const running = !timer.endedAt;
-  const now = useNow(running);
-  const elapsed = (timer.endedAt ?? now) - timer.startedAt;
+//
+// The whole dial -- digits included, since they're SVG text -- scales with
+// the card's width, so it follows the sidebar as it's dragged wider or
+// narrower (and fills the phone overlay). It's capped so a very wide
+// sidebar or a short window never lets it swallow the project list.
+export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry, onPause, onResume }) {
+  const live = !timer.endedAt; // not finished (running or paused)
+  const paused = live && !!timer.pausedAt;
+  const now = useNow(live && !paused);
+  const elapsed = timerElapsedMs(timer, now);
   const elapsedSeconds = Math.floor(elapsed / 1000);
   const [discardArmed, pressDiscard] = useTwoStepDiscard(onDiscard);
-  useTabTitle(running, elapsedSeconds, timer.project.title);
+  useTabTitle(live, paused, elapsedSeconds, timer.project.title);
 
   const degrees = dialSweepDegrees(elapsed);
   const detail = [
@@ -264,6 +314,7 @@ export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, 
     `Started ${clockLabel(new Date(timer.startedAt))}`,
   ].filter(Boolean).join(' · ');
   const outline = { backgroundColor: 'var(--theme-card)', color: 'var(--theme-text)' };
+  const eyebrow = !live ? 'Not saved yet' : paused ? 'Paused' : 'Now tracking';
 
   return (
     <section
@@ -272,28 +323,40 @@ export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, 
       style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-primary)', color: 'var(--theme-text)' }}
     >
       <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider opacity-70">
-        <span className={`w-2 h-2 rounded-full ${running ? 'animate-pulse' : ''}`} style={{ backgroundColor: 'var(--theme-primary)' }} />
-        {running ? 'Now tracking' : 'Not saved yet'}
+        <span className={`w-2 h-2 rounded-full ${live && !paused ? 'animate-pulse' : ''}`} style={{ backgroundColor: 'var(--theme-primary)' }} />
+        {eyebrow}
       </div>
       <div className="w-full text-sm font-bold leading-snug line-clamp-2 break-words" title={timer.project.title}>{timer.project.title}</div>
 
-      <div className="relative w-[136px] h-[136px] my-1">
-        <svg viewBox="0 0 160 160" className="absolute inset-0 w-full h-full" aria-hidden="true">
+      <div
+        role="timer"
+        aria-label={`${paused ? 'Paused at ' : 'Elapsed '}${formatDuration(elapsed)}`}
+        className="my-1 aspect-square"
+        style={{ width: 'min(100%, 240px, 32vh)' }}
+      >
+        <svg viewBox="0 0 160 160" className="block w-full h-full" aria-hidden="true">
           <circle cx="80" cy="80" r="74" fill="var(--theme-primary)" fillOpacity="0.14" stroke="var(--theme-primary)" strokeOpacity="0.5" strokeWidth="2" />
-          {degrees > 0 && <path d={sectorPath(80, 80, 74, degrees)} fill="var(--theme-primary)" fillOpacity="0.45" />}
+          {degrees > 0 && <path d={sectorPath(80, 80, 74, degrees)} fill="var(--theme-primary)" fillOpacity={paused ? 0.3 : 0.45} />}
           {[0, 90, 180, 270].map((deg) => (
             <line key={deg} x1="80" y1="9" x2="80" y2="17" stroke="var(--theme-text)" strokeOpacity="0.35" strokeWidth="2" strokeLinecap="round" transform={`rotate(${deg} 80 80)`} />
           ))}
           {/* Marker on the sweep's leading edge, kept to the rim so it never crosses the digits. */}
           <line x1="80" y1="6" x2="80" y2="22" stroke="var(--theme-primary)" strokeWidth="3.5" strokeLinecap="round" transform={`rotate(${degrees} 80 80)`} />
+          <text
+            x="80"
+            y="80"
+            textAnchor="middle"
+            dominantBaseline="central"
+            fontSize="27"
+            fontWeight="700"
+            letterSpacing="-0.5"
+            fill="var(--theme-text)"
+            fillOpacity={paused ? 0.6 : 1}
+            style={{ fontVariantNumeric: 'tabular-nums' }}
+          >
+            {formatClock(elapsed)}
+          </text>
         </svg>
-        <div
-          role="timer"
-          aria-label={`Elapsed ${formatDuration(elapsed)}`}
-          className="absolute inset-0 flex items-center justify-center text-[23px] font-bold tabular-nums tracking-tight"
-        >
-          {formatClock(elapsed)}
-        </div>
       </div>
 
       <div className="text-[11px] opacity-70">{detail}</div>
@@ -305,7 +368,21 @@ export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, 
         </div>
       )}
 
-      <div className="flex items-start justify-center gap-5 mt-2">
+      <div className="flex flex-wrap items-start justify-center gap-x-4 gap-y-2 mt-2">
+        {live && (
+          <div className="flex flex-col items-center gap-1">
+            <button
+              onClick={paused ? onResume : onPause}
+              disabled={saving}
+              aria-label={paused ? `Resume the timer on ${timer.project.title}` : `Pause the timer on ${timer.project.title}`}
+              style={{ ...outline, borderColor: 'var(--theme-primary)' }}
+              className={roundButtonClass}
+            >
+              {paused ? <PlayIcon /> : <PauseIcon />}
+            </button>
+            <span className="text-[10px] font-semibold opacity-70">{paused ? 'Resume' : 'Pause'}</span>
+          </div>
+        )}
         <div className="flex flex-col items-center gap-1">
           {timer.error ? (
             <button onClick={onRetry} disabled={saving} aria-label="Retry saving this session" style={{ ...outline, borderColor: 'var(--theme-primary)' }} className={roundButtonClass}>{saving ? '…' : '↻'}</button>

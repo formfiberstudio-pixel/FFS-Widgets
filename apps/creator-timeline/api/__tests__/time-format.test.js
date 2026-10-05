@@ -5,6 +5,7 @@ import {
   formatDuration,
   formatClock,
   dialSweepDegrees,
+  timerElapsedMs,
   formatMinutes,
   clockLabel,
   localDateString,
@@ -35,6 +36,23 @@ test('dialSweepDegrees sweeps once round per hour and never reaches 360', () => 
   assert.equal(dialSweepDegrees(3_600_000), 0); // wraps at the hour
   assert.equal(dialSweepDegrees(3_600_000 + 30 * 60_000), 180);
   assert.equal(dialSweepDegrees(-5_000), 0);
+});
+
+test('timerElapsedMs subtracts pauses and freezes while paused or ended', () => {
+  const MIN = 60_000;
+  const t0 = 1_000_000;
+  // Running, never paused.
+  assert.equal(timerElapsedMs({ startedAt: t0 }, t0 + 10 * MIN), 10 * MIN);
+  // Running after a 4-minute pause that already ended.
+  assert.equal(timerElapsedMs({ startedAt: t0, pausedMs: 4 * MIN }, t0 + 10 * MIN), 6 * MIN);
+  // Paused now: the clock stands at the moment of the pause, however late `now` is.
+  assert.equal(timerElapsedMs({ startedAt: t0, pausedAt: t0 + 7 * MIN }, t0 + 60 * MIN), 7 * MIN);
+  assert.equal(timerElapsedMs({ startedAt: t0, pausedMs: 2 * MIN, pausedAt: t0 + 7 * MIN }, t0 + 60 * MIN), 5 * MIN);
+  // Finished: endedAt wins, even over a leftover pausedAt.
+  assert.equal(timerElapsedMs({ startedAt: t0, pausedMs: MIN, endedAt: t0 + 9 * MIN }, t0 + 60 * MIN), 8 * MIN);
+  assert.equal(timerElapsedMs({ startedAt: t0, pausedAt: t0 + 9 * MIN, endedAt: t0 + 9 * MIN }, t0 + 60 * MIN), 9 * MIN);
+  // Never negative (clock adjustments).
+  assert.equal(timerElapsedMs({ startedAt: t0 }, t0 - 5 * MIN), 0);
 });
 
 test('formatMinutes matches the server-side session title format', () => {

@@ -16,6 +16,14 @@ export function formatDuration(ms) {
   return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+// Time actually spent on a timer, in ms: wall-clock since it started, minus
+// every stretch it sat paused. The clock stops at `endedAt` once finished,
+// and at `pausedAt` while paused (`pausedMs` is the pauses already ended).
+export function timerElapsedMs(timer, now = Date.now()) {
+  const end = timer.endedAt ?? timer.pausedAt ?? now;
+  return Math.max(0, end - timer.startedAt - (timer.pausedMs || 0));
+}
+
 // Same clock with a two-digit hour, as the big dial shows it: "00:45:24"
 export const formatClock = (ms) => formatDuration(ms).padStart(8, '0');
 

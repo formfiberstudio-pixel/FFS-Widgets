@@ -3013,6 +3013,8 @@ function App() {
             onStop={projectTimer.stop}
             onDiscard={projectTimer.discard}
             onRetry={projectTimer.retry}
+            onPause={projectTimer.pause}
+            onResume={projectTimer.resume}
           />
         </div>
       )}
@@ -3098,6 +3100,8 @@ function App() {
                   onStop={projectTimer.stop}
                   onDiscard={projectTimer.discard}
                   onRetry={projectTimer.retry}
+                  onPause={projectTimer.pause}
+                  onResume={projectTimer.resume}
                 />
               </div>
             )}
