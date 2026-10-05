@@ -3,7 +3,7 @@ import { getTenant, saveTenant, LICENSE_REVERIFY_MS } from './_lib/tenantStore.j
 import { verifyGumroadLicense } from './_lib/gumroad.js';
 import { notionFetch } from './_lib/notionFetch.js';
 import { uploadImageToNotion } from './_lib/notionUpload.js';
-import { buildSessionNote, buildSessionProperties, formatMinutesLabel } from './_lib/timeTracking.js';
+import { buildSessionNote, buildSessionProperties, formatMinutesLabel, sanitizeSessionNotes, toRichTextChunks } from './_lib/timeTracking.js';
 
 // Needs the newer version for file_uploads (see notionUpload.js) -- used
 // for every call in this file, including the plain pages.retrieve/pages.create
@@ -43,7 +43,7 @@ const NOTION_VERSION = '2026-03-11';
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
 
@@ -61,6 +61,7 @@ export default async function handler(req, res) {
     // 24h cap: a timer left running overnight shouldn't silently log days.
     if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) return res.status(400).json({ error: 'Time must be between 1 minute and 24 hours' });
     if (typeof dateTaken !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateTaken)) return res.status(400).json({ error: 'Missing or invalid date' });
+    if (notes !== undefined && !Array.isArray(notes)) return res.status(400).json({ error: 'Invalid notes' });
   } else {
     if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
     if (!pageId) {
@@ -288,7 +289,7 @@ export default async function handler(req, res) {
           children: [{
             object: 'block',
             type: 'paragraph',
-            paragraph: { rich_text: [{ text: { content: buildSessionNote({ minutes, startLabel, endLabel }) } }] },
+            paragraph: { rich_text: toRichTextChunks(buildSessionNote({ minutes, startLabel, endLabel, notes: sanitizeSessionNotes(notes) })) },
           }],
         }),
       });

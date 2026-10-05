@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import themeTokens from '../tokens.json';
 import ActivationPanel from './ActivationPanel.jsx';
 import { useProjectTimer, TimerChip, ActiveTimerCard } from './ProjectTimer.jsx';
-import { formatMinutes, projectTimerKey, sumProjectMinutes } from './timeFormat.js';
+import { buildSessionNoteText, formatMinutes, projectTimerKey, sumProjectMinutes } from './timeFormat.js';
 import { copyToClipboard } from './clipboard.js';
 import {
   isFacetedSource,
@@ -270,6 +270,48 @@ const IconUpload = () => (
 // BUILT-IN THEME PRESETS
 // -------------------------------------------------------------
 const DEFAULT_THEME_PRESETS = [
+  // Life Log design system (design-tokens.json), connected to the Create
+  // pillar: bg=paper, card=surface, border=hairline, text=ink,
+  // primary=pillar-create, secondary=pillar-create-ink. onPrimary and
+  // onSecondary are the text colours for sitting ON those two fills -- the
+  // doc's rule is dark ink on a pillar fill, never white (white on the
+  // Create amber measures 2.24:1). `design` carries what colours can't:
+  // the type families (Reflection serif / Utility sans) and the corner
+  // radii (radius-md for cards and cells, radius-lg for panels); it is
+  // only applied to presets that have it, and buttons become pills (see
+  // index.css). This is the default look.
+  {
+    id: 'life-log-workshop',
+    name: 'Life Log Workshop',
+    isCustom: false,
+    design: {
+      fonts: {
+        serif: '"Newsreader", Georgia, serif',
+        sans: '"DM Sans", "Helvetica Neue", Arial, sans-serif',
+      },
+      radius: { sm: 8, md: 14, lg: 22 },
+    },
+    light: {
+      bg: '#FAF6F5',
+      card: '#FFFDFC',
+      border: '#DDD4D2',
+      text: '#28242A',
+      primary: '#E2A12F',
+      secondary: '#8A5A0E',
+      onPrimary: '#28242A',
+      onSecondary: '#FFFFFF',
+    },
+    dark: {
+      bg: '#1B1A1D',
+      card: '#222024',
+      border: '#3E3A3F',
+      text: '#F1ECEA',
+      primary: '#E2A12F',
+      secondary: '#E2A12F',
+      onPrimary: '#1B1A1D',
+      onSecondary: '#1B1A1D',
+    },
+  },
   {
     id: 'default-rose',
     name: 'Default Rose',
@@ -352,30 +394,6 @@ const DEFAULT_THEME_PRESETS = [
       text: '#F3E8FF',
       primary: '#E879F9',
       secondary: '#22D3EE',
-    },
-  },
-  // Life Log design system (design-tokens.json), connected to the Create
-  // pillar: bg=paper, card=surface, border=hairline, text=ink,
-  // primary=pillar-create, secondary=pillar-create-ink.
-  {
-    id: 'life-log-workshop',
-    name: 'Life Log Workshop',
-    isCustom: false,
-    light: {
-      bg: '#FAF6F5',
-      card: '#FFFDFC',
-      border: '#DDD4D2',
-      text: '#28242A',
-      primary: '#E2A12F',
-      secondary: '#8A5A0E',
-    },
-    dark: {
-      bg: '#1B1A1D',
-      card: '#222024',
-      border: '#3E3A3F',
-      text: '#F1ECEA',
-      primary: '#E2A12F',
-      secondary: '#E2A12F',
     },
   },
 ];
@@ -803,14 +821,14 @@ function WeekDayColumn({
       >
         <div 
           className={`rounded-full flex items-center justify-center font-bold shadow-sm border transition-all ${
-            isTodayDate && !hasLog ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''
+            isTodayDate && !hasLog ? 'ring-2 ring-[var(--theme-primary)]' : ''
           }`} 
           style={{
             width: `${dotPx}px`,
             height: `${dotPx}px`,
             fontSize: `${dotFontPx}px`,
             background: isTodayDate && !hasLog ? 'var(--theme-primary)' : dotStyle.bg,
-            color: isTodayDate && !hasLog ? '#FFFFFF' : dotStyle.text,
+            color: isTodayDate && !hasLog ? 'var(--theme-on-primary)' : dotStyle.text,
             borderColor: dotStyle.border
           }}
         >
@@ -958,6 +976,9 @@ function WeekDayColumn({
 // MAIN APP COMPONENT
 // -------------------------------------------------------------
 const MOBILE_BREAKPOINT = 640;
+// Set once a browser has been through the move to the Life Log default look.
+const DESIGN_REFRESH_KEY = 'notionWidgetDesignRefresh';
+const DESIGN_REFRESH_VALUE = 'life-log-v1';
 
 // Mobile Month view's continuous scroll shows exactly this many week rows
 // at once (scroll-snapped, see monthScrollContainerRef) -- the row/cell
@@ -977,8 +998,8 @@ function ClusterJumpButtons({ hasPrev, hasNext, onPrev, onNext }) {
   // busy calendar grid rather than at a clean panel edge, and needed the
   // extra contrast to actually read as a button there instead of
   // blending into whatever day cells happen to be behind it.
-  const buttonClass = 'absolute left-1/2 -translate-x-1/2 z-20 w-8 h-8 rounded-full flex items-center justify-center cursor-pointer shadow-lg text-white opacity-85 hover:opacity-100 transition-opacity';
-  const buttonStyle = { backgroundColor: 'var(--theme-primary)' };
+  const buttonClass = 'absolute left-1/2 -translate-x-1/2 z-20 w-8 h-8 rounded-full flex items-center justify-center cursor-pointer shadow-lg opacity-85 hover:opacity-100 transition-opacity';
+  const buttonStyle = { backgroundColor: 'var(--theme-primary)', color: 'var(--theme-on-primary)' };
   return (
     <>
       {hasPrev && (
@@ -1306,9 +1327,16 @@ function App() {
     return saved ? JSON.parse(saved) : [];
   });
 
+  // Life Log Workshop is the default look. This browser only remembers the
+  // theme id it last saved -- and the old default ('default-rose') was
+  // saved on first load, so it can't be told apart from a deliberate pick.
+  // Anyone still on it is therefore carried over ONCE (the refresh flag is
+  // written alongside the id below), and can switch back in Settings.
   const [activeThemeId, setActiveThemeId] = useState(() => {
     const saved = localStorage.getItem('notionWidgetActiveThemeId');
-    return saved || 'default-rose';
+    const alreadyRefreshed = localStorage.getItem(DESIGN_REFRESH_KEY);
+    if (!saved || (!alreadyRefreshed && saved === 'default-rose')) return 'life-log-workshop';
+    return saved;
   });
 
   const [settingsTab, setSettingsTab] = useState('notion'); 
@@ -1320,6 +1348,7 @@ function App() {
 
   useEffect(() => {
     localStorage.setItem('notionWidgetActiveThemeId', activeThemeId);
+    localStorage.setItem(DESIGN_REFRESH_KEY, DESIGN_REFRESH_VALUE);
   }, [activeThemeId]);
 
   const allThemes = [...DEFAULT_THEME_PRESETS, ...customThemes];
@@ -1485,7 +1514,7 @@ function App() {
   // state as a log entry (same shape the sync returns) so the calendar and
   // the per-project totals update without waiting for the next sync, whose
   // full replace of timelineLogs brings the same page back by id.
-  const handleSessionSaved = ({ id, project, minutes, dateStr, startLabel, endLabel }) => {
+  const handleSessionSaved = ({ id, project, minutes, dateStr, startLabel, endLabel, notes }) => {
     const [y, m, d] = dateStr.split('-').map(Number);
     setTimelineLogs((prev) => [...prev, {
       id,
@@ -1498,7 +1527,7 @@ function App() {
       projectType: project.projectType || 'General',
       projectTypeColor: project.projectTypeColor,
       imageUrl: null,
-      pageContent: `⏱ ${minutes} min · ${startLabel}–${endLabel}`,
+      pageContent: buildSessionNoteText({ minutes, startLabel, endLabel, notes }),
       pageContentBlockId: null,
       pageContentBlockType: null,
       minutes,
@@ -1564,6 +1593,7 @@ function App() {
       isCustom: true,
       light: { ...sourceTheme.light },
       dark: { ...sourceTheme.dark },
+      ...(sourceTheme.design ? { design: sourceTheme.design } : {}),
     };
     setCustomThemes(prev => [...prev, newCustomTheme]);
     setActiveThemeId(newThemeId);
@@ -1877,7 +1907,10 @@ function App() {
   };
 
   const gap = themeTokens?.layout?.gridGap?.$value ?? 12;
-  const cardRadius = themeTokens?.card?.radius?.$value ?? 6;
+  const cardRadius = activeTheme.design?.radius?.md ?? themeTokens?.card?.radius?.$value ?? 6;
+  const panelRadius = activeTheme.design?.radius?.lg ?? cardRadius;
+  // The phone's month cells are narrow tiles (~45px wide): radius-md would turn them into capsules.
+  const tileRadius = activeTheme.design?.radius?.sm ?? cardRadius;
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -2584,7 +2617,13 @@ function App() {
   // header with room to spare; on a phone it alone was eating a big chunk
   // of the vertical space the calendar needs.
   const titleBigSize = isMobile ? '2.1rem' : '3.25rem';
-  const titleSubSize = isMobile ? '0.95rem' : '1.15rem';
+  const titleSubSize = activeTheme.design ? (isMobile ? '1.4rem' : '1.9rem') : (isMobile ? '0.95rem' : '1.15rem');
+  // Under a design preset the headings use its serif at regular weight, and
+  // the month / weekday line sheds the uppercase black-weight look.
+  const serifTitleFace = activeTheme.design ? { fontFamily: 'var(--theme-font-serif)', fontWeight: 400 } : null;
+  const serifSubFace = activeTheme.design
+    ? { fontFamily: 'var(--theme-font-serif)', fontWeight: 400, textTransform: 'none', letterSpacing: 0, lineHeight: 1.1 }
+    : null;
   const titleGallerySize = isMobile ? '1.25rem' : '1.6rem';
 
   // -------------------------------------------------------------
@@ -2597,7 +2636,24 @@ function App() {
     '--theme-text': currentThemeColors.text,
     '--theme-primary': currentThemeColors.primary,
     '--theme-secondary': currentThemeColors.secondary,
+    // Text colour for sitting on the accent fills (white unless the theme
+    // says otherwise -- see the Life Log preset).
+    '--theme-on-primary': currentThemeColors.onPrimary || '#FFFFFF',
+    '--theme-on-secondary': currentThemeColors.onSecondary || '#FFFFFF',
+    ...(activeTheme.design ? {
+      '--theme-font-serif': activeTheme.design.fonts.serif,
+      '--theme-font-sans': activeTheme.design.fonts.sans,
+      '--theme-radius-sm': `${activeTheme.design.radius.sm}px`,
+      '--theme-radius-md': `${activeTheme.design.radius.md}px`,
+      '--theme-radius-lg': `${activeTheme.design.radius.lg}px`,
+    } : {}),
   };
+  // Utility type for the whole app (tabular figures, as the doc asks for
+  // dates), and the hook index.css uses for pill buttons.
+  const designRootStyle = activeTheme.design
+    ? { fontFamily: 'var(--theme-font-sans)', fontVariantNumeric: 'tabular-nums' }
+    : {};
+  const designAttr = activeTheme.design ? 'life-log' : undefined;
 
   // Keeps an installed (standalone-window) PWA's title bar in sync with
   // the app's own background -- otherwise Chrome falls back to a default
@@ -2634,7 +2690,8 @@ function App() {
 
     return (
       <div
-        style={{ ...themeVars, backgroundColor: 'var(--theme-bg)', color: 'var(--theme-text)' }}
+        style={{ ...themeVars, ...designRootStyle, backgroundColor: 'var(--theme-bg)', color: 'var(--theme-text)' }}
+        data-design={designAttr}
         className="w-full h-screen flex flex-col items-center p-6 overflow-y-auto transition-colors duration-300"
       >
         <div className="w-full max-w-xl space-y-4 py-8">
@@ -2668,7 +2725,8 @@ function App() {
       // viewport; h-screen stays as a fallback for browsers that don't
       // support dvh (an unparsed value is dropped, not applied, so the
       // class's 100vh takes over for those).
-      style={{ ...themeVars, backgroundColor: 'var(--theme-bg)', color: 'var(--theme-text)', height: '100dvh' }}
+      style={{ ...themeVars, ...designRootStyle, backgroundColor: 'var(--theme-bg)', color: 'var(--theme-text)', height: '100dvh' }}
+      data-design={designAttr}
       className="w-full h-screen flex flex-col p-4 sm:p-6 overflow-hidden select-none transition-colors duration-300"
     >
 
@@ -2742,11 +2800,11 @@ function App() {
                       onClick={() => setViewMode('year')}
                       title="Jump to Year view"
                       className="block font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
-                      style={{ fontSize: titleBigSize, color: 'var(--theme-primary)' }}
+                      style={{ fontSize: titleBigSize, color: 'var(--theme-primary)', ...serifTitleFace }}
                     >
                       {mYear}
                     </button>
-                    <div className="font-black uppercase tracking-wide mt-0.5" style={{ fontSize: titleSubSize }}>
+                    <div className="font-black uppercase tracking-wide mt-0.5" style={{ fontSize: titleSubSize, ...serifSubFace }}>
                       {mLabel}
                     </div>
                   </>
@@ -2759,7 +2817,7 @@ function App() {
                 onClick={() => setViewMode('year')}
                 title="Jump to Year view"
                 className="block font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
-                style={{ fontSize: titleBigSize, color: 'var(--theme-primary)' }}
+                style={{ fontSize: titleBigSize, color: 'var(--theme-primary)', ...serifTitleFace }}
               >
                 {currentDate.getFullYear()}
               </button>
@@ -2767,11 +2825,11 @@ function App() {
                 onClick={() => setViewMode('month')}
                 title="Jump to Month view"
                 className="block font-black uppercase tracking-wide mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
-                style={{ fontSize: titleSubSize }}
+                style={{ fontSize: titleSubSize, ...serifSubFace }}
               >
                 {currentDate.toLocaleDateString('en-US', { weekday: 'long' })}
               </button>
-              <div className="font-black uppercase tracking-wide" style={{ fontSize: titleSubSize }}>
+              <div className="font-black uppercase tracking-wide" style={{ fontSize: titleSubSize, ...serifSubFace }}>
                 {currentDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               </div>
             </div>
@@ -2781,7 +2839,7 @@ function App() {
                 onClick={() => setViewMode('year')}
                 title="Jump to Year view"
                 className="block font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
-                style={{ fontSize: titleBigSize, color: 'var(--theme-primary)' }}
+                style={{ fontSize: titleBigSize, color: 'var(--theme-primary)', ...serifTitleFace }}
               >
                 {endOfWeek?.getFullYear()}
               </button>
@@ -2789,13 +2847,13 @@ function App() {
                 onClick={() => setViewMode('month')}
                 title="Jump to Month view"
                 className="block font-black uppercase tracking-wide mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
-                style={{ fontSize: titleSubSize }}
+                style={{ fontSize: titleSubSize, ...serifSubFace }}
               >
                 {startOfWeek?.getMonth() === endOfWeek?.getMonth()
                   ? startOfWeek?.toLocaleDateString('en-US', { month: 'long' })
                   : `${startOfWeek?.toLocaleDateString('en-US', { month: 'short' })} – ${endOfWeek?.toLocaleDateString('en-US', { month: 'short' })}`}
               </button>
-              <div className="font-black uppercase tracking-wide" style={{ fontSize: titleSubSize }}>
+              <div className="font-black uppercase tracking-wide" style={{ fontSize: titleSubSize, ...serifSubFace }}>
                 {startOfWeek?.getDate()}–{endOfWeek?.getDate()}
               </div>
             </div>
@@ -2813,7 +2871,7 @@ function App() {
               )}
               <div
                 className="font-light tracking-tight leading-none"
-                style={{ fontSize: titleBigSize, color: 'var(--theme-primary)' }}
+                style={{ fontSize: titleBigSize, color: 'var(--theme-primary)', ...serifTitleFace }}
               >
                 {year}
               </div>
@@ -3060,7 +3118,7 @@ function App() {
           <aside
             style={{
               width: isMobile ? undefined : `${sidebarWidth}px`,
-              borderRadius: isMobile ? 0 : `${cardRadius}px`,
+              borderRadius: isMobile ? 0 : `${panelRadius}px`,
               backgroundColor: 'var(--theme-card)',
               borderColor: 'var(--theme-border)',
             }}
@@ -3102,6 +3160,8 @@ function App() {
                   onRetry={projectTimer.retry}
                   onPause={projectTimer.pause}
                   onResume={projectTimer.resume}
+                  onAddNote={projectTimer.addNote}
+                  onRemoveNote={projectTimer.removeNote}
                 />
               </div>
             )}
@@ -3356,7 +3416,7 @@ function App() {
           onTouchStart={handleCalendarTouchStart}
           onTouchEnd={handleCalendarTouchEnd}
           style={{
-            borderRadius: isMobile ? 0 : `${cardRadius}px`,
+            borderRadius: isMobile ? 0 : `${panelRadius}px`,
             backgroundColor: isMobile ? 'transparent' : 'var(--theme-card)',
             borderColor: 'var(--theme-border)',
           }}
@@ -3580,7 +3640,7 @@ function App() {
                         height: `${MOBILE_MONTH_ROW_HEIGHT}px`,
                         scrollSnapAlign: 'start',
                         backgroundColor: isSelectedWeek ? 'color-mix(in srgb, var(--theme-primary) 12%, transparent)' : undefined,
-                        borderRadius: `${cardRadius}px`,
+                        borderRadius: `${tileRadius}px`,
                       }}
                       className="grid shrink-0 transition-colors -mx-1 px-1"
                     >
@@ -3604,7 +3664,7 @@ function App() {
                           <div
                             key={dIdx}
                             onClick={() => handleMonthDayTap(dateObj)}
-                            style={{ borderRadius: `${cardRadius}px`, backgroundColor: 'var(--theme-bg)', borderColor: isHighlightedProject ? 'var(--theme-secondary)' : isSelectedWeek ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                            style={{ borderRadius: `${tileRadius}px`, backgroundColor: 'var(--theme-bg)', borderColor: isHighlightedProject ? 'var(--theme-secondary)' : isSelectedWeek ? 'var(--theme-primary)' : 'var(--theme-border)' }}
                             // ring-inset (not ring-offset) throughout -- an
                             // outset ring/offset needs a few px of space
                             // outside the cell to render into, which the
@@ -3631,20 +3691,20 @@ function App() {
                               </div>
                             ) : null}
                             <div
-                              className={`absolute top-1 left-1 flex items-center justify-center font-bold shadow-sm border z-10 transition-opacity ${isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''} ${isDimmedByHighlight ? 'opacity-40' : ''}`}
+                              className={`absolute top-1 left-1 flex items-center justify-center font-bold shadow-sm border z-10 transition-opacity ${isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)]' : ''} ${isDimmedByHighlight ? 'opacity-40' : ''}`}
                               style={{
                                 width: '18px',
                                 height: '18px',
                                 borderRadius: '9px',
                                 fontSize: '9px',
                                 background: isToday(dateObj) ? 'var(--theme-primary)' : dotStyle.bg,
-                                color: isToday(dateObj) ? '#FFFFFF' : dotStyle.text,
+                                color: isToday(dateObj) ? 'var(--theme-on-primary)' : dotStyle.text,
                                 borderColor: dotStyle.border,
                               }}
                             >
                               {dateObj.getDate()}
                               {hasMultipleProjects && (
-                                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-white text-[6px] font-black flex items-center justify-center leading-none border border-white shadow-xs" style={{ backgroundColor: 'var(--theme-secondary)' }}>+</span>
+                                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-[6px] font-black flex items-center justify-center leading-none border border-white shadow-xs" style={{ backgroundColor: 'var(--theme-secondary)', color: 'var(--theme-on-secondary)' }}>+</span>
                               )}
                             </div>
                           </div>
@@ -3796,20 +3856,20 @@ function App() {
                             <div className="absolute top-2 left-2 right-2 flex items-center gap-1.5 z-10 pointer-events-none">
                               <div
                                 className={`rounded-full flex items-center justify-center font-bold shadow-sm border transition-opacity duration-200 pointer-events-auto relative shrink-0 ${
-                                  isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)] text-white' : ''
+                                  isToday(dateObj) ? 'ring-2 ring-[var(--theme-primary)]' : ''
                                 } ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
                                 style={{
                                   width: `${monthDotPx}px`,
                                   height: `${monthDotPx}px`,
                                   fontSize: `${monthDotFontPx}px`,
                                   background: isToday(dateObj) ? 'var(--theme-primary)' : dotStyle.bg,
-                                  color: isToday(dateObj) ? '#FFFFFF' : dotStyle.text,
+                                  color: isToday(dateObj) ? 'var(--theme-on-primary)' : dotStyle.text,
                                   borderColor: dotStyle.border
                                 }}
                               >
                                 {dateObj.getDate()}
                                 {hasMultipleProjects && (
-                                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full text-white text-[7px] font-black flex items-center justify-center leading-none p-0 border border-white shadow-sm select-none" style={{ backgroundColor: 'var(--theme-secondary)' }}>
+                                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full text-[7px] font-black flex items-center justify-center leading-none p-0 border border-white shadow-sm select-none" style={{ backgroundColor: 'var(--theme-secondary)', color: 'var(--theme-on-secondary)' }}>
                                     +
                                   </span>
                                 )}
@@ -4044,7 +4104,7 @@ function App() {
                   <div className={`flex-1 h-[2px] mx-1 transition-all flex items-center justify-center ${
                     isResizingCardHeight ? 'shadow-md' : ''
                   }`} style={{ backgroundColor: 'var(--theme-primary)' }}>
-                    <div className="text-white text-[9px] font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 transition-transform" style={{ backgroundColor: 'var(--theme-primary)' }}>
+                    <div className="text-[9px] font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 transition-transform" style={{ backgroundColor: 'var(--theme-primary)', color: 'var(--theme-on-primary)' }}>
                       <span>↕ PULL TO RESIZE</span>
                       <span className="font-mono">({Math.round(weekCardHeight)}px)</span>
                     </div>
@@ -4515,7 +4575,7 @@ function App() {
                                 >
                                   {targetDayNum}
                                   {hasMultipleProjects && (
-                                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-white text-[6px] font-black flex items-center justify-center leading-none p-0 border border-white/80 shadow-xs select-none" style={{ backgroundColor: 'var(--theme-secondary)' }}>
+                                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-[6px] font-black flex items-center justify-center leading-none p-0 border border-white/80 shadow-xs select-none" style={{ backgroundColor: 'var(--theme-secondary)', color: 'var(--theme-on-secondary)' }}>
                                       +
                                     </span>
                                   )}
@@ -4638,7 +4698,7 @@ function App() {
                                   >
                                     {targetDayNum}
                                     {hasMultipleProjects && (
-                                      <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-white text-[6px] font-black flex items-center justify-center leading-none p-0 border border-white/80 shadow-xs select-none" style={{ backgroundColor: 'var(--theme-secondary)' }}>
+                                      <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-[6px] font-black flex items-center justify-center leading-none p-0 border border-white/80 shadow-xs select-none" style={{ backgroundColor: 'var(--theme-secondary)', color: 'var(--theme-on-secondary)' }}>
                                         +
                                       </span>
                                     )}
@@ -4844,8 +4904,8 @@ function App() {
 
                     <button 
                       onClick={() => handleDuplicateTheme(activeTheme)}
-                      style={{ backgroundColor: 'var(--theme-primary)' }}
-                      className="px-3 py-2 text-xs font-bold text-white rounded cursor-pointer shadow-xs hover:opacity-90 shrink-0 flex items-center gap-1"
+                      style={{ backgroundColor: 'var(--theme-primary)', color: 'var(--theme-on-primary)' }}
+                      className="px-3 py-2 text-xs font-bold rounded cursor-pointer shadow-xs hover:opacity-90 shrink-0 flex items-center gap-1"
                     >
                       <IconPlus />
                       <span>Duplicate</span>
@@ -5003,7 +5063,7 @@ function App() {
                 <div className="p-4 border rounded-xl space-y-3 shadow-xs" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                   <div className="flex items-center justify-between border-b pb-2" style={{ borderColor: 'var(--theme-border)' }}>
                     <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Live Baseline Preview ({viewScale}%)</span>
-                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded text-white" style={{ backgroundColor: 'var(--theme-primary)' }}>
+                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded" style={{ backgroundColor: 'var(--theme-primary)', color: 'var(--theme-on-primary)' }}>
                       Dot: {monthDotPx}px | Font: {cardTitleFontPx}px
                     </span>
                   </div>
@@ -5012,7 +5072,7 @@ function App() {
                     <div className="flex flex-col items-center gap-2">
                       <div className="flex items-center gap-2 p-2 rounded-lg border shadow-xs" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
                         <div 
-                          className="rounded-full flex items-center justify-center font-bold text-white shadow-sm border border-white/80 transition-all shrink-0" 
+                          className="rounded-full flex items-center justify-center font-bold text-[color:var(--theme-on-primary)] shadow-sm border border-white/80 transition-all shrink-0" 
                           style={{ 
                             width: `${monthDotPx}px`, 
                             height: `${monthDotPx}px`, 
@@ -5023,7 +5083,7 @@ function App() {
                           23
                         </div>
                         <span 
-                          className="font-bold text-white px-2.5 py-0.5 rounded-full leading-none shadow-xs truncate max-w-[120px]" 
+                          className="font-bold text-[color:var(--theme-on-primary)] px-2.5 py-0.5 rounded-full leading-none shadow-xs truncate max-w-[120px]" 
                           style={{ backgroundColor: 'var(--theme-primary)', fontSize: `${projectTagFontPx}px` }}
                         >
                           Creator's App
@@ -5037,7 +5097,7 @@ function App() {
                     <div className="flex flex-col items-center gap-2">
                       <div className="p-3 rounded-lg border flex items-center justify-center shadow-xs" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
                         <div 
-                          className="rounded-full flex items-center justify-center font-bold text-white shadow-sm border border-white/80 transition-all" 
+                          className="rounded-full flex items-center justify-center font-bold text-[color:var(--theme-on-primary)] shadow-sm border border-white/80 transition-all" 
                           style={{ 
                             width: `${yearDotPx}px`, 
                             height: `${yearDotPx}px`, 
@@ -5094,7 +5154,7 @@ function App() {
                         style={{ 
                           backgroundColor: viewScale === preset.val ? 'var(--theme-primary)' : 'var(--theme-bg)',
                           borderColor: viewScale === preset.val ? 'var(--theme-primary)' : 'var(--theme-border)',
-                          color: viewScale === preset.val ? '#FFFFFF' : 'var(--theme-text)'
+                          color: viewScale === preset.val ? 'var(--theme-on-primary)' : 'var(--theme-text)'
                         }}
                         className="py-2 rounded border text-center transition-all cursor-pointer hover:border-[var(--theme-primary)]"
                       >
@@ -5334,7 +5394,7 @@ function App() {
                             ) : (
                               <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block" style={{ color: getDotColor(log), borderColor: getDotColor(log) }}>{log.projectType}</span>
                             )}
-                            <span className={`text-xs font-bold px-2.5 py-1 rounded-full shrink-0 ${isThumbnail ? 'bg-[var(--theme-secondary)] text-white' : 'opacity-60'}`}>
+                            <span className={`text-xs font-bold px-2.5 py-1 rounded-full shrink-0 ${isThumbnail ? 'bg-[var(--theme-secondary)] text-[color:var(--theme-on-secondary)]' : 'opacity-60'}`}>
                               {isThumbnail ? '★ Current Thumbnail' : 'Click to set as thumbnail'}
                             </span>
                           </div>
@@ -5375,7 +5435,7 @@ function App() {
                               <div className={`flex-1 h-[2px] mx-1 transition-all flex items-center justify-center ${
                                 isResizingDayModalHeight ? 'shadow-md' : ''
                               }`} style={{ backgroundColor: 'var(--theme-primary)' }}>
-                                <div className="text-white text-[9px] font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 transition-transform" style={{ backgroundColor: 'var(--theme-primary)' }}>
+                                <div className="text-[9px] font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 transition-transform" style={{ backgroundColor: 'var(--theme-primary)', color: 'var(--theme-on-primary)' }}>
                                   <span>↕ PULL TO RESIZE</span>
                                   <span className="font-mono">({Math.round(dayModalImageHeight)}px)</span>
                                 </div>

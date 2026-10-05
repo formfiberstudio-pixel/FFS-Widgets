@@ -50,3 +50,11 @@
     background-color: rgba(140, 140, 140, 0.75);
   }
 }
+
+/* Life Log design system: buttons are pills (radius-pill, 999px). Scoped to
+   the data-design hook the app puts on its root under a theme preset that
+   carries a `design` (fonts + radii) -- see DEFAULT_THEME_PRESETS in
+   App.jsx. Unlayered, so it wins over Tailwind's utilities. */
+[data-design="life-log"] button.rounded-md.border:not(.w-5) {
+  border-radius: 999px;
+}

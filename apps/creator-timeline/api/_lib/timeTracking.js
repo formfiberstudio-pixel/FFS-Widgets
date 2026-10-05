@@ -31,10 +31,56 @@ export function formatMinutesLabel(minutes) {
   return `${rest}m`;
 }
 
-// "⏱ 80 min · 14:05–15:25" (the range is omitted when either end is missing)
-export function buildSessionNote({ minutes, startLabel, endLabel }) {
+// Notes jotted while the timer ran: [{ at: "14:12", text }] in, a cleaned
+// list out. Anything that isn't a non-empty text note is dropped, runs of
+// whitespace (incl. newlines) collapse so each note stays one line, and the
+// list and each note are capped. client: src/timeFormat.js mirrors the caps.
+export const MAX_SESSION_NOTES = 50;
+export const MAX_SESSION_NOTE_LENGTH = 500;
+
+export function sanitizeSessionNotes(notes) {
+  if (!Array.isArray(notes)) return [];
+  const clean = [];
+  for (const note of notes) {
+    const text = typeof note?.text === 'string' ? note.text.replace(/\s+/g, ' ').trim().slice(0, MAX_SESSION_NOTE_LENGTH) : '';
+    if (!text) continue;
+    const at = typeof note.at === 'string' && /^\d{2}:\d{2}$/.test(note.at) ? note.at : '';
+    clean.push({ at, text });
+    if (clean.length >= MAX_SESSION_NOTES) break;
+  }
+  return clean;
+}
+
+// "⏱ 80 min · 14:05–15:25" (the range is omitted when either end is
+// missing), then one "14:12 · note" line per note. Everything lives in the
+// ONE first paragraph of the page on purpose: that first text block is the
+// note the calendar shows for an entry (see findImageAndTextInBlocks in
+// get-notion-logs.js), so the notes show up there too, and the minutes
+// marker stays on line 1 where parseMinutesFromNote finds it first.
+export function buildSessionNote({ minutes, startLabel, endLabel, notes = [] }) {
   const range = startLabel && endLabel ? ` · ${startLabel}–${endLabel}` : '';
-  return `${TIME_MARKER} ${Math.round(minutes)} min${range}`;
+  const lines = [`${TIME_MARKER} ${Math.round(minutes)} min${range}`];
+  for (const note of notes) lines.push(note.at ? `${note.at} · ${note.text}` : note.text);
+  return lines.join('\n');
+}
+
+// Notion caps one rich_text object at 2000 characters, so a long note
+// list is split into several objects inside the same paragraph block,
+// breaking only between lines.
+export function toRichTextChunks(text, limit = 2000) {
+  const lines = String(text).split('\n');
+  const chunks = [];
+  let current = '';
+  lines.forEach((line, i) => {
+    const piece = i < lines.length - 1 ? `${line}\n` : line;
+    if (current && current.length + piece.length > limit) {
+      chunks.push(current);
+      current = '';
+    }
+    current += piece;
+  });
+  if (current) chunks.push(current);
+  return chunks.map((content) => ({ text: { content } }));
 }
 
 export function parseMinutesFromNote(text) {

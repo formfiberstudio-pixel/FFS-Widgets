@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { clockLabel, dialSweepDegrees, formatClock, formatDuration, formatMinutes, localDateString, timerElapsedMs } from './timeFormat.js';
+import { cleanNoteText, clockLabel, dialSweepDegrees, formatClock, formatDuration, formatMinutes, localDateString, MAX_SESSION_NOTE_LENGTH, MAX_SESSION_NOTES, timerElapsedMs } from './timeFormat.js';
 
 // One running timer per tenant, kept in localStorage so a reload (or the
 // Android WebView being reclaimed) doesn't lose it. Elapsed time is always
@@ -29,7 +29,9 @@ function writeStored(key, timer) {
 }
 
 // timer shape: { project: { key, title, source, referenceLogId }, startedAt,
-// pausedMs?, pausedAt?, endedAt?, error? }. pausedAt is set only while the
+// pausedMs?, pausedAt?, notes?, endedAt?, error? }. notes is the list of
+// { at: ms timestamp, text } jotted while it ran, uploaded with the session
+// when it's stopped. pausedAt is set only while the
 // timer is paused and pausedMs totals the pauses already resumed from, so
 // time spent = timerElapsedMs() (see timeFormat.js), never wall-clock span.
 // endedAt/error only exist while a finished session failed to save and is
@@ -65,7 +67,10 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
   // Saves a finished session; true on success. On failure the session stays
   // in the chip (with the error) so no tracked time is lost.
   const save = useCallback(async (session, endedAt) => {
-    const minutes = Math.round(timerElapsedMs({ ...session, endedAt }) / 60000);
+    const notes = (session.notes || []).map((n) => ({ at: clockLabel(new Date(n.at)), text: n.text }));
+    // A session under a minute is normally dropped (see stop), but one with
+    // notes is kept as 1 minute so what was written isn't lost.
+    const minutes = Math.max(notes.length ? 1 : 0, Math.round(timerElapsedMs({ ...session, endedAt }) / 60000));
     const started = new Date(session.startedAt);
     const ended = new Date(endedAt);
     const dateStr = localDateString(started);
@@ -88,6 +93,7 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
             dateTaken: dateStr,
             startLabel,
             endLabel,
+            notes,
           }),
         });
         const result = await response.json().catch(() => ({}));
@@ -95,8 +101,9 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
         pageId = result.pageId;
       }
       commit(null);
-      onSavedRef.current?.({ id: pageId, project: session.project, minutes, dateStr, startLabel, endLabel });
-      flash(`Saved ${formatMinutes(minutes)} to ${session.project.title}${isDemoMode ? ' (demo only)' : ''}`);
+      onSavedRef.current?.({ id: pageId, project: session.project, minutes, dateStr, startLabel, endLabel, notes });
+      const withNotes = notes.length ? ` with ${notes.length} note${notes.length === 1 ? '' : 's'}` : '';
+      flash(`Saved ${formatMinutes(minutes)}${withNotes} to ${session.project.title}${isDemoMode ? ' (demo only)' : ''}`);
       return true;
     } catch (err) {
       commit({ ...session, endedAt, error: err.message || 'Could not save' });
@@ -111,7 +118,7 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     // Stopping while paused ends the session at the moment of the pause, so
     // the time spent paused isn't counted.
     const endedAt = timer.pausedAt ?? Date.now();
-    if (timerElapsedMs({ ...timer, endedAt }) < 60000) {
+    if (timerElapsedMs({ ...timer, endedAt }) < 60000 && !timer.notes?.length) {
       commit(null);
       flash('Under a minute, so it wasn’t logged');
       return true;
@@ -131,6 +138,21 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
 
   const discard = useCallback(() => commit(null), [commit]);
 
+  const addNote = useCallback((text) => {
+    if (!timer || timer.endedAt) return false;
+    const clean = cleanNoteText(text);
+    if (!clean) return false;
+    const notes = timer.notes || [];
+    if (notes.length >= MAX_SESSION_NOTES) { flash(`That’s the limit of ${MAX_SESSION_NOTES} notes for one session`); return false; }
+    commit({ ...timer, notes: [...notes, { at: Date.now(), text: clean }] });
+    return true;
+  }, [timer, commit, flash]);
+
+  const removeNote = useCallback((index) => {
+    if (!timer || timer.endedAt || !timer.notes?.[index]) return;
+    commit({ ...timer, notes: timer.notes.filter((_, i) => i !== index) });
+  }, [timer, commit]);
+
   const pause = useCallback(() => {
     if (!timer || timer.endedAt || timer.pausedAt) return;
     commit({ ...timer, pausedAt: Date.now() });
@@ -144,10 +166,10 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
 
   const retry = useCallback(() => {
     if (!timer?.endedAt) return;
-    save({ project: timer.project, startedAt: timer.startedAt, pausedMs: timer.pausedMs }, timer.endedAt);
+    save({ project: timer.project, startedAt: timer.startedAt, pausedMs: timer.pausedMs, notes: timer.notes }, timer.endedAt);
   }, [timer, save]);
 
-  return { timer, saving, notice, start, stop, discard, retry, pause, resume };
+  return { timer, saving, notice, start, stop, discard, retry, pause, resume, addNote, removeNote };
 }
 
 // Ticks once a second, only while `active`, and re-reads the clock when the
@@ -288,6 +310,60 @@ const PlayIcon = ({ size = 18 }) => (
   </svg>
 );
 
+// Notes for the running session: a one-line input and the list so far. They
+// stay in the timer (so a reload keeps them) and are uploaded to Notion with
+// the session on Stop. Read-only once the session has ended (a failed save
+// waiting on Retry), so what's kept is still visible but can't change.
+function TimerNotes({ notes, readOnly, onAdd, onRemove }) {
+  const [draft, setDraft] = useState('');
+  const submit = (e) => {
+    e.preventDefault();
+    if (onAdd(draft)) setDraft('');
+  };
+  return (
+    <div className="w-full mt-3 pt-3 border-t text-left" style={{ borderColor: 'var(--theme-border)' }}>
+      <div className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-1.5">
+        Notes{notes.length ? ` · ${notes.length}` : ''}
+      </div>
+      {!readOnly && (
+        <form onSubmit={submit} className="flex items-center gap-1.5">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            maxLength={MAX_SESSION_NOTE_LENGTH}
+            placeholder="Add a note…"
+            aria-label="Add a note to this session"
+            className="select-text min-w-0 flex-1 rounded-full border px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-[var(--theme-primary)]"
+            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+          />
+          <button
+            type="submit"
+            disabled={!cleanNoteText(draft)}
+            className="shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold cursor-pointer disabled:opacity-40 disabled:cursor-default"
+            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-text)' }}
+          >
+            Add
+          </button>
+        </form>
+      )}
+      {notes.length > 0 && (
+        <ul className="mt-2 space-y-1.5 max-h-28 overflow-y-auto pr-1">
+          {notes.map((note, i) => (
+            <li key={`${note.at}-${i}`} className="flex items-start gap-2 text-xs leading-snug">
+              <span className="shrink-0 tabular-nums opacity-60">{clockLabel(new Date(note.at))}</span>
+              <span className="select-text min-w-0 flex-1 break-words">{note.text}</span>
+              {!readOnly && (
+                <button onClick={() => onRemove(i)} aria-label="Remove this note" className="shrink-0 leading-none opacity-50 hover:opacity-100 cursor-pointer">✕</button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {!readOnly && <p className="text-[10px] opacity-60 mt-1.5">Saved to Notion with the session when you stop.</p>}
+    </div>
+  );
+}
+
 // The sidebar's spotlight on the project being tracked: a dial that fills
 // round the hour (45:24 in is three-quarters full) with the clock in its
 // middle, echoing the Life Log timer. Tints come from --theme-primary at a
@@ -299,7 +375,7 @@ const PlayIcon = ({ size = 18 }) => (
 // the card's width, so it follows the sidebar as it's dragged wider or
 // narrower (and fills the phone overlay). It's capped so a very wide
 // sidebar or a short window never lets it swallow the project list.
-export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry, onPause, onResume }) {
+export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry, onPause, onResume, onAddNote, onRemoveNote }) {
   const live = !timer.endedAt; // not finished (running or paused)
   const paused = live && !!timer.pausedAt;
   const now = useNow(live && !paused);
@@ -319,8 +395,8 @@ export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, 
   return (
     <section
       aria-label="Active project timer"
-      className="shrink-0 mb-3 rounded-2xl border p-3 flex flex-col items-center text-center gap-1"
-      style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-primary)', color: 'var(--theme-text)' }}
+      className="shrink-0 mb-3 border p-3 flex flex-col items-center text-center gap-1"
+      style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-primary)', color: 'var(--theme-text)', borderRadius: 'var(--theme-radius-lg, 1rem)' }}
     >
       <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider opacity-70">
         <span className={`w-2 h-2 rounded-full ${live && !paused ? 'animate-pulse' : ''}`} style={{ backgroundColor: 'var(--theme-primary)' }} />
@@ -404,6 +480,8 @@ export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, 
           <span className="text-[10px] font-semibold opacity-70">{discardArmed ? 'Tap again' : 'Discard'}</span>
         </div>
       </div>
+
+      <TimerNotes notes={timer.notes || []} readOnly={!live} onAdd={onAddNote} onRemove={onRemoveNote} />
 
       {notice && <div className="text-[11px] opacity-70 mt-1">{notice}</div>}
     </section>

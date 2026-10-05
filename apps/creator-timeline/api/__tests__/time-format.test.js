@@ -6,12 +6,22 @@ import {
   formatClock,
   dialSweepDegrees,
   timerElapsedMs,
+  buildSessionNoteText,
+  cleanNoteText,
+  MAX_SESSION_NOTES as CLIENT_MAX_NOTES,
+  MAX_SESSION_NOTE_LENGTH as CLIENT_MAX_NOTE_LENGTH,
   formatMinutes,
   clockLabel,
   localDateString,
   sumProjectMinutes,
 } from '../../src/timeFormat.js';
-import { formatMinutesLabel } from '../_lib/timeTracking.js';
+import {
+  formatMinutesLabel,
+  buildSessionNote,
+  sanitizeSessionNotes,
+  MAX_SESSION_NOTES,
+  MAX_SESSION_NOTE_LENGTH,
+} from '../_lib/timeTracking.js';
 
 test('formatDuration renders the running clock', () => {
   assert.equal(formatDuration(0), '0:00:00');
@@ -97,4 +107,23 @@ test('sumProjectMinutes also totals within an inclusive range', () => {
 test('sumProjectMinutes falls back to the same labels the sidebar uses', () => {
   const { all } = sumProjectMinutes([{ year: 2026, monthNumber: 10, dayNumber: 1, minutes: 10 }], null);
   assert.equal(all.get(projectTimerKey('Activity Log', 'Untitled Project')), 10);
+});
+
+test('the client note text matches what the server writes to Notion', () => {
+  for (const input of [
+    { minutes: 80, startLabel: '14:05', endLabel: '15:25', notes: [{ at: '14:12', text: 'outlined the intro' }, { at: '', text: 'undated' }] },
+    { minutes: 1, startLabel: '09:00', endLabel: '09:01', notes: [] },
+    { minutes: 45, notes: [{ at: '10:30', text: 'no range' }] },
+  ]) {
+    assert.equal(buildSessionNoteText(input), buildSessionNote(input));
+  }
+});
+
+test('client and server agree on the note caps and cleaning', () => {
+  assert.equal(CLIENT_MAX_NOTES, MAX_SESSION_NOTES);
+  assert.equal(CLIENT_MAX_NOTE_LENGTH, MAX_SESSION_NOTE_LENGTH);
+  const messy = '  two\nlines   here ' + 'x'.repeat(600);
+  assert.equal(cleanNoteText(messy), sanitizeSessionNotes([{ at: '10:00', text: messy }])[0].text);
+  assert.equal(cleanNoteText('   '), '');
+  assert.equal(cleanNoteText(undefined), '');
 });

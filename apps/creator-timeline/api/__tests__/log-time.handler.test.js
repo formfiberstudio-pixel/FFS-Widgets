@@ -138,3 +138,35 @@ test('logTime surfaces a Notion read failure as a 400 with the message', async (
   assert.equal(res.statusCode, 400);
   assert.match(res.body.error, /unexpected GET/);
 });
+
+test('logTime writes notes into the same first paragraph, under the minutes line', async () => {
+  reset();
+  const res = await call({ ...VALID, notes: [{ at: '14:12', text: 'outlined the intro' }, { at: '14:40', text: 'fixed the thumbnail' }] });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  const create = notionCalls.find((c) => c.method === 'POST');
+  assert.equal(create.body.children.length, 1);
+  const content = create.body.children[0].paragraph.rich_text.map((t) => t.text.content).join('');
+  assert.equal(content, '⏱ 80 min · 14:05–15:25\n14:12 · outlined the intro\n14:40 · fixed the thumbnail');
+});
+
+test('logTime sanitizes notes and splits a very long list across rich_text objects', async () => {
+  reset();
+  const notes = Array.from({ length: 50 }, (_, i) => ({ at: '10:00', text: `${i} ${'w'.repeat(900)}` }));
+  const res = await call({ ...VALID, notes: [...notes, { at: '10:01', text: '   ' }] });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  const create = notionCalls.find((c) => c.method === 'POST');
+  const richText = create.body.children[0].paragraph.rich_text;
+  assert.ok(richText.length > 1);
+  for (const part of richText) assert.ok(part.text.content.length <= 2000);
+  const content = richText.map((t) => t.text.content).join('');
+  assert.equal(content.split('\n').length, 51); // marker + 50 notes; the blank one was dropped
+  assert.equal(content.split('\n')[1].length, '10:00 · '.length + 500); // each note capped at 500
+});
+
+test('logTime rejects notes that are not a list', async () => {
+  reset();
+  const res = await call({ ...VALID, notes: 'remember to call' });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /notes/i);
+  assert.equal(notionCalls.length, 0);
+});

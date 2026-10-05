@@ -74,3 +74,22 @@ export function sumProjectMinutes(logs, range) {
   }
   return { all, inRange };
 }
+
+// Notes jotted while a timer runs, saved with the session. Caps mirror
+// MAX_SESSION_NOTES / MAX_SESSION_NOTE_LENGTH in api/_lib/timeTracking.js.
+export const MAX_SESSION_NOTES = 50;
+export const MAX_SESSION_NOTE_LENGTH = 500;
+
+// One-line, trimmed, length-capped; '' when there's nothing to keep.
+export const cleanNoteText = (text) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_SESSION_NOTE_LENGTH);
+
+// The session's note text exactly as the server writes it into the Notion
+// page (api/_lib/timeTracking.js buildSessionNote), so an entry added locally
+// right after Stop reads the same as it will after the next sync.
+// notes: [{ at: "14:12", text }]
+export function buildSessionNoteText({ minutes, startLabel, endLabel, notes = [] }) {
+  const range = startLabel && endLabel ? ` · ${startLabel}–${endLabel}` : '';
+  const lines = [`⏱ ${Math.round(minutes)} min${range}`];
+  for (const note of notes) lines.push(note.at ? `${note.at} · ${note.text}` : note.text);
+  return lines.join('\n');
+}

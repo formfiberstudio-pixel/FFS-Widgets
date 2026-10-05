@@ -7,6 +7,10 @@ import {
   parseMinutesFromNote,
   extractMinutes,
   buildSessionProperties,
+  sanitizeSessionNotes,
+  toRichTextChunks,
+  MAX_SESSION_NOTES,
+  MAX_SESSION_NOTE_LENGTH,
 } from '../_lib/timeTracking.js';
 
 test('formatMinutesLabel covers minutes only, hours only and both', () => {
@@ -105,4 +109,54 @@ test('buildSessionProperties reports when no project relation could be set', () 
   });
   assert.equal(hasRelation, false);
   assert.equal('Projects' in properties, false);
+});
+
+test('sanitizeSessionNotes keeps real notes, one line each, and drops the rest', () => {
+  const clean = sanitizeSessionNotes([
+    { at: '14:12', text: '  outlined\nthe intro  ' },
+    { at: '14:20', text: '   ' },
+    { at: 'soon', text: 'bad time label' },
+    { text: 'no time at all' },
+    null,
+    'a bare string',
+    { at: '14:30', text: 42 },
+  ]);
+  assert.deepEqual(clean, [
+    { at: '14:12', text: 'outlined the intro' },
+    { at: '', text: 'bad time label' },
+    { at: '', text: 'no time at all' },
+  ]);
+  assert.deepEqual(sanitizeSessionNotes(undefined), []);
+  assert.deepEqual(sanitizeSessionNotes('nope'), []);
+});
+
+test('sanitizeSessionNotes caps the list and each note', () => {
+  const many = Array.from({ length: MAX_SESSION_NOTES + 20 }, (_, i) => ({ at: '10:00', text: `n${i}` }));
+  assert.equal(sanitizeSessionNotes(many).length, MAX_SESSION_NOTES);
+  const [long] = sanitizeSessionNotes([{ at: '10:00', text: 'x'.repeat(MAX_SESSION_NOTE_LENGTH + 100) }]);
+  assert.equal(long.text.length, MAX_SESSION_NOTE_LENGTH);
+});
+
+test('buildSessionNote puts the marker on line 1 and one line per note after it', () => {
+  const text = buildSessionNote({
+    minutes: 80,
+    startLabel: '14:05',
+    endLabel: '15:25',
+    notes: [{ at: '14:12', text: 'outlined the intro' }, { at: '', text: 'undated' }],
+  });
+  assert.equal(text, '⏱ 80 min · 14:05–15:25\n14:12 · outlined the intro\nundated');
+  // The minutes still read back from the first line, even if a note quotes a marker.
+  assert.equal(parseMinutesFromNote(buildSessionNote({ minutes: 80, notes: [{ at: '', text: '⏱ 999 min' }] })), 80);
+  // No notes: exactly the old single line.
+  assert.equal(buildSessionNote({ minutes: 80, startLabel: '14:05', endLabel: '15:25' }), '⏱ 80 min · 14:05–15:25');
+});
+
+test('toRichTextChunks stays under the limit, breaks only between lines, and loses nothing', () => {
+  const lines = Array.from({ length: 40 }, (_, i) => `${i} ${'w'.repeat(480)}`);
+  const text = lines.join('\n');
+  const chunks = toRichTextChunks(text);
+  assert.ok(chunks.length > 1);
+  for (const chunk of chunks) assert.ok(chunk.text.content.length <= 2000);
+  assert.equal(chunks.map((c) => c.text.content).join(''), text);
+  assert.equal(toRichTextChunks('one line').length, 1);
 });
