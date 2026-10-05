@@ -920,23 +920,10 @@ const MOBILE_MONTH_ROW_HEIGHT = 78;
 const MOBILE_MONTH_ROW_GAP = 4;
 const MOBILE_MONTH_VISIBLE_ROWS = 4;
 
-// Desktop Month view's continuous scroll shows this many week rows at
-// once -- unlike mobile's fixed row height (the rest of a phone screen
-// goes to the projects panel below), desktop has no such panel underneath,
-// so instead the row height itself is computed (see desktopMonthRowHeight)
-// to split whatever vertical space the window actually gives it into
-// exactly this many equal rows. User-adjustable (see
-// desktopMonthVisibleRows/handleMouseDownDesktopMonthRowsResize) between
-// these bounds; DESKTOP_MONTH_DEFAULT_VISIBLE_ROWS is only the starting
-// point for someone who's never dragged the handle.
-const DESKTOP_MONTH_MIN_VISIBLE_ROWS = 2;
-const DESKTOP_MONTH_MAX_VISIBLE_ROWS = 10;
-const DESKTOP_MONTH_DEFAULT_VISIBLE_ROWS = 6;
-
-// Floating jump-to-cluster arrows for Month view's continuous scroll
-// (mobile and desktop both use this same component) -- fades in only on
-// whichever end actually has somewhere to jump to (hasPrev/hasNext), so
-// there's never a dead click at either edge of the whole 20-year range.
+// Floating jump-to-cluster arrows for mobile Month view's continuous
+// scroll -- fades in only on whichever end actually has somewhere to jump
+// to (hasPrev/hasNext), so there's never a dead click at either edge of
+// the whole 20-year range.
 function ClusterJumpButtons({ hasPrev, hasNext, onPrev, onNext }) {
   // Solid theme-primary fill (not the card/border treatment most other
   // floating controls here use) -- this one sits directly on top of the
@@ -1051,43 +1038,6 @@ function App() {
   const [mobilePanelCollapsed, setMobilePanelCollapsed] = useState(false);
   const monthScrollContainerRef = useRef(null);
   const monthWeekRowRefs = useRef([]);
-  // Desktop Month view: same continuous-scroll list as mobile
-  // (mobileMonthWeeks, shared verbatim -- it's not actually mobile-specific
-  // data, just named for where it was first built), scrolled with the
-  // mouse wheel instead of paged with Prev/Next. Desktop shows many rows
-  // at once rather than a small fixed window, so unlike mobile's header
-  // (which can straddle two months across its 4 visible rows) this tracks
-  // a single month: whichever row is scrolled nearest the top edge.
-  const desktopMonthScrollContainerRef = useRef(null);
-  const desktopMonthWeekRowRefs = useRef([]);
-  // How many week rows the continuous scroll shows at once -- user-
-  // adjustable via the drag handle at the bottom of the grid (see
-  // handleMouseDownDesktopMonthRowsResize), unlike weekCardHeight's own
-  // resize (a continuous pixel height) this snaps to whole rows so a row
-  // is always either fully in frame or not there at all, never cropped.
-  const [desktopMonthVisibleRows, setDesktopMonthVisibleRows] = useState(() => {
-    const saved = Number(localStorage.getItem('notionWidgetDesktopMonthRows'));
-    return saved >= DESKTOP_MONTH_MIN_VISIBLE_ROWS && saved <= DESKTOP_MONTH_MAX_VISIBLE_ROWS
-      ? saved
-      : DESKTOP_MONTH_DEFAULT_VISIBLE_ROWS;
-  });
-  useEffect(() => {
-    localStorage.setItem('notionWidgetDesktopMonthRows', desktopMonthVisibleRows);
-  }, [desktopMonthVisibleRows]);
-  const [isResizingDesktopMonthRows, setIsResizingDesktopMonthRows] = useState(false);
-  const monthRowDragStartY = useRef(0);
-  const monthRowDragStartCount = useRef(DESKTOP_MONTH_DEFAULT_VISIBLE_ROWS);
-  const monthRowDragStartRowHeight = useRef(130);
-  // Row height that makes exactly desktopMonthVisibleRows rows fill the
-  // container's actual rendered height (see the ResizeObserver effect
-  // below) -- recomputed on resize (or a row-count change) rather than
-  // fixed, since "window height maximized" means the row height itself
-  // has to flex with both the window and however many rows are chosen.
-  const [desktopMonthRowHeight, setDesktopMonthRowHeight] = useState(130);
-  const [desktopMonthVisibleStartIdx, setDesktopMonthVisibleStartIdx] = useState(() => {
-    const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === currentDate.toDateString()));
-    return idx >= 0 ? idx : 0;
-  });
   const [selectedProjectFilters, setSelectedProjectFilters] = useState([]);
   const [selectedLogModal, setSelectedLogModal] = useState(null);
   // Which single project's photo gallery is showing in place of the
@@ -2076,12 +2026,13 @@ function App() {
       return { start: currentDate, end: currentDate };
     }
     if (viewMode === 'month') {
-      // Both Month views are a continuous scroll now (see
-      // mobileMonthWeeks), not one page per month -- currentDate/month no
-      // longer necessarily matches what's actually scrolled into view, so
-      // this keys off the same scroll-tracked row the header label itself
-      // reads (mobileMonthVisibleStartIdx / desktopMonthVisibleStartIdx).
-      const labelDate = (isMobile ? mobileMonthWeeks[mobileMonthVisibleStartIdx]?.[3] : mobileMonthWeeks[desktopMonthVisibleStartIdx]?.[3]) || currentDate;
+      // Mobile Month is a continuous scroll (see mobileMonthWeeks), so
+      // currentDate/month no longer necessarily matches what's actually
+      // scrolled into view -- key off the same scroll-tracked row the
+      // header label itself reads (mobileMonthVisibleStartIdx). Desktop
+      // is one static page per month, so currentDate's month is exact.
+      if (!isMobile) return { start: new Date(year, month, 1), end: new Date(year, month + 1, 0) };
+      const labelDate = mobileMonthWeeks[mobileMonthVisibleStartIdx]?.[3] || currentDate;
       return { start: new Date(labelDate.getFullYear(), labelDate.getMonth(), 1), end: new Date(labelDate.getFullYear(), labelDate.getMonth() + 1, 0) };
     }
     if (viewMode === 'week') {
@@ -2298,22 +2249,22 @@ function App() {
     }
   }
 
+  // Desktop Month view is one static page per month, so it pages by
+  // currentDate's own month; only mobile (a continuous scroll) also has to
+  // move its scroll position to follow.
+  const rows = [];
+  if (viewMode === 'month') {
+    for (let i = 0; i < slots.length; i += 7) {
+      rows.push(slots.slice(i, i + 7));
+    }
+  }
+
   const handlePrev = () => {
     if (viewMode === 'day') { const d = new Date(currentDate); d.setDate(currentDate.getDate() - 1); setCurrentDate(d); }
     else if (viewMode === 'month') {
-      // Desktop's Month view is a continuous scroll now (see
-      // desktopMonthWeeks below), not one page per month -- relative to
-      // whichever month is actually scrolled into view, not currentDate,
-      // which this view no longer re-renders from. Index [3] (Wednesday),
-      // not [0] (Sunday) -- has to match whatever day the header label
-      // above keys off of, or a top row whose Sunday/Wednesday straddle a
-      // month boundary computes a different "current month" than what's
-      // actually displayed, and Prev/Next skips or repeats a month.
-      const anchor = !isMobile ? (mobileMonthWeeks[desktopMonthVisibleStartIdx]?.[3] || currentDate) : currentDate;
-      const target = new Date(anchor.getFullYear(), anchor.getMonth() - 1, 1);
+      const target = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
       setCurrentDate(target);
-      if (!isMobile) scrollDesktopMonthToMonth(target.getFullYear(), target.getMonth());
-      else scrollMobileMonthToDate(target);
+      if (isMobile) scrollMobileMonthToDate(target);
     }
     else if (viewMode === 'week') { const d = new Date(currentDate); d.setDate(currentDate.getDate() - 7); setCurrentDate(d); }
     else setCurrentDate(new Date(currentDate.getFullYear() - 1, currentDate.getMonth(), 1));
@@ -2322,11 +2273,9 @@ function App() {
   const handleNext = () => {
     if (viewMode === 'day') { const d = new Date(currentDate); d.setDate(currentDate.getDate() + 1); setCurrentDate(d); }
     else if (viewMode === 'month') {
-      const anchor = !isMobile ? (mobileMonthWeeks[desktopMonthVisibleStartIdx]?.[3] || currentDate) : currentDate;
-      const target = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 1);
+      const target = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
       setCurrentDate(target);
-      if (!isMobile) scrollDesktopMonthToMonth(target.getFullYear(), target.getMonth());
-      else scrollMobileMonthToDate(target);
+      if (isMobile) scrollMobileMonthToDate(target);
     }
     else if (viewMode === 'week') { const d = new Date(currentDate); d.setDate(currentDate.getDate() + 7); setCurrentDate(d); }
     else setCurrentDate(new Date(currentDate.getFullYear() + 1, currentDate.getMonth(), 1));
@@ -2436,148 +2385,9 @@ function App() {
     if (closestIdx >= 0) setMobileMonthVisibleStartIdx(closestIdx);
   };
 
-  // Keeps exactly desktopMonthVisibleRows rows filling the scroll
-  // container's actual height (itself already maximized via flex-1 in a
-  // h-full column) -- recomputed whenever the container resizes OR the
-  // row count itself changes (dragging the resize handle doesn't resize
-  // the container, so the ResizeObserver alone wouldn't fire for that;
-  // re-running this effect re-attaches the observer, which fires once
-  // immediately on attach, exactly like a real resize would), and
-  // re-attached each time the Month view (re)mounts, since the container
-  // only exists in the DOM while viewMode==='month' && !isMobile.
-  useEffect(() => {
-    const container = desktopMonthScrollContainerRef.current;
-    if (!container) return;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      const rowHeight = (entry.contentRect.height - (desktopMonthVisibleRows - 1) * gap) / desktopMonthVisibleRows;
-      if (rowHeight > 0) setDesktopMonthRowHeight(rowHeight);
-    });
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, [viewMode, isMobile, gap, desktopMonthVisibleRows]);
-
-  // Drag-to-resize for desktopMonthVisibleRows -- same mousedown/move/up
-  // pattern as weekCardHeight's own resize below, but converts the drag
-  // distance into a whole-ROW delta (using the row height captured at
-  // drag-start as the "one row" unit) instead of applying the pixel
-  // delta directly, so it always snaps to a whole number of rows rather
-  // than landing on a fractional height that would crop the last row.
-  // Dragging down makes rows bigger (fewer fit) hence count DECREASES;
-  // dragging up makes rows smaller (more fit) hence count increases --
-  // same down-equals-bigger convention as weekCardHeight's own drag.
-  const handleMouseDownDesktopMonthRowsResize = (e) => {
-    e.preventDefault();
-    setIsResizingDesktopMonthRows(true);
-    monthRowDragStartY.current = e.clientY;
-    monthRowDragStartCount.current = desktopMonthVisibleRows;
-    monthRowDragStartRowHeight.current = desktopMonthRowHeight;
-    document.body.style.cursor = 'ns-resize';
-    document.body.style.userSelect = 'none';
-  };
-
-  useEffect(() => {
-    const handleMouseMove = (e) => {
-      if (!isResizingDesktopMonthRows) return;
-      const deltaY = e.clientY - monthRowDragStartY.current;
-      const rowStep = Math.max(monthRowDragStartRowHeight.current + gap, 24);
-      const deltaRows = Math.round(deltaY / rowStep);
-      const newCount = Math.min(Math.max(monthRowDragStartCount.current - deltaRows, DESKTOP_MONTH_MIN_VISIBLE_ROWS), DESKTOP_MONTH_MAX_VISIBLE_ROWS);
-      setDesktopMonthVisibleRows(newCount);
-    };
-    const handleMouseUp = () => {
-      if (isResizingDesktopMonthRows) {
-        setIsResizingDesktopMonthRows(false);
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-      }
-    };
-    if (isResizingDesktopMonthRows) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
-    }
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isResizingDesktopMonthRows, gap]);
-
-  // Desktop equivalent of handleMonthScroll above -- same "closest row to
-  // the container's top edge" technique, separate index/refs since
-  // desktop's visible window is a different (and non-fixed) size. Ignored
-  // while a programmatic scroll from scrollDesktopMonthToDate is in
-  // flight (see desktopMonthProgrammaticScrollRef) -- that function
-  // already knows the exact correct index, and this handler's own
-  // DOM-measurement-based guess raced with it: a getBoundingClientRect()
-  // read here could land mid-reflow, computing a slightly-off index that
-  // clobbered the correct one Prev/Next had just set, corrupting the
-  // anchor the NEXT click's month math started from.
-  const desktopMonthProgrammaticScrollRef = useRef(false);
-  const handleDesktopMonthScroll = () => {
-    if (desktopMonthProgrammaticScrollRef.current) return;
-    const container = desktopMonthScrollContainerRef.current;
-    if (!container) return;
-    const containerTop = container.getBoundingClientRect().top;
-    let closestIdx = -1;
-    let closestDist = Infinity;
-    desktopMonthWeekRowRefs.current.forEach((el, idx) => {
-      if (!el) return;
-      const dist = Math.abs(el.getBoundingClientRect().top - containerTop);
-      if (dist < closestDist) { closestDist = dist; closestIdx = idx; }
-    });
-    if (closestIdx >= 0) setDesktopMonthVisibleStartIdx(closestIdx);
-  };
-
-  // Scrolls the continuous list so mobileMonthWeeks[idx] lands at the top
-  // of the container, suppressing handleDesktopMonthScroll for the scroll
-  // events that move triggers (see desktopMonthProgrammaticScrollRef) --
-  // shared by both scroll-to-date and scroll-to-month below.
-  const scrollDesktopMonthToRowIndex = (idx) => {
-    if (idx < 0) return;
-    const el = desktopMonthWeekRowRefs.current[idx];
-    if (el) {
-      desktopMonthProgrammaticScrollRef.current = true;
-      // behavior: 'instant' (not the default 'auto', which follows the
-      // container's own scroll-behavior CSS) -- an animated scroll here
-      // would leave the suppression flag below cleared well before the
-      // scroll (and its own scroll events) actually finished.
-      el.scrollIntoView({ block: 'start', behavior: 'instant' });
-      requestAnimationFrame(() => { desktopMonthProgrammaticScrollRef.current = false; });
-    }
-    setDesktopMonthVisibleStartIdx(idx);
-  };
-
-  // Desktop equivalent of scrollMobileMonthToDate -- lands targetDate's
-  // own week at the TOP of the view (desktop shows many rows at once, so
-  // there's no small fixed window to land it at the bottom of the way
-  // mobile does). Only for landing on a SPECIFIC date (the entry-alignment
-  // effect below) -- Prev/Next use scrollDesktopMonthToMonth instead, see
-  // its own comment for why the two can't share this one.
-  const scrollDesktopMonthToDate = (targetDate) => {
-    const targetIso = targetDate.toDateString();
-    const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === targetIso));
-    scrollDesktopMonthToRowIndex(idx);
-  };
-
-  // For Prev/Next: finds the row that will actually be LABELED as
-  // {year, month} -- i.e. whose index [3] (Wednesday, matching the header
-  // label logic above) falls in that month -- rather than the row
-  // containing that month's 1st the way scrollDesktopMonthToDate works.
-  // Those two aren't always the same row: when the 1st lands on a
-  // Thu/Fri/Sat, that row's own Wednesday is still in the PREVIOUS month,
-  // so scrolling to "the row with the 1st in it" would land on a row the
-  // header reads as last month, and the next Prev/Next click -- anchored
-  // on that mislabeled row -- would skip or repeat a month.
-  const scrollDesktopMonthToMonth = (year, month) => {
-    const idx = mobileMonthWeeks.findIndex((week) => week[3].getFullYear() === year && week[3].getMonth() === month);
-    scrollDesktopMonthToRowIndex(idx);
-  };
-
-  // Desktop equivalent already exists (scrollDesktopMonthToRowIndex) --
-  // this is the same "land row idx at the TOP" primitive for mobile,
-  // used by the cluster-jump arrows below (unlike scrollMobileMonthToDate
-  // below, which deliberately lands its target at the BOTTOM instead).
+  // Lands row idx at the TOP of the scroll container -- used by the
+  // cluster-jump arrows (unlike scrollMobileMonthToDate below, which
+  // deliberately lands its target at the BOTTOM instead).
   const scrollMobileMonthToRowIndex = (idx) => {
     const el = monthWeekRowRefs.current[idx];
     if (el) el.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -2603,22 +2413,6 @@ function App() {
     setMobileMonthVisibleStartIdx(topRowIdx);
   };
 
-  // Desktop equivalent of scrollMobileMonthToDate above -- lands
-  // targetDate's week as the LAST (bottom) of the desktopMonthVisibleRows
-  // visible rows instead of the first, same reasoning: landing on a date
-  // should show the weeks leading up to it, not that week plus empty rows
-  // stretching into the future. Only for the Today button; entry-alignment
-  // uses scrollDesktopMonthToDate and Prev/Next uses
-  // scrollDesktopMonthToMonth, both of which land their target at the TOP
-  // (see their own comments for why those two can't share this one).
-  const scrollDesktopMonthToDateAtBottom = (targetDate) => {
-    const targetIso = targetDate.toDateString();
-    const idx = mobileMonthWeeks.findIndex((week) => week.some((d) => d.toDateString() === targetIso));
-    if (idx < 0) return;
-    const topRowIdx = Math.max(0, idx - (desktopMonthVisibleRows - 1));
-    scrollDesktopMonthToRowIndex(topRowIdx);
-  };
-
   // The continuous list otherwise opens scrolled to its top (6 months back
   // -- see buildContinuousWeeks), not to whatever's relevant. Re-align to
   // currentDate every time Month view is entered -- from Year (tapping a
@@ -2629,7 +2423,6 @@ function App() {
   // on entry regardless of how you got there.
   useEffect(() => {
     if (isMobile && viewMode === 'month') scrollMobileMonthToDate(currentDate);
-    else if (!isMobile && viewMode === 'month') scrollDesktopMonthToDate(currentDate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, isMobile]);
 
@@ -2818,17 +2611,7 @@ function App() {
               {(() => {
                 const { year: mYear, label: mLabel } = isMobile
                   ? getMobileMonthHeaderLabel(mobileMonthVisibleStartIdx)
-                  : (() => {
-                      // Desktop's continuous scroll (see desktopMonthWeeks
-                      // below) means there's no single "current" month from
-                      // currentDate alone either -- label whichever week is
-                      // scrolled nearest the top, same idea as mobile just
-                      // without needing a multi-month range (desktop shows
-                      // enough rows at once that straddling two months
-                      // matters less).
-                      const topRowDate = mobileMonthWeeks[desktopMonthVisibleStartIdx]?.[3] || currentDate;
-                      return { year: String(topRowDate.getFullYear()), label: topRowDate.toLocaleDateString('en-US', { month: 'long' }) };
-                    })();
+                  : { year: String(currentDate.getFullYear()), label: currentDate.toLocaleDateString('en-US', { month: 'long' }) };
                 return (
                   <>
                     <button
@@ -3065,16 +2848,7 @@ function App() {
             </div>
 
             <button
-              onClick={() => {
-                // Month view tracks its own scroll position independently
-                // of currentDate (see the entry-alignment effect above,
-                // which only re-syncs the two when Month is first ENTERED,
-                // not on every currentDate change) -- setCurrentDate alone
-                // did nothing visible while already sitting in Month view,
-                // which is what made this button look broken there.
-                if (viewMode === 'month') scrollDesktopMonthToDateAtBottom(today);
-                else setCurrentDate(today);
-              }}
+              onClick={() => setCurrentDate(today)}
               style={{
                 backgroundColor: 'var(--theme-card)',
                 borderColor: 'var(--theme-primary)',
@@ -3761,32 +3535,16 @@ function App() {
                 </div>
               </div>
 
-              {/* Continuous vertical scroll (see mobileMonthWeeks, shared
-                  verbatim with the mobile view above) instead of one page
-                  per month -- a week row is always 7 real dates, so
-                  scrolling from e.g. August into September shows real
-                  trailing/leading days instead of snapping to a new
-                  blank-padded grid. Rows get a fixed height (the old
-                  single-month grid's rows were flex-1, filling whatever
-                  space that month's row count left) so scroll position
-                  maps predictably to a week index for
-                  handleDesktopMonthScroll/scrollDesktopMonthToDate. */}
-              <div className="relative flex-1 min-h-0">
-              <div
-                ref={desktopMonthScrollContainerRef}
-                onScroll={handleDesktopMonthScroll}
-                className="flex flex-col h-full overflow-y-auto overflow-x-hidden"
-                style={{ gap: `${gap}px`, scrollSnapType: 'y mandatory' }}
-              >
-                {mobileMonthWeeks.map((weekDays, rowIndex) => (
-                  <div
-                    key={rowIndex}
-                    ref={(el) => { desktopMonthWeekRowRefs.current[rowIndex] = el; }}
-                    className="flex items-stretch gap-2 shrink-0"
-                    style={{ height: `${desktopMonthRowHeight}px`, scrollSnapAlign: 'start' }}
-                  >
+              {/* Static one-page-per-month grid (rows are flex-1, splitting
+                  whatever height the month's own row count leaves) -- the
+                  continuous scroll mobile uses (mobileMonthWeeks) rendered
+                  tens of thousands of DOM nodes on desktop and felt laggy
+                  and busy there, so only mobile keeps it. */}
+              <div className="flex flex-col flex-1 min-h-0" style={{ gap: `${gap}px` }}>
+                {rows.map((rowSlots, rowIndex) => (
+                  <div key={rowIndex} className="flex-1 flex items-stretch gap-2 min-h-0">
                     <button
-                      onClick={() => { setCurrentDate(weekDays[0]); setViewMode('week'); }}
+                      onClick={() => { const targetSlot = rowSlots.find(s => s.isValid && s.dateObj) || rowSlots[0]; if (targetSlot && targetSlot.dateObj) { setCurrentDate(targetSlot.dateObj); setViewMode('week'); } }}
                       title="Open Weekly View"
                       style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
                       className="w-5 shrink-0 rounded-md transition-all flex items-center justify-center cursor-pointer group border shadow-sm hover:border-[var(--theme-primary)]"
@@ -3794,7 +3552,9 @@ function App() {
                       <span className="text-[10px] font-bold group-hover:scale-125 transition-transform">›</span>
                     </button>
                     <div className="grid w-full flex-1 min-w-0 h-full" style={{ gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: `${gap}px` }}>
-                      {weekDays.map((dateObj, slotIndex) => {
+                      {rowSlots.map((slot, slotIndex) => {
+                        if (!slot.isValid) return <div key={slotIndex} className="h-full w-full opacity-5 rounded-md" style={{ backgroundColor: 'var(--theme-bg)' }} />;
+                        const dateObj = slot.dateObj;
                         const logs = getLogsForDate(dateObj);
                         const hasLog = logs.length > 0;
                         const uniqueProjects = new Set(logs.map(l => l.Projects || 'Untitled Project'));
@@ -3912,63 +3672,6 @@ function App() {
                     </div>
                   </div>
                 ))}
-              </div>
-
-              <ClusterJumpButtons
-                hasPrev={findPrevClusterRowIdx(desktopMonthVisibleStartIdx) !== null}
-                hasNext={findNextClusterRowIdx(desktopMonthVisibleStartIdx) !== null}
-                onPrev={() => {
-                  const idx = findPrevClusterRowIdx(desktopMonthVisibleStartIdx);
-                  if (idx !== null) scrollDesktopMonthToRowIndex(idx);
-                }}
-                onNext={() => {
-                  const idx = findNextClusterRowIdx(desktopMonthVisibleStartIdx);
-                  if (idx !== null) scrollDesktopMonthToRowIndex(idx);
-                }}
-              />
-
-              {/* Drag up/down to change how many week rows are visible
-                  (desktopMonthVisibleRows) -- unlike weekCardHeight's own
-                  resize handle (a free pixel height), the row height here
-                  is always DERIVED from the row count (see the
-                  ResizeObserver effect above), so dragging this snaps to
-                  whole rows instead of landing on a fractional one that
-                  would get cropped. Sits at the bottom of the first
-                  visible row (matching weekCardHeight's own handle, which
-                  sits right after its one reference row) rather than the
-                  bottom of the whole grid -- top is relative to this
-                  wrapper, not the scrolled content, so it tracks
-                  whichever row is currently topmost regardless of scroll
-                  position. */}
-              <div
-                onMouseDown={handleMouseDownDesktopMonthRowsResize}
-                className={`group/handle absolute left-0 right-0 -translate-y-1/2 z-30 h-6 flex items-center justify-between cursor-ns-resize transition-opacity duration-150 ${
-                  isResizingDesktopMonthRows ? 'opacity-100' : 'opacity-0 hover:opacity-100'
-                }`}
-                style={{ top: `${desktopMonthRowHeight}px` }}
-                title="Click & drag up/down to change how many week rows are visible"
-              >
-                <div className="pl-0.5 flex items-center pointer-events-none">
-                  <svg className="w-2.5 h-3 drop-shadow-xs" style={{ fill: 'var(--theme-primary)' }} viewBox="0 0 8 10">
-                    <polygon points="0,0 8,5 0,10" />
-                  </svg>
-                </div>
-
-                <div className={`flex-1 h-[2px] mx-1 transition-all flex items-center justify-center ${
-                  isResizingDesktopMonthRows ? 'shadow-md' : ''
-                }`} style={{ backgroundColor: 'var(--theme-primary)' }}>
-                  <div className="text-white text-[9px] font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 transition-transform" style={{ backgroundColor: 'var(--theme-primary)' }}>
-                    <span>↕ PULL TO RESIZE</span>
-                    <span className="font-mono">({desktopMonthVisibleRows} row{desktopMonthVisibleRows === 1 ? '' : 's'})</span>
-                  </div>
-                </div>
-
-                <div className="pr-0.5 flex items-center pointer-events-none">
-                  <svg className="w-2.5 h-3 drop-shadow-xs" style={{ fill: 'var(--theme-primary)' }} viewBox="0 0 8 10">
-                    <polygon points="8,0 0,5 8,10" />
-                  </svg>
-                </div>
-              </div>
               </div>
             </div>
           )}
