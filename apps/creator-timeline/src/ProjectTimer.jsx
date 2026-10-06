@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { cleanNoteText, clockLabel, dialSweepDegrees, formatClock, formatDuration, formatMinutes, localDateString, MAX_SESSION_NOTE_LENGTH, MAX_SESSION_NOTES, timerElapsedMs } from './timeFormat.js';
+import { cleanNoteText, clockLabel, dialSweepDegrees, formatClock, formatDuration, formatMinutes, localDateString, MAX_SESSION_NOTE_LENGTH, MAX_SESSION_NOTES, MAX_SESSION_PHOTOS, MAX_TIMER_PHOTO_DATA_URL_LENGTH, timerElapsedMs } from './timeFormat.js';
+import { resizeImageForUpload } from './imageResize.js';
+import { deleteTimerPhotos, getTimerPhoto, pruneTimerPhotos, putTimerPhoto } from './timerPhotos.js';
 
 // One running timer per tenant, kept in localStorage so a reload (or the
 // Android WebView being reclaimed) doesn't lose it. Elapsed time is always
@@ -29,9 +31,11 @@ function writeStored(key, timer) {
 }
 
 // timer shape: { project: { key, title, source, referenceLogId }, startedAt,
-// pausedMs?, pausedAt?, notes?, endedAt?, error? }. notes is the list of
+// pausedMs?, pausedAt?, notes?, photos?, endedAt?, error? }. notes is the list of
 // { at: ms timestamp, text } jotted while it ran, uploaded with the session
-// when it's stopped. pausedAt is set only while the
+// when it's stopped. photos is the list of { id, at } for pictures added
+// while it ran: the pictures themselves wait in IndexedDB (see
+// timerPhotos.js) and go up with the session, ahead of the notes. pausedAt is set only while the
 // timer is paused and pausedMs totals the pauses already resumed from, so
 // time spent = timerElapsedMs() (see timeFormat.js), never wall-clock span.
 // endedAt/error only exist while a finished session failed to save and is
@@ -45,12 +49,23 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
   onSavedRef.current = onSessionSaved;
 
   const [timer, setTimer] = useState(() => readStored(key));
+  // The latest timer, readable from async work (adding photos) that may
+  // finish after the timer has moved on.
+  const timerRef = useRef(timer);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const noticeTimeout = useRef(null);
 
   // The tenant id arrives after first render in real use.
-  useEffect(() => { setTimer(readStored(key)); }, [key]);
+  useEffect(() => {
+    const stored = readStored(key);
+    timerRef.current = stored;
+    setTimer(stored);
+    // Photos no running timer lists are left over; clear them. Not while the
+    // key is still unknown, or a reload's photos would be dropped before
+    // the tenant id arrives and the timer they belong to is found.
+    if (key) pruneTimerPhotos((stored?.photos || []).map((photo) => photo.id));
+  }, [key]);
   useEffect(() => () => clearTimeout(noticeTimeout.current), []);
 
   const flash = useCallback((message) => {
@@ -60,6 +75,7 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
   }, []);
 
   const commit = useCallback((next) => {
+    timerRef.current = next;
     setTimer(next);
     writeStored(keyRef.current, next);
   }, []);
@@ -68,9 +84,10 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
   // in the chip (with the error) so no tracked time is lost.
   const save = useCallback(async (session, endedAt) => {
     const notes = (session.notes || []).map((n) => ({ at: clockLabel(new Date(n.at)), text: n.text }));
+    const photoIds = (session.photos || []).map((photo) => photo.id);
     // A session under a minute is normally dropped (see stop), but one with
-    // notes is kept as 1 minute so what was written isn't lost.
-    const minutes = Math.max(notes.length ? 1 : 0, Math.round(timerElapsedMs({ ...session, endedAt }) / 60000));
+    // notes or photos is kept as 1 minute so what was added isn't lost.
+    const minutes = Math.max(notes.length || photoIds.length ? 1 : 0, Math.round(timerElapsedMs({ ...session, endedAt }) / 60000));
     const started = new Date(session.startedAt);
     const ended = new Date(endedAt);
     const dateStr = localDateString(started);
@@ -78,10 +95,26 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     const endLabel = clockLabel(ended);
     setSaving(true);
     try {
+      // The photos come back off this device first (one that has gone missing,
+      // with the site's data cleared, is just left out).
+      const photoData = (await Promise.all(photoIds.map(getTimerPhoto))).filter(Boolean);
       let pageId;
       if (isDemoMode || !tenantId) {
         pageId = `demo-timer-${endedAt}`;
       } else {
+        // A request can't carry them all, so each photo goes up on its own, in
+        // the order taken, and the session then attaches them together.
+        const photoUploadIds = [];
+        for (const imageBase64 of photoData) {
+          const upload = await fetch('/api/backlog-photo', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tenantId, action: 'uploadTimerPhoto', imageBase64 }),
+          });
+          const uploaded = await upload.json().catch(() => ({}));
+          if (!upload.ok || !uploaded.success) throw new Error(uploaded.error || 'Could not upload a photo');
+          photoUploadIds.push(uploaded.fileUploadId);
+        }
         const response = await fetch('/api/backlog-photo', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -95,6 +128,7 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
             startLabel,
             endLabel,
             notes,
+            ...(photoUploadIds.length ? { photoUploadIds } : {}),
           }),
         });
         const result = await response.json().catch(() => ({}));
@@ -102,9 +136,13 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
         pageId = result.pageId;
       }
       commit(null);
-      onSavedRef.current?.({ id: pageId, project: session.project, minutes, dateStr, startLabel, endLabel, notes });
-      const withNotes = notes.length ? ` with ${notes.length} note${notes.length === 1 ? '' : 's'}` : '';
-      flash(`Saved ${formatMinutes(minutes)}${withNotes} to ${session.project.title}${isDemoMode ? ' (demo only)' : ''}`);
+      deleteTimerPhotos(photoIds);
+      onSavedRef.current?.({ id: pageId, project: session.project, minutes, dateStr, startLabel, endLabel, notes, photos: photoData });
+      const extras = [
+        photoData.length ? `${photoData.length} photo${photoData.length === 1 ? '' : 's'}` : '',
+        notes.length ? `${notes.length} note${notes.length === 1 ? '' : 's'}` : '',
+      ].filter(Boolean).join(' and ');
+      flash(`Saved ${formatMinutes(minutes)}${extras ? ` with ${extras}` : ''} to ${session.project.title}${isDemoMode ? ' (demo only)' : ''}`);
       return true;
     } catch (err) {
       commit({ ...session, endedAt, error: err.message || 'Could not save' });
@@ -119,7 +157,7 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     // Stopping while paused ends the session at the moment of the pause, so
     // the time spent paused isn't counted.
     const endedAt = timer.pausedAt ?? Date.now();
-    if (timerElapsedMs({ ...timer, endedAt }) < 60000 && !timer.notes?.length) {
+    if (timerElapsedMs({ ...timer, endedAt }) < 60000 && !timer.notes?.length && !timer.photos?.length) {
       commit(null);
       flash('Under a minute, so it wasn’t logged');
       return true;
@@ -137,7 +175,10 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     commit({ project, startedAt: Date.now() });
   }, [timer, stop, commit, flash]);
 
-  const discard = useCallback(() => commit(null), [commit]);
+  const discard = useCallback(() => {
+    deleteTimerPhotos((timerRef.current?.photos || []).map((photo) => photo.id));
+    commit(null);
+  }, [commit]);
 
   const addNote = useCallback((text) => {
     if (!timer || timer.endedAt) return false;
@@ -154,6 +195,44 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     commit({ ...timer, notes: timer.notes.filter((_, i) => i !== index) });
   }, [timer, commit]);
 
+  // Adds pictures to the running session: each is downscaled the same way
+  // Import Photos does, kept on this device, and listed on the timer by id.
+  // Resolves to how many were added.
+  const addPhotos = useCallback(async (files) => {
+    const started = timerRef.current;
+    if (!started || started.endedAt) return 0;
+    const room = MAX_SESSION_PHOTOS - (started.photos?.length || 0);
+    if (room <= 0) { flash(`That’s the limit of ${MAX_SESSION_PHOTOS} photos for one session`); return 0; }
+    const added = [];
+    for (const file of Array.from(files).slice(0, room)) {
+      try {
+        const dataUrl = await resizeImageForUpload(file);
+        if (dataUrl.length > MAX_TIMER_PHOTO_DATA_URL_LENGTH) { flash('That photo is too large to add'); continue; }
+        const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await putTimerPhoto(id, dataUrl);
+        added.push({ id, at: Date.now() });
+      } catch {
+        flash('Couldn’t read that photo');
+      }
+    }
+    if (!added.length) return 0;
+    const latest = timerRef.current;
+    // Stopped or discarded while the pictures were being prepared: they have no timer to join.
+    if (!latest || latest.endedAt || latest.startedAt !== started.startedAt) {
+      deleteTimerPhotos(added.map((photo) => photo.id));
+      return 0;
+    }
+    commit({ ...latest, photos: [...(latest.photos || []), ...added].slice(0, MAX_SESSION_PHOTOS) });
+    return added.length;
+  }, [commit, flash]);
+
+  const removePhoto = useCallback((id) => {
+    const current = timerRef.current;
+    if (!current || current.endedAt || !current.photos?.some((photo) => photo.id === id)) return;
+    deleteTimerPhotos([id]);
+    commit({ ...current, photos: current.photos.filter((photo) => photo.id !== id) });
+  }, [commit]);
+
   const pause = useCallback(() => {
     if (!timer || timer.endedAt || timer.pausedAt) return;
     commit({ ...timer, pausedAt: Date.now() });
@@ -167,10 +246,10 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
 
   const retry = useCallback(() => {
     if (!timer?.endedAt) return;
-    save({ project: timer.project, startedAt: timer.startedAt, pausedMs: timer.pausedMs, notes: timer.notes }, timer.endedAt);
+    save({ project: timer.project, startedAt: timer.startedAt, pausedMs: timer.pausedMs, notes: timer.notes, photos: timer.photos }, timer.endedAt);
   }, [timer, save]);
 
-  return { timer, saving, notice, start, stop, discard, retry, pause, resume, addNote, removeNote };
+  return { timer, saving, notice, start, stop, discard, retry, pause, resume, addNote, removeNote, addPhotos, removePhoto };
 }
 
 // Ticks once a second, only while `active`, and re-reads the clock when the
@@ -311,6 +390,82 @@ const PlayIcon = ({ size = 18 }) => (
   </svg>
 );
 
+// One photo of the session, loaded back from this device by its id.
+function TimerPhotoThumb({ id, readOnly, onRemove }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    getTimerPhoto(id).then((dataUrl) => { if (alive) setSrc(dataUrl); });
+    return () => { alive = false; };
+  }, [id]);
+  return (
+    <div className="relative aspect-square overflow-hidden border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)', borderRadius: 'var(--theme-radius-sm, 0.25rem)' }}>
+      {src && <img src={src} alt="A photo added to this session" className="w-full h-full object-cover" />}
+      {!readOnly && (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label="Remove this photo"
+          className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full flex items-center justify-center text-[9px] leading-none cursor-pointer"
+          style={{ backgroundColor: 'rgba(0,0,0,0.6)', color: '#fff' }}
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Photos for the running session. They are kept on this device and go up
+// with the session on Stop, saved FIRST in the Notion entry -- above the
+// notes -- so a gallery view of the database previews them. Read-only once
+// the session has ended (a failed save waiting on Retry).
+function TimerPhotos({ photos, readOnly, onAdd, onRemove }) {
+  const inputRef = useRef(null);
+  const [adding, setAdding] = useState(false);
+  if (readOnly && !photos.length) return null;
+  const full = photos.length >= MAX_SESSION_PHOTOS;
+  const pick = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    setAdding(true);
+    try { await onAdd(files); } finally { setAdding(false); }
+  };
+  return (
+    <div className="w-full mt-3 pt-3 border-t text-left" style={{ borderColor: 'var(--theme-border)' }}>
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <div className="text-[10px] font-bold uppercase tracking-wider opacity-70">
+          Photos{photos.length ? ` · ${photos.length}` : ''}
+        </div>
+        {!readOnly && (
+          <>
+            <input ref={inputRef} type="file" accept="image/*" multiple className="hidden" onChange={pick} />
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={adding || full}
+              title={full ? `That’s the limit of ${MAX_SESSION_PHOTOS} photos for one session` : 'Add photos to this session'}
+              className="text-[11px] font-bold cursor-pointer disabled:opacity-40 disabled:cursor-default"
+              style={{ color: 'var(--theme-primary)' }}
+            >
+              {adding ? 'Adding…' : '+ Add photo'}
+            </button>
+          </>
+        )}
+      </div>
+      {photos.length > 0 && (
+        <div className="grid grid-cols-4 gap-1.5">
+          {photos.map((photo) => (
+            <TimerPhotoThumb key={photo.id} id={photo.id} readOnly={readOnly} onRemove={() => onRemove(photo.id)} />
+          ))}
+        </div>
+      )}
+      {!readOnly && <p className="text-[10px] opacity-60 mt-1.5">Saved to Notion first, above the notes, when you stop.</p>}
+    </div>
+  );
+}
+
 // Notes for the running session: a one-line input and the list so far. They
 // stay in the timer (so a reload keeps them) and are uploaded to Notion with
 // the session on Stop. Read-only once the session has ended (a failed save
@@ -376,7 +531,7 @@ function TimerNotes({ notes, readOnly, onAdd, onRemove }) {
 // the card's width, so it follows the sidebar as it's dragged wider or
 // narrower (and fills the phone overlay). It's capped so a very wide
 // sidebar or a short window never lets it swallow the project list.
-export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry, onPause, onResume, onAddNote, onRemoveNote }) {
+export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry, onPause, onResume, onAddNote, onRemoveNote, onAddPhotos, onRemovePhoto }) {
   const live = !timer.endedAt; // not finished (running or paused)
   const paused = live && !!timer.pausedAt;
   const now = useNow(live && !paused);
@@ -482,6 +637,7 @@ export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, 
         </div>
       </div>
 
+      <TimerPhotos photos={timer.photos || []} readOnly={!live} onAdd={onAddPhotos} onRemove={onRemovePhoto} />
       <TimerNotes notes={timer.notes || []} readOnly={!live} onAdd={onAddNote} onRemove={onRemoveNote} />
 
       {notice && <div className="text-[11px] opacity-70 mt-1">{notice}</div>}

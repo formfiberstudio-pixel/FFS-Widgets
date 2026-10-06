@@ -93,18 +93,3 @@ export function groupYearPhotos(photos, filter, range) {
   }
   return groups;
 }
-
-// The proportions a gallery frame can take (width : height), landscape first,
-// then portrait. `id` is what gets remembered; `label` is for the tooltip.
-export const YEAR_GALLERY_RATIOS = [
-  { id: '1:1', label: 'Square', w: 1, h: 1 },
-  { id: '4:3', label: 'Landscape 4:3', w: 4, h: 3 },
-  { id: '3:2', label: 'Landscape 3:2', w: 3, h: 2 },
-  { id: '16:9', label: 'Wide 16:9', w: 16, h: 9 },
-  { id: '3:4', label: 'Portrait 3:4', w: 3, h: 4 },
-  { id: '2:3', label: 'Portrait 2:3', w: 2, h: 3 },
-];
-
-// The ratio with this id, or the square one for anything unknown (a stale or
-// hand-edited saved value).
-export const yearGalleryRatio = (id) => YEAR_GALLERY_RATIOS.find((r) => r.id === id) || YEAR_GALLERY_RATIOS[0];

@@ -21,7 +21,7 @@ import FacetedSidebarGroup from './FacetedSidebarGroup.jsx';
 import GalleryMiniCalendar from './GalleryMiniCalendar.jsx';
 import WeekSummary from './WeekSummary.jsx';
 import YearGalleryPanel from './YearGalleryPanel.jsx';
-import { collectYearPhotos, groupYearPhotos, weekStartFor, yearGalleryRange, yearGalleryRatio } from './yearGallery.js';
+import { collectYearPhotos, groupYearPhotos, weekStartFor, yearGalleryRange } from './yearGallery.js';
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
@@ -988,10 +988,14 @@ const MOBILE_BREAKPOINT = 640;
 // 44px a month column -- and the least the gallery tab can be squeezed to.
 const YEAR_GRID_MIN_WIDTH = 600;
 const YEAR_GALLERY_MIN_WIDTH = 220;
-// The gallery's photo frames: their smallest width, set with its size slider.
+// The gallery's photo frames: their smallest width, set with its size slider...
 const YEAR_GALLERY_THUMB_MIN = 64;
 const YEAR_GALLERY_THUMB_MAX = 240;
 const YEAR_GALLERY_THUMB_DEFAULT = 104;
+// ...and how tall they are, set by pulling the handle under the first row.
+const YEAR_GALLERY_FRAME_MIN = 56;
+const YEAR_GALLERY_FRAME_MAX = 320;
+const YEAR_GALLERY_FRAME_DEFAULT = 104;
 // How long the pointer must rest on a month or week before the Year view's
 // gallery follows it -- long enough that crossing cells on the way to the
 // gallery doesn't count, short enough to feel like a quick look.
@@ -1317,7 +1321,10 @@ function App() {
     const saved = Number(localStorage.getItem('notionWidgetYearGalleryThumbSize'));
     return saved >= YEAR_GALLERY_THUMB_MIN && saved <= YEAR_GALLERY_THUMB_MAX ? saved : YEAR_GALLERY_THUMB_DEFAULT;
   });
-  const [yearGalleryRatioId, setYearGalleryRatioId] = useState(() => yearGalleryRatio(localStorage.getItem('notionWidgetYearGalleryRatio')).id);
+  const [yearGalleryFrameHeight, setYearGalleryFrameHeight] = useState(() => {
+    const saved = Number(localStorage.getItem('notionWidgetYearGalleryFrameHeight'));
+    return saved >= YEAR_GALLERY_FRAME_MIN && saved <= YEAR_GALLERY_FRAME_MAX ? saved : YEAR_GALLERY_FRAME_DEFAULT;
+  });
   const [yearGalleryNewestFirst, setYearGalleryNewestFirst] = useState(() => localStorage.getItem('notionWidgetYearGalleryNewestFirst') === 'true');
   const [isResizingYearGallery, setIsResizingYearGallery] = useState(false);
   const yearGalleryDragStartX = useRef(0);
@@ -1328,7 +1335,7 @@ function App() {
   useEffect(() => { localStorage.setItem('notionWidgetYearGalleryWidth', yearGalleryWidth); }, [yearGalleryWidth]);
   useEffect(() => { localStorage.setItem('notionWidgetYearGalleryNewestFirst', String(yearGalleryNewestFirst)); }, [yearGalleryNewestFirst]);
   useEffect(() => { localStorage.setItem('notionWidgetYearGalleryThumbSize', String(yearGalleryThumbSize)); }, [yearGalleryThumbSize]);
-  useEffect(() => { localStorage.setItem('notionWidgetYearGalleryRatio', yearGalleryRatioId); }, [yearGalleryRatioId]);
+  useEffect(() => { localStorage.setItem('notionWidgetYearGalleryFrameHeight', String(yearGalleryFrameHeight)); }, [yearGalleryFrameHeight]);
 
   const handleMouseDownYearGalleryResize = (e) => {
     e.preventDefault();
@@ -1696,7 +1703,7 @@ function App() {
   // state as a log entry (same shape the sync returns) so the calendar and
   // the per-project totals update without waiting for the next sync, whose
   // full replace of timelineLogs brings the same page back by id.
-  const handleSessionSaved = ({ id, project, minutes, dateStr, startLabel, endLabel, notes }) => {
+  const handleSessionSaved = ({ id, project, minutes, dateStr, startLabel, endLabel, notes, photos = [] }) => {
     const [y, m, d] = dateStr.split('-').map(Number);
     setTimelineLogs((prev) => [...prev, {
       id,
@@ -1708,7 +1715,9 @@ function App() {
       Projects: project.title,
       projectType: project.projectType || 'General',
       projectTypeColor: project.projectTypeColor,
-      imageUrl: null,
+      // The first photo taken, as the entry's picture until the next sync
+      // brings back Notion's own copy.
+      imageUrl: photos[0] || null,
       pageContent: buildSessionNoteText({ minutes, startLabel, endLabel, notes }),
       pageContentBlockId: null,
       pageContentBlockType: null,
@@ -2237,10 +2246,11 @@ function App() {
   const getThumbnailLogForDate = (dateObj, logs) => {
     if (!logs || logs.length === 0) return { primaryLog: null, isHalftoned: false };
     const dateKey = dateObj.toISOString().split('T')[0];
-    // A tracked-time session (see ProjectTimer.jsx) is a text-only entry, so
-    // by default it shouldn't take the day's thumbnail from a real entry --
-    // the sync's ordering would otherwise decide that arbitrarily.
-    const defaultLog = logs.find((l) => !(l.minutes > 0)) || logs[0];
+    // A tracked-time session (see ProjectTimer.jsx) is usually a text-only
+    // entry, so by default it shouldn't take the day's thumbnail from a real
+    // entry -- the sync's ordering would otherwise decide that arbitrarily.
+    // One with photos has a picture of its own, so it counts as a real entry.
+    const defaultLog = logs.find((l) => !(l.minutes > 0) || l.imageUrl) || logs[0];
 
     if (hoveredProjectTitle) {
       const matchingProjectLog = logs.find(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
@@ -3543,6 +3553,8 @@ function App() {
                   onResume={projectTimer.resume}
                   onAddNote={projectTimer.addNote}
                   onRemoveNote={projectTimer.removeNote}
+                  onAddPhotos={projectTimer.addPhotos}
+                  onRemovePhoto={projectTimer.removePhoto}
                 />
               </div>
             )}
@@ -5085,8 +5097,10 @@ function App() {
               minThumbSize={YEAR_GALLERY_THUMB_MIN}
               maxThumbSize={YEAR_GALLERY_THUMB_MAX}
               onThumbSizeChange={setYearGalleryThumbSize}
-              ratioId={yearGalleryRatioId}
-              onRatioChange={setYearGalleryRatioId}
+              frameHeight={yearGalleryFrameHeight}
+              minFrameHeight={YEAR_GALLERY_FRAME_MIN}
+              maxFrameHeight={YEAR_GALLERY_FRAME_MAX}
+              onFrameHeightChange={setYearGalleryFrameHeight}
               width={Math.max(yearGalleryWidth, YEAR_GALLERY_MIN_WIDTH)}
               minWidth={YEAR_GALLERY_MIN_WIDTH}
               radius={panelRadius}

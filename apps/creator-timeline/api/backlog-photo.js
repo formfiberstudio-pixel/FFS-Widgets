@@ -3,7 +3,7 @@ import { getTenant, saveTenant, LICENSE_REVERIFY_MS } from './_lib/tenantStore.j
 import { verifyGumroadLicense } from './_lib/gumroad.js';
 import { notionFetch } from './_lib/notionFetch.js';
 import { uploadImageToNotion } from './_lib/notionUpload.js';
-import { buildSessionNote, buildSessionProperties, buildSessionTitle, sanitizeSessionNotes, toRichTextChunks } from './_lib/timeTracking.js';
+import { buildSessionChildren, buildSessionNote, buildSessionProperties, buildSessionTitle, sanitizeSessionNotes, validPhotoUploadIds } from './_lib/timeTracking.js';
 
 // Needs the newer version for file_uploads (see notionUpload.js) -- used
 // for every call in this file, including the plain pages.retrieve/pages.create
@@ -37,13 +37,34 @@ const NOTION_VERSION = '2026-03-11';
 // except the tenant/license/token boilerplate below.
 //
 // And action: 'logTime' -- saving a stopped project-timer session as a
-// text-only log page (title "2026.10.05_Project_1h 20m", a "⏱ 80 min" body line, and a
+// log page (title "2026.10.05_Project_1h 20m", a "⏱ 80 min" body line, and a
 // minutes Number property when the database has one), shaped from the
-// same kind of reference page the photo path uses. See _lib/timeTracking.js.
+// same kind of reference page the photo path uses. Photos taken during the
+// session are first uploaded one request each (action: 'uploadTimerPhoto',
+// which returns a file_upload id), then attached by logTime as the page's
+// first blocks and its cover, ahead of the notes. See _lib/timeTracking.js.
+// Decodes a base64 photo (a data URL or bare base64), works out its type from
+// its own bytes, and uploads it to Notion; resolves to the file_upload id.
+async function uploadBase64Photo(imageBase64, notionToken) {
+  const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, '').replace(/[\r\n\s]/g, '');
+  const isPng = cleanBase64.startsWith('iVBORw');
+  // GIF87a/GIF89a's shared "GIF8" magic bytes base64-encode to this
+  // exact prefix -- resizeImageForUpload (imageResize.js) passes a GIF
+  // through untouched rather than flattening it to a static JPEG, so
+  // this is what lets that original file keep its own content type
+  // (and therefore its animation) all the way to Notion instead of
+  // silently falling into the jpeg default below.
+  const isGif = cleanBase64.startsWith('R0lGOD');
+  const contentType = isGif ? 'image/gif' : isPng ? 'image/png' : 'image/jpeg';
+  const filename = `backlog_${Date.now()}.${isGif ? 'gif' : isPng ? 'png' : 'jpg'}`;
+  const buffer = Buffer.from(cleanBase64, 'base64');
+  return uploadImageToNotion(buffer, contentType, filename, notionToken, NOTION_VERSION);
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
 
@@ -63,6 +84,9 @@ export default async function handler(req, res) {
     if (typeof dateTaken !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateTaken)) return res.status(400).json({ error: 'Missing or invalid date' });
     if (notes !== undefined && !Array.isArray(notes)) return res.status(400).json({ error: 'Invalid notes' });
     if (projectTitle !== undefined && typeof projectTitle !== 'string') return res.status(400).json({ error: 'Invalid project name' });
+    if (photoUploadIds !== undefined && !validPhotoUploadIds(photoUploadIds)) return res.status(400).json({ error: 'Invalid photos' });
+  } else if (action === 'uploadTimerPhoto') {
+    if (typeof imageBase64 !== 'string' || !imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
   } else {
     if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
     if (!pageId) {
@@ -259,6 +283,19 @@ export default async function handler(req, res) {
     }
   }
 
+  // One photo for a timer session, uploaded on its own: it isn't attached to a
+  // page yet (logTime does that, once the session is stopped), so the id is
+  // all that comes back. Notion drops an upload that is never attached.
+  if (action === 'uploadTimerPhoto') {
+    try {
+      const fileUploadId = await uploadBase64Photo(imageBase64, notionToken);
+      return res.status(200).json({ success: true, fileUploadId });
+    } catch (err) {
+      console.error('[backlog-photo] uploadTimerPhoto failed:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
   if (action === 'logTime') {
     try {
       const refRes = await notionFetch(`https://api.notion.com/v1/pages/${referenceLogId}`, { method: 'GET', headers });
@@ -281,17 +318,19 @@ export default async function handler(req, res) {
       // calendar and never count toward any project's total.
       if (!hasRelation) return res.status(400).json({ error: 'Could not find the project link on this database.' });
 
+      // Photos first, then the notes; the first photo doubles as the cover.
+      const { children, cover } = buildSessionChildren({
+        noteText: buildSessionNote({ minutes, startLabel, endLabel, notes: sanitizeSessionNotes(notes) }),
+        photoUploadIds: photoUploadIds || [],
+      });
       const createRes = await notionFetch('https://api.notion.com/v1/pages', {
         method: 'POST',
         headers,
         body: JSON.stringify({
           parent: { database_id: databaseId },
           properties,
-          children: [{
-            object: 'block',
-            type: 'paragraph',
-            paragraph: { rich_text: toRichTextChunks(buildSessionNote({ minutes, startLabel, endLabel, notes: sanitizeSessionNotes(notes) })) },
-          }],
+          children,
+          ...(cover ? { cover } : {}),
         }),
       });
       const createData = await createRes.json();
@@ -305,20 +344,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const cleanBase64 = String(imageBase64).replace(/^data:image\/\w+;base64,/, '').replace(/[\r\n\s]/g, '');
-    const isPng = cleanBase64.startsWith('iVBORw');
-    // GIF87a/GIF89a's shared "GIF8" magic bytes base64-encode to this
-    // exact prefix -- resizeImageForUpload (imageResize.js) passes a GIF
-    // through untouched rather than flattening it to a static JPEG, so
-    // this is what lets that original file keep its own content type
-    // (and therefore its animation) all the way to Notion instead of
-    // silently falling into the jpeg default below.
-    const isGif = cleanBase64.startsWith('R0lGOD');
-    const contentType = isGif ? 'image/gif' : isPng ? 'image/png' : 'image/jpeg';
-    const filename = `backlog_${Date.now()}.${isGif ? 'gif' : isPng ? 'png' : 'jpg'}`;
-    const buffer = Buffer.from(cleanBase64, 'base64');
-
-    const fileUploadId = await uploadImageToNotion(buffer, contentType, filename, notionToken, NOTION_VERSION);
+    const fileUploadId = await uploadBase64Photo(imageBase64, notionToken);
     const imageBlock = { object: 'block', type: 'image', image: { type: 'file_upload', file_upload: { id: fileUploadId } } };
 
     if (pageId) {

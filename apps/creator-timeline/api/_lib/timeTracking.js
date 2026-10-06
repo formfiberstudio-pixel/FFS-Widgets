@@ -137,3 +137,33 @@ export function buildSessionProperties(refProperties, { title, dateStr, minutes,
   if (minutesProp) properties[minutesProp] = { number: Math.round(minutes) };
   return { properties, hasRelation };
 }
+
+// Photos added while the timer ran. Each is uploaded to Notion on its own
+// first (the request body limit is too small to carry several at once) and
+// comes back as a file_upload id, which logTime then attaches. The id shape
+// is Notion's own (a UUID); anything else is refused before it reaches Notion.
+export const MAX_SESSION_PHOTOS = 12;
+const FILE_UPLOAD_ID_RE = /^[0-9a-zA-Z-]{8,64}$/;
+
+export function validPhotoUploadIds(ids) {
+  return Array.isArray(ids)
+    && ids.length <= MAX_SESSION_PHOTOS
+    && ids.every((id) => typeof id === 'string' && FILE_UPLOAD_ID_RE.test(id));
+}
+
+// The page body for a session: the photos FIRST, one image block each, then
+// the note paragraph (the minutes line and the notes). Photos lead so that a
+// Notion gallery view -- which previews a card from the first image in the
+// page content -- shows them; the first photo is also the page cover, for
+// galleries set to preview the cover instead. Without photos it is just the
+// paragraph and no cover, as before.
+export function buildSessionChildren({ noteText, photoUploadIds = [] }) {
+  const children = photoUploadIds.map((id) => ({
+    object: 'block',
+    type: 'image',
+    image: { type: 'file_upload', file_upload: { id } },
+  }));
+  children.push({ object: 'block', type: 'paragraph', paragraph: { rich_text: toRichTextChunks(noteText) } });
+  const cover = photoUploadIds.length ? { type: 'file_upload', file_upload: { id: photoUploadIds[0] } } : undefined;
+  return { children, cover };
+}

@@ -1,4 +1,4 @@
-import { YEAR_GALLERY_RATIOS, yearGalleryRatio } from './yearGallery.js';
+import { useEffect, useRef, useState } from 'react';
 
 // The Year view's right-hand tab: the year's photos as a gallery, the
 // counterpart of the project list on the left. Which photos it shows follows
@@ -9,6 +9,11 @@ import { YEAR_GALLERY_RATIOS, yearGalleryRatio } from './yearGallery.js';
 // Clicking a photo opens that day. `photos` is every photo shown (for the
 // count); `groups` is the same photos in the sections to draw -- the year by
 // month, a month by week, a week as one (see groupYearPhotos).
+//
+// The photo frames: the size slider sets how wide each one is at least (the
+// row stretches them to fill the panel, so the number per row follows the
+// slider), and pulling the handle under the first row sets how tall they are,
+// like the Week view's card height.
 //
 // `width` is the width asked for. The panel is a flex item that may shrink
 // (down to `minWidth`) so the year grid beside it keeps its own minimum when
@@ -29,8 +34,10 @@ export default function YearGalleryPanel({
   minThumbSize,
   maxThumbSize,
   onThumbSizeChange,
-  ratioId,
-  onRatioChange,
+  frameHeight,
+  minFrameHeight,
+  maxFrameHeight,
+  onFrameHeightChange,
   width,
   minWidth,
   radius,
@@ -38,7 +45,37 @@ export default function YearGalleryPanel({
   onPointerEnter,
   onPointerLeave,
 }) {
-  const ratio = yearGalleryRatio(ratioId);
+  // Pulling the handle under the first row of frames down/up sets their
+  // height (the same gesture as the Week view's card height).
+  const [pullingHeight, setPullingHeight] = useState(false);
+  const pullStart = useRef({ y: 0, height: frameHeight });
+  useEffect(() => {
+    if (!pullingHeight) return undefined;
+    const onMove = (e) => {
+      const next = pullStart.current.height + (e.clientY - pullStart.current.y);
+      onFrameHeightChange(Math.min(Math.max(Math.round(next), minFrameHeight), maxFrameHeight));
+    };
+    const onUp = () => {
+      setPullingHeight(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [pullingHeight, onFrameHeightChange, minFrameHeight, maxFrameHeight]);
+  const startPullingHeight = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    pullStart.current = { y: e.clientY, height: frameHeight };
+    setPullingHeight(true);
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+  };
+
   return (
     <aside
       ref={panelRef}
@@ -57,40 +94,9 @@ export default function YearGalleryPanel({
       </div>
 
       <div className="mb-3 shrink-0">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center justify-between gap-3 mb-2">
           <h2 className="text-sm font-bold">Gallery</h2>
-          <span className="text-xs opacity-60 tabular-nums">{photos.length} photo{photos.length === 1 ? '' : 's'}</span>
-        </div>
-        {/* The frames: their proportions (each button is a little frame drawn
-            in that proportion) and their width (never wider than the panel). */}
-        <div className="flex items-center gap-2 mb-2">
-          <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Photo proportions">
-            {YEAR_GALLERY_RATIOS.map((r) => {
-              const active = r.id === ratio.id;
-              const longSide = 12;
-              return (
-                <button
-                  key={r.id}
-                  onClick={() => onRatioChange(r.id)}
-                  title={`${r.label}${active ? '' : ' -- click to use this proportion'}`}
-                  aria-label={`${r.label} photos`}
-                  aria-pressed={active}
-                  className="w-[18px] h-[18px] flex items-center justify-center rounded cursor-pointer transition-opacity"
-                  style={{ opacity: active ? 1 : 0.45 }}
-                >
-                  <span
-                    className="block border-[1.5px]"
-                    style={{
-                      width: r.w >= r.h ? longSide : Math.round((longSide * r.w) / r.h),
-                      height: r.h >= r.w ? longSide : Math.round((longSide * r.h) / r.w),
-                      borderColor: active ? 'var(--theme-primary)' : 'currentColor',
-                      borderRadius: 2,
-                    }}
-                  />
-                </button>
-              );
-            })}
-          </div>
+          {/* Photo size: how wide the frames are -- and so how many fit in a row. */}
           <input
             type="range"
             min={minThumbSize}
@@ -100,9 +106,10 @@ export default function YearGalleryPanel({
             onChange={(e) => onThumbSizeChange(Number(e.target.value))}
             title="Photo size"
             aria-label="Photo size"
-            className="min-w-0 flex-1 h-1 cursor-pointer"
+            className="min-w-0 flex-1 max-w-24 h-1 cursor-pointer"
             style={{ accentColor: 'var(--theme-primary)' }}
           />
+          <span className="text-xs opacity-60 tabular-nums shrink-0">{photos.length} photo{photos.length === 1 ? '' : 's'}</span>
         </div>
         <div className="flex items-center justify-between gap-2 pb-2 border-b" style={{ borderColor: 'var(--theme-border)' }}>
           <span className="flex items-center gap-1 min-w-0">
@@ -138,7 +145,7 @@ export default function YearGalleryPanel({
           </div>
         ) : (
           <div className="flex flex-col gap-4">
-            {groups.map((group) => (
+            {groups.map((group, groupIndex) => (
               <section key={group.key}>
                 {/* The group's heading (a month, or a week) -- stays at the top
                     of the scroll area while its photos go past. A single
@@ -152,7 +159,24 @@ export default function YearGalleryPanel({
                     <span className="text-[10px] font-semibold normal-case opacity-50 tabular-nums">{group.photos.length}</span>
                   </h3>
                 )}
-                <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(auto-fill, min(${thumbSize}px, 100%))` }}>
+                <div className="grid gap-2 relative" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(min(${thumbSize}px, 100%), 1fr))` }}>
+                  {/* The height handle, on the bottom edge of the first row of
+                      frames: it appears when pointed at, like the Week view's. */}
+                  {groupIndex === 0 && (
+                    <div
+                      onMouseDown={startPullingHeight}
+                      className={`absolute left-0 right-0 z-20 h-6 -translate-y-1/2 flex items-center cursor-ns-resize transition-opacity duration-150 ${pullingHeight ? 'opacity-100' : 'opacity-0 hover:opacity-100'}`}
+                      style={{ top: `${frameHeight}px` }}
+                      title="Click & drag down/up to change how tall the photo frames are"
+                    >
+                      <div className="flex-1 h-[2px] flex items-center justify-center" style={{ backgroundColor: 'var(--theme-primary)' }}>
+                        <div className="text-[9px] font-black px-2.5 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 whitespace-nowrap" style={{ backgroundColor: 'var(--theme-primary)', color: 'var(--theme-on-primary)' }}>
+                          <span>↕ PULL TO RESIZE</span>
+                          <span className="font-mono">({frameHeight}px)</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {group.photos.map(({ log, dateObj }) => (
                     <button
                       key={log.id}
@@ -162,7 +186,7 @@ export default function YearGalleryPanel({
                     >
                       <span
                         className="block w-full overflow-hidden border lf-frame"
-                        style={{ aspectRatio: `${ratio.w} / ${ratio.h}`, borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)', borderRadius: `${radius}px` }}
+                        style={{ height: `${frameHeight}px`, borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)', borderRadius: `${radius}px` }}
                       >
                         <img src={log.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
                       </span>

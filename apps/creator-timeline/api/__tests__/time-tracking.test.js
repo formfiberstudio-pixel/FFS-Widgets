@@ -10,6 +10,9 @@ import {
   sanitizeSessionNotes,
   buildSessionTitle,
   MAX_SESSION_TITLE_PROJECT_LENGTH,
+  MAX_SESSION_PHOTOS,
+  validPhotoUploadIds,
+  buildSessionChildren,
   toRichTextChunks,
   MAX_SESSION_NOTES,
   MAX_SESSION_NOTE_LENGTH,
@@ -176,4 +179,31 @@ test('buildSessionTitle tidies the project name and falls back without one', () 
   // No project name (an older client): the previous title format.
   assert.equal(buildSessionTitle({ dateStr: '2026-10-05', minutes: 80 }), '⏱ 1h 20m');
   assert.equal(buildSessionTitle({ dateStr: '2026-10-05', projectTitle: '   ', minutes: 80 }), '⏱ 1h 20m');
+});
+
+test('buildSessionChildren puts the photos first, then the note, and covers with the first photo', () => {
+  const { children, cover } = buildSessionChildren({ noteText: '⏱ 80 min\n14:12 · outlined', photoUploadIds: ['upload-aaaa-1', 'upload-bbbb-2'] });
+  assert.deepEqual(children.map((c) => c.type), ['image', 'image', 'paragraph']);
+  assert.deepEqual(children[0].image, { type: 'file_upload', file_upload: { id: 'upload-aaaa-1' } });
+  assert.deepEqual(children[1].image, { type: 'file_upload', file_upload: { id: 'upload-bbbb-2' } });
+  assert.equal(children[2].paragraph.rich_text.map((t) => t.text.content).join(''), '⏱ 80 min\n14:12 · outlined');
+  assert.deepEqual(cover, { type: 'file_upload', file_upload: { id: 'upload-aaaa-1' } });
+});
+
+test('buildSessionChildren without photos is the note alone, with no cover', () => {
+  const { children, cover } = buildSessionChildren({ noteText: '⏱ 5 min' });
+  assert.deepEqual(children.map((c) => c.type), ['paragraph']);
+  assert.equal(cover, undefined);
+});
+
+test('validPhotoUploadIds accepts a short list of upload ids and nothing else', () => {
+  assert.equal(validPhotoUploadIds([]), true);
+  assert.equal(validPhotoUploadIds(['0b2c9a2e-1f3d-4c7a-9e55-123456789abc']), true);
+  assert.equal(validPhotoUploadIds(Array.from({ length: MAX_SESSION_PHOTOS }, (_, i) => `upload-${String(i).padStart(4, '0')}`)), true);
+  assert.equal(validPhotoUploadIds(Array.from({ length: MAX_SESSION_PHOTOS + 1 }, (_, i) => `upload-${String(i).padStart(4, '0')}`)), false);
+  assert.equal(validPhotoUploadIds('upload-aaaa-1'), false);
+  assert.equal(validPhotoUploadIds([42]), false);
+  assert.equal(validPhotoUploadIds(['short']), false);
+  assert.equal(validPhotoUploadIds(['has a space in it']), false);
+  assert.equal(validPhotoUploadIds(['../../etc/passwd-padding']), false);
 });

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { yearGalleryRange, collectYearPhotos, groupYearPhotos, weekStartFor, weekStartOf, YEAR_GALLERY_RATIOS, yearGalleryRatio } from '../../src/yearGallery.js';
+import { yearGalleryRange, collectYearPhotos, groupYearPhotos, weekStartFor, weekStartOf } from '../../src/yearGallery.js';
 
 const ymd = (d) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 const week = (y, m, d) => ({ kind: 'week', weekStart: new Date(y, m, d).getTime() });
@@ -161,13 +161,4 @@ test('a single week is one section with no heading, and nothing gives none', () 
   assert.deepEqual(groups[0].photos.map((p) => p.log.id), ['p0', 'p1']);
   assert.deepEqual(groupYearPhotos([], filter, range), []);
   assert.deepEqual(groupYearPhotos([], null, yearGalleryRange(2026, null)), []);
-});
-
-test('gallery frame ratios have unique ids, and an unknown id falls back to square', () => {
-  const ids = YEAR_GALLERY_RATIOS.map((r) => r.id);
-  assert.equal(new Set(ids).size, ids.length);
-  assert.equal(yearGalleryRatio('3:2').w / yearGalleryRatio('3:2').h, 1.5);
-  assert.equal(yearGalleryRatio('3:4').h > yearGalleryRatio('3:4').w, true);
-  assert.equal(yearGalleryRatio('nonsense').id, '1:1');
-  assert.equal(yearGalleryRatio(null).id, '1:1');
 });

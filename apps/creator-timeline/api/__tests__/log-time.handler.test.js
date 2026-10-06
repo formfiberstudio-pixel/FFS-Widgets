@@ -36,7 +36,15 @@ before(() => {
       }));
       return new Response(JSON.stringify(results), { status: 200 });
     }
-    notionCalls.push({ url: target, method: options.method, body: options.body ? JSON.parse(options.body) : null, headers: options.headers });
+    let parsedBody = null;
+    if (typeof options.body === 'string') { try { parsedBody = JSON.parse(options.body); } catch { /* not JSON */ } }
+    notionCalls.push({ url: target, method: options.method, body: parsedBody, headers: options.headers, isUpload: options.body instanceof FormData });
+    if (target.endsWith('/v1/file_uploads') && options.method === 'POST') {
+      return new Response(JSON.stringify({ object: 'file_upload', id: `upload-${notionCalls.length}-id` }), { status: 200 });
+    }
+    if (target.includes('/v1/file_uploads/') && target.endsWith('/send') && options.method === 'POST') {
+      return new Response(JSON.stringify({ object: 'file_upload', status: 'uploaded' }), { status: 200 });
+    }
     if (target.includes('/v1/pages/ref-log') && options.method === 'GET') {
       return new Response(JSON.stringify(referencePage), { status: 200 });
     }
@@ -185,5 +193,45 @@ test('logTime rejects a project name that is not text', async () => {
   const res = await call({ ...VALID, projectTitle: { name: 'x' } });
   assert.equal(res.statusCode, 400);
   assert.match(res.body.error, /project name/i);
+  assert.equal(notionCalls.length, 0);
+});
+
+test('logTime attaches uploaded photos as the first blocks, ahead of the notes, and covers with the first', async () => {
+  reset();
+  const res = await call({ ...VALID, notes: [{ at: '14:12', text: 'outlined the intro' }], photoUploadIds: ['upload-aaaa-1', 'upload-bbbb-2'] });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  const create = notionCalls.find((c) => c.url.endsWith('/v1/pages') && c.method === 'POST');
+  assert.deepEqual(create.body.children.map((c) => c.type), ['image', 'image', 'paragraph']);
+  assert.equal(create.body.children[0].image.file_upload.id, 'upload-aaaa-1');
+  assert.equal(create.body.children[1].image.file_upload.id, 'upload-bbbb-2');
+  assert.match(create.body.children[2].paragraph.rich_text[0].text.content, /^⏱ 80 min/);
+  assert.deepEqual(create.body.cover, { type: 'file_upload', file_upload: { id: 'upload-aaaa-1' } });
+});
+
+test('logTime rejects photo ids that are not a list of upload ids', async () => {
+  reset();
+  for (const bad of ['upload-aaaa-1', [123], ['x'], Array.from({ length: 13 }, (_, i) => `upload-${String(i).padStart(4, '0')}`)]) {
+    const res = await call({ ...VALID, photoUploadIds: bad });
+    assert.equal(res.statusCode, 400, JSON.stringify(bad));
+    assert.match(res.body.error, /photos/i);
+  }
+  assert.equal(notionCalls.length, 0);
+});
+
+test('uploadTimerPhoto uploads one photo and hands back its file_upload id without making a page', async () => {
+  reset();
+  const res = await call({ action: 'uploadTimerPhoto', imageBase64: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBD' });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(res.body.success, true);
+  assert.match(res.body.fileUploadId, /^upload-/);
+  assert.equal(notionCalls.some((c) => c.url.endsWith('/v1/pages')), false);
+  assert.equal(notionCalls.some((c) => c.isUpload), true);
+});
+
+test('uploadTimerPhoto needs a photo', async () => {
+  reset();
+  const res = await call({ action: 'uploadTimerPhoto' });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /imageBase64/);
   assert.equal(notionCalls.length, 0);
 });

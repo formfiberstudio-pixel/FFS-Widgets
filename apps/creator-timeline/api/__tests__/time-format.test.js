@@ -13,6 +13,7 @@ import {
   summarizeWeekProjects,
   cleanNoteText,
   MAX_SESSION_NOTES as CLIENT_MAX_NOTES,
+  MAX_SESSION_PHOTOS as CLIENT_MAX_PHOTOS,
   MAX_SESSION_NOTE_LENGTH as CLIENT_MAX_NOTE_LENGTH,
   formatMinutes,
   clockLabel,
@@ -26,6 +27,7 @@ import {
   buildSessionTitle as buildServerSessionTitle,
   MAX_SESSION_TITLE_PROJECT_LENGTH,
   MAX_SESSION_NOTES,
+  MAX_SESSION_PHOTOS,
   MAX_SESSION_NOTE_LENGTH,
 } from '../_lib/timeTracking.js';
 
@@ -127,6 +129,7 @@ test('the client note text matches what the server writes to Notion', () => {
 
 test('client and server agree on the note caps and cleaning', () => {
   assert.equal(CLIENT_MAX_NOTES, MAX_SESSION_NOTES);
+  assert.equal(CLIENT_MAX_PHOTOS, MAX_SESSION_PHOTOS);
   assert.equal(CLIENT_MAX_NOTE_LENGTH, MAX_SESSION_NOTE_LENGTH);
   const messy = '  two\nlines   here ' + 'x'.repeat(600);
   assert.equal(cleanNoteText(messy), sanitizeSessionNotes([{ at: '10:00', text: messy }])[0].text);
