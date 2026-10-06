@@ -34,14 +34,14 @@ function AddProjectRow({ isActive, draft, onDraftChange, onActivate, onCancel, o
       <button
         onClick={onActivate}
         style={{ borderColor: 'var(--theme-border)' }}
-        className="w-full text-left p-3 rounded-lg border border-dashed cursor-pointer transition-colors hover:border-[var(--theme-primary)] text-sm font-semibold opacity-60 hover:opacity-100"
+        className="w-full text-left p-3 rounded-lg lf-frame border border-dashed cursor-pointer transition-colors hover:border-[var(--theme-primary)] text-sm font-semibold opacity-60 hover:opacity-100"
       >
         + Add Project
       </button>
     );
   }
   return (
-    <div onClick={(e) => e.stopPropagation()} style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-primary)' }} className="p-3 rounded-lg border space-y-2">
+    <div onClick={(e) => e.stopPropagation()} style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-primary)' }} className="p-3 rounded-lg lf-frame border space-y-2">
       <input
         autoFocus
         type="text"
@@ -134,7 +134,7 @@ function ProjectAssignList({
                         color: isArmed ? '#fff' : 'var(--theme-text)',
                         fontSize: '12px',
                       }}
-                      className={`p-2.5 rounded border transition-all cursor-pointer flex items-center gap-2 ${isArmed ? 'font-bold' : ''}`}
+                      className={`p-2.5 rounded lf-frame border transition-all cursor-pointer flex items-center gap-2 ${isArmed ? 'font-bold' : ''}`}
                     >
                       <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20 shadow-sm" style={{ backgroundColor: dotHex }} />
                       <span className="truncate flex-1">{p.title}</span>
@@ -817,7 +817,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                   <div
                     key={p.uri}
                     onClick={() => toggleNativePick(p.uri)}
-                    className="relative rounded-lg overflow-hidden cursor-pointer"
+                    className="relative rounded-lg lf-frame overflow-hidden cursor-pointer"
                     style={{
                       aspectRatio: '1',
                       backgroundColor: 'var(--theme-card)',
@@ -934,7 +934,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                   <div key={photo.id} className="shrink-0" style={{ width: '92px' }}>
                     <div
                       onClick={() => handlePhotoTap(photo.id)}
-                      className="relative rounded-lg overflow-hidden cursor-pointer"
+                      className="relative rounded-lg lf-frame overflow-hidden cursor-pointer"
                       style={{
                         width: '92px',
                         height: '92px',
@@ -1114,7 +1114,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                 borderColor: isDragging ? 'var(--theme-primary)' : 'var(--theme-border)',
                 backgroundColor: isDragging ? 'var(--theme-bg)' : 'transparent',
               }}
-              className="shrink-0 mb-3 border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors"
+              className="shrink-0 mb-3 border-2 border-dashed rounded-lg lf-frame p-4 text-center cursor-pointer transition-colors"
             >
               <div className="text-sm font-semibold opacity-70">+ Add Photos</div>
               <div className="text-xs opacity-50 mt-1">Click to browse, or drag and drop -- dates are read from each photo automatically</div>
@@ -1136,7 +1136,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                           ref={(el) => { if (el) photoTileRefs.current[photo.id] = el; else delete photoTileRefs.current[photo.id]; }}
                           data-photo-tile
                           onClick={(e) => handleDesktopPhotoClick(photo, index, e)}
-                          className="relative rounded-lg overflow-hidden cursor-pointer aspect-square"
+                          className="relative rounded-lg lf-frame overflow-hidden cursor-pointer aspect-square"
                           style={{
                             backgroundColor: 'var(--theme-card)',
                             border: isSelected ? '3px solid var(--theme-secondary)' : '1px solid var(--theme-border)',
@@ -1238,7 +1238,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         </ul>
       )}
       {uploadResults.failed.length > 0 && (
-        <div className="text-sm text-left w-full p-3 rounded-lg border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+        <div className="text-sm text-left w-full p-3 rounded-lg lf-frame border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
           <div className="font-bold mb-1 opacity-80">{uploadResults.failed.length} failed:</div>
           <ul className="space-y-0.5 opacity-70">
             {uploadResults.failed.map((f, i) => <li key={i} className="truncate">• {f.name}: {f.error}</li>)}

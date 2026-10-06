@@ -108,7 +108,7 @@ export default function FacetedSidebarGroup({
               const sortedValues = [...values.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
               return (
-                <div key={groupKey} className="border rounded-md overflow-hidden shrink-0 shadow-sm" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}>
+                <div key={groupKey} className="border rounded-md lf-frame overflow-hidden shrink-0 shadow-sm" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}>
                   <div onClick={() => toggleGroup(groupKey)} className="text-[10px] font-bold uppercase tracking-wider p-2.5 flex items-center justify-between cursor-pointer transition-colors hover:opacity-80">
                     <span className="tracking-wide font-black" style={{ fontSize: `${Math.round(10 * scaleFactor)}px` }}>{label}</span>
                     <span className="text-[9px] font-mono opacity-60">{isCollapsed ? '▼' : '▲'}</span>
@@ -132,7 +132,7 @@ export default function FacetedSidebarGroup({
                               opacity: (isHidden || valueDimmedByIsolate) ? 0.4 : (anySelected && !isSelected ? 0.35 : 1),
                               fontSize: `${Math.round(12 * scaleFactor)}px`,
                             }}
-                            className="p-2.5 rounded border transition-all cursor-pointer flex items-center gap-2"
+                            className="p-2.5 rounded lf-frame border transition-all cursor-pointer flex items-center gap-2"
                           >
                             <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20 shadow-sm" style={{ backgroundColor: colorMap[color] || colorMap.default }} />
                             <span className="truncate flex-1">{name}</span>

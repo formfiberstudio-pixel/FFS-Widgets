@@ -280,9 +280,11 @@ const DEFAULT_THEME_PRESETS = [
   // (5.5:1) is the accessible alternative -- one token to change here.
   // `design` carries what colours can't:
   // the type families (Reflection serif / Utility sans) and the corner
-  // radii (radius-md for cards and cells, radius-lg for panels); it is
-  // only applied to presets that have it, and buttons become pills (see
-  // index.css). This is the default look.
+  // radii. By the owner's call every FRAME (panels, cards, cells, modals,
+  // sidebar groups) shares the sidebar panel's radius, so md and lg are
+  // the same value (22); sm is only for the phone's tiny month tiles. It
+  // is only applied to presets that have it, and buttons become pills
+  // (see index.css). This is the default look.
   {
     id: 'life-log-workshop',
     name: 'Life Log Workshop',
@@ -292,7 +294,7 @@ const DEFAULT_THEME_PRESETS = [
         serif: '"Newsreader", Georgia, serif',
         sans: '"DM Sans", "Helvetica Neue", Arial, sans-serif',
       },
-      radius: { sm: 8, md: 14, lg: 22 },
+      radius: { sm: 8, md: 22, lg: 22 },
     },
     light: {
       bg: '#FAF6F5',
@@ -890,7 +892,7 @@ function WeekDayColumn({
                   backgroundColor: 'var(--theme-bg)',
                   borderColor: isHoveredProject ? 'var(--theme-secondary)' : 'var(--theme-border)'
                 }}
-                className={`relative overflow-hidden rounded-lg border shadow-xs p-2 shrink-0 flex flex-col justify-between transition-all cursor-pointer ${
+                className={`relative overflow-hidden rounded-lg lf-frame border shadow-xs p-2 shrink-0 flex flex-col justify-between transition-all cursor-pointer ${
                   isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] shadow-md scale-[1.01] z-10' : ''
                 } ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
               >
@@ -2713,7 +2715,7 @@ function App() {
             <h1 className="text-xl font-bold">This calendar hasn't been set up yet</h1>
             <p className="text-sm opacity-70 mt-1">Connect your Notion workspace below to activate this embed.</p>
           </div>
-          <div className="p-4 rounded-xl border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+          <div className="p-4 rounded-xl lf-frame border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
             <ActivationPanel
               embedded
               skipAutoLoad={forceBlankSetup}
@@ -2954,7 +2956,7 @@ function App() {
                   <div className="fixed inset-0 z-40" onClick={() => setShowMobileMenu(false)} />
                   <div
                     style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                    className="absolute right-0 top-full mt-2 z-50 w-56 rounded-lg border shadow-xl overflow-hidden"
+                    className="absolute right-0 top-full mt-2 z-50 w-56 rounded-lg lf-frame border shadow-xl overflow-hidden"
                   >
                     <button
                       onClick={() => { setShowMobileMenu(false); if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
@@ -3099,14 +3101,14 @@ function App() {
         </div>
       )}
       {fetchError && !isLoading && (
-        <div className="mb-4 p-3 shrink-0 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm flex justify-between items-center">
+        <div className="mb-4 p-3 shrink-0 bg-red-50 border border-red-200 rounded-lg lf-frame text-red-700 text-sm flex justify-between items-center">
           <span>⚠️ {fetchError}</span>
           <button onClick={() => fetchLogsFromNotion(tenantId, sourceFilter)} className="underline font-bold">Retry</button>
         </div>
       )}
 
       {shareErrorMsg && (
-        <div className="mb-4 p-3 shrink-0 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm flex justify-between items-center">
+        <div className="mb-4 p-3 shrink-0 bg-red-50 border border-red-200 rounded-lg lf-frame text-red-700 text-sm flex justify-between items-center">
           <span>⚠️ Photo share didn't come through: {shareErrorMsg}</span>
           <button onClick={() => setShareErrorMsg(null)} className="underline font-bold">Dismiss</button>
         </div>
@@ -3277,7 +3279,7 @@ function App() {
                         const categoryBorderColor = adjustHexColor(baseTypeHex, 40);
 
                         return (
-                          <div key={type} className={`border rounded-md overflow-hidden shrink-0 shadow-sm ${(hiddenTypes[typeKey] || dimmedByIsolate) ? 'opacity-40' : ''}`} style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
+                          <div key={type} className={`border rounded-md lf-frame overflow-hidden shrink-0 shadow-sm ${(hiddenTypes[typeKey] || dimmedByIsolate) ? 'opacity-40' : ''}`} style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
                             <div onClick={() => toggleTypeAccordion(source, type)} className="text-[10px] font-bold uppercase tracking-wider p-2.5 flex items-center justify-between cursor-pointer transition-colors hover:opacity-80">
                               <span className="tracking-wide font-black" style={{ fontSize: `${Math.round(10 * scaleFactor)}px` }}>{type}</span>
                               <div className="flex items-center gap-2">
@@ -3321,7 +3323,7 @@ function App() {
                                         opacity: dynamicFilterActive && !isSelected && !isHovered ? 0.35 : 1,
                                         fontSize: `${Math.round(12 * scaleFactor)}px`
                                       }}
-                                      className={`p-2.5 rounded border transition-all cursor-pointer flex items-center gap-2 ${
+                                      className={`p-2.5 rounded lf-frame border transition-all cursor-pointer flex items-center gap-2 ${
                                         isHovered ? 'ring-1 ring-[var(--theme-secondary)] scale-[1.02] font-bold z-10 relative' : ''
                                       }`}
                                     >
@@ -3404,7 +3406,9 @@ function App() {
             room for a flush edge tab). Replaces the old "Hide Projects" /
             "Projects" header button with a small tab sitting right on the
             sidebar/canvas boundary, Photoshop-panel-style, instead of a
-            separate button living up in the toolbar. -mx-6 cancels this
+            separate button living up in the toolbar. It sits at the top of
+            the frame (self-start), not mid-height, so it stays out of the
+            way of the calendar. -mx-6 cancels this
             row's own gap-6 on both sides so it sits flush against
             whichever it's currently adjacent to (the sidebar when open,
             straight against the canvas when closed) rather than floating
@@ -3414,7 +3418,7 @@ function App() {
             onClick={() => setIsSidebarOpen((prev) => !prev)}
             title={isSidebarOpen ? 'Hide Projects' : 'Show Projects'}
             style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-primary)' }}
-            className="shrink-0 self-center -mx-6 z-20 w-4 h-14 rounded-md border flex items-center justify-center cursor-pointer hover:w-5 hover:border-[var(--theme-primary)] transition-all shadow-sm"
+            className="shrink-0 self-start mt-4 -mx-6 z-20 w-4 h-14 rounded-md border flex items-center justify-center cursor-pointer hover:w-5 hover:border-[var(--theme-primary)] transition-all shadow-sm"
           >
             <span className="text-[10px] font-bold leading-none">{isSidebarOpen ? '‹' : '›'}</span>
           </button>
@@ -3460,8 +3464,15 @@ function App() {
               in the sidebar), in place of Month/Week/Year. */}
           {viewMode === 'gallery' && galleryTarget && (() => {
             const sortSign = galleryNewestFirst ? -1 : 1;
-            const galleryLogs = (Array.isArray(timelineLogs) ? timelineLogs : [])
-              .filter(log => log.source === galleryTarget.source && (log.Projects || 'Untitled Project') === galleryTarget.title && log.imageUrl)
+            // Every entry of this project. The grid shows the ones with
+            // something to show -- a photo, or a text note (timer sessions
+            // included) -- while the year calendar marks ALL of them, so an
+            // entry that is only a title still shows up there.
+            const projectLogs = (Array.isArray(timelineLogs) ? timelineLogs : [])
+              .filter(log => log.source === galleryTarget.source && (log.Projects || 'Untitled Project') === galleryTarget.title);
+            const hasNoteText = (log) => typeof log.pageContent === 'string' && log.pageContent.trim() !== '';
+            const galleryLogs = projectLogs
+              .filter(log => log.imageUrl || hasNoteText(log))
               .sort((a, b) => sortSign * (
                 new Date(Number(a.year), Number(a.monthNumber) - 1, Number(a.dayNumber)) -
                 new Date(Number(b.year), Number(b.monthNumber) - 1, Number(b.dayNumber))
@@ -3469,6 +3480,8 @@ function App() {
             // Time tracked on this project by the timer (these entries have no
             // photo, so they aren't in galleryLogs).
             const timeSummary = projectTimeSummary(Array.isArray(timelineLogs) ? timelineLogs : [], galleryTarget.source, galleryTarget.title);
+            const photoCount = galleryLogs.filter(log => log.imageUrl).length;
+            const textCount = galleryLogs.length - photoCount;
 
             return (
               // No mini-calendar to share space with on mobile any more
@@ -3479,7 +3492,8 @@ function App() {
                 <div className="flex flex-col flex-1 min-w-0 min-h-0 h-full">
                   <div className="flex items-center justify-between mb-3 shrink-0">
                     <span className="text-sm opacity-60">
-                      {galleryLogs.length} photo{galleryLogs.length === 1 ? '' : 's'}
+                      {photoCount} photo{photoCount === 1 ? '' : 's'}
+                      {textCount > 0 ? ` · ${textCount} text entr${textCount === 1 ? 'y' : 'ies'}` : ''}
                       {isMobile && timeSummary.allTime > 0 ? ` · ${formatMinutes(timeSummary.allTime)} tracked` : ''}
                     </span>
                     <button
@@ -3494,7 +3508,7 @@ function App() {
                   <div className="flex-1 overflow-y-auto min-h-0 pr-1">
                     {galleryLogs.length === 0 ? (
                       <div className="h-full flex items-center justify-center text-sm italic opacity-50">
-                        No photos logged for this project yet.
+                        No photos or notes logged for this project yet.
                       </div>
                     ) : (
                       <div className="grid gap-4" style={{ gridTemplateColumns: isMobile ? 'repeat(auto-fill, minmax(140px, 1fr))' : 'repeat(auto-fill, minmax(200px, 1fr))' }}>
@@ -3523,10 +3537,20 @@ function App() {
                                 backgroundColor: 'var(--theme-bg)',
                                 borderColor: isHovered ? 'var(--theme-secondary)' : 'var(--theme-border)',
                               }}
-                              className={`group flex flex-col rounded-lg border overflow-hidden shadow-sm transition-all cursor-pointer hover:border-[var(--theme-primary)] hover:shadow-md ${isHovered ? 'ring-2 ring-[var(--theme-secondary)] scale-[1.02]' : ''}`}
+                              className={`group flex flex-col rounded-lg lf-frame border overflow-hidden shadow-sm transition-all cursor-pointer hover:border-[var(--theme-primary)] hover:shadow-md ${isHovered ? 'ring-2 ring-[var(--theme-secondary)] scale-[1.02]' : ''}`}
                             >
                               <div className="aspect-square w-full overflow-hidden" style={{ backgroundColor: 'var(--theme-card)' }}>
-                                <img src={log.imageUrl} alt="" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
+                                {log.imageUrl ? (
+                                  <img src={log.imageUrl} alt="" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
+                                ) : (
+                                  // A text entry: its note stands in for the photo.
+                                  <p
+                                    className="h-full w-full p-3 text-xs leading-relaxed whitespace-pre-wrap break-words overflow-hidden"
+                                    style={{ display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 9 }}
+                                  >
+                                    {log.pageContent}
+                                  </p>
+                                )}
                               </div>
                               <div className="p-2.5">
                                 <div className="flex items-center justify-between gap-2">
@@ -3560,7 +3584,7 @@ function App() {
                     photo list, and the Year view's own "blocks" layout now
                     covers the same at-a-glance purpose without repeating it
                     inside every single project's gallery. */}
-                {(galleryLogs.length > 0 || timeSummary.allTime > 0) && !isMobile && (
+                {(projectLogs.length > 0 || timeSummary.allTime > 0) && !isMobile && (
                   <div
                     className="w-[380px] shrink-0 h-full min-h-0 overflow-y-auto pr-1 border-l pl-4"
                     style={{ borderColor: 'var(--theme-border)' }}
@@ -3571,7 +3595,7 @@ function App() {
                       <ProjectTimeSummary summary={timeSummary} />
                     </div>
                     <GalleryMiniCalendar
-                      logs={galleryLogs}
+                      logs={projectLogs}
                       hoveredLogId={hoveredGalleryLogId}
                       onHoverLog={setHoveredGalleryLogId}
                       newestFirst={galleryNewestFirst}
@@ -4010,7 +4034,7 @@ function App() {
                         // render into, which this list's own scroll
                         // boundary doesn't have when today's group is the
                         // first or last one in view.
-                        className={`rounded-xl border overflow-hidden ${isToday(day.dateObj) ? 'ring-1 ring-inset ring-[var(--theme-primary)]' : ''}`}
+                        className={`rounded-xl lf-frame border overflow-hidden ${isToday(day.dateObj) ? 'ring-1 ring-inset ring-[var(--theme-primary)]' : ''}`}
                       >
                         {day.logs.map((log, i) => {
                           const displayDotHex = getDisplayDotColor(day.logs, day.dateObj);
@@ -4022,7 +4046,7 @@ function App() {
                               style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
                               className={`flex items-center gap-3 p-2.5 cursor-pointer ${i > 0 ? 'border-t' : ''}`}
                             >
-                              <div className="w-16 h-16 rounded-lg overflow-hidden shrink-0 flex items-center justify-center font-bold text-lg" style={{ backgroundColor: 'var(--theme-card)' }}>
+                              <div className="w-16 h-16 rounded-lg lf-frame overflow-hidden shrink-0 flex items-center justify-center font-bold text-lg" style={{ backgroundColor: 'var(--theme-card)' }}>
                                 {log.imageUrl ? (
                                   <img src={log.imageUrl} className="w-full h-full object-cover" alt="" loading="lazy" />
                                 ) : (
@@ -4212,7 +4236,7 @@ function App() {
                       const httpsUrl = log.url || `https://www.notion.so/${log.id.replace(/-/g, '')}`;
                       const notionPageUrl = `${httpsUrl.replace('https://', 'notion://')}${httpsUrl.includes('?') ? '&' : '?'}pvs=4`;
                       return (
-                        <div key={log.id} style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }} className="rounded-xl border overflow-hidden">
+                        <div key={log.id} style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }} className="rounded-xl lf-frame border overflow-hidden">
                           {log.imageUrl && (
                             <img src={log.imageUrl} className="w-full max-h-64 object-cover" alt="" loading="lazy" />
                           )}
@@ -4762,7 +4786,7 @@ function App() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70 backdrop-blur-sm">
           <div 
             style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-            className="w-full max-w-lg rounded-xl shadow-2xl border p-6 flex flex-col gap-4 max-h-[90vh] overflow-hidden"
+            className="w-full max-w-lg rounded-xl lf-frame shadow-2xl border p-6 flex flex-col gap-4 max-h-[90vh] overflow-hidden"
           >
             {/* Tab Header - Vector Icons */}
             <div className="flex items-center justify-between border-b pb-3 shrink-0" style={{ borderColor: 'var(--theme-border)' }}>
@@ -4818,12 +4842,12 @@ function App() {
             {settingsTab === 'notion' && (
               <div className="flex-1 overflow-y-auto pr-1 space-y-4 min-h-0">
                 {isDemoMode ? (
-                  <div className="p-4 rounded-lg border text-sm leading-relaxed" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                  <div className="p-4 rounded-lg lf-frame border text-sm leading-relaxed" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                     You're viewing a demo filled with sample data -- there's no real Notion connection to configure here. Get your own copy to connect your own workspace.
                   </div>
                 ) : (
                   <>
-                <div className="p-3 rounded border text-xs leading-relaxed" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                <div className="p-3 rounded lf-frame border text-xs leading-relaxed" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                   Your Notion connection and database list are tied to your license, not stored in this embed -- so anyone who opens it (including someone you've shared a page with) never sees your token or needs their own login.
                 </div>
                 <div>
@@ -4837,7 +4861,7 @@ function App() {
                     <label className="block text-xs font-bold mb-1.5 opacity-60">Your Saved Links</label>
                     <div className="space-y-1.5">
                       {savedViews.map((v) => (
-                        <div key={v.id} className="flex items-center justify-between gap-2 p-2 rounded border text-xs" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                        <div key={v.id} className="flex items-center justify-between gap-2 p-2 rounded lf-frame border text-xs" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                           <div className="min-w-0">
                             <div className="font-bold truncate">{v.label}</div>
                             <div className="opacity-60">
@@ -4900,7 +4924,7 @@ function App() {
                     <span>Reconfigure</span>
                   </button>
                   {showReconfigure && (
-                    <div className="p-3 rounded-lg border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                    <div className="p-3 rounded-lg lf-frame border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                       <ActivationPanel
                         embedded
                         hideSavedViewsList
@@ -4953,7 +4977,7 @@ function App() {
                 </div>
 
                 {activeTheme.isCustom ? (
-                  <div className="p-4 border rounded-lg space-y-4" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                  <div className="p-4 border rounded-lg lf-frame space-y-4" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex-1">
                         <label className="block text-[10px] font-bold uppercase opacity-60 mb-1">Theme Name</label>
@@ -5003,7 +5027,7 @@ function App() {
                           { key: 'primary', label: 'Primary Accent' },
                           { key: 'secondary', label: 'Secondary Accent' },
                         ].map((token) => (
-                          <div key={token.key} className="flex items-center justify-between p-2 border rounded" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
+                          <div key={token.key} className="flex items-center justify-between p-2 border rounded lf-frame" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
                             <span className="text-[11px] font-medium truncate">{token.label}</span>
                             <input 
                               type="color" 
@@ -5017,7 +5041,7 @@ function App() {
                     </div>
                   </div>
                 ) : (
-                  <div className="p-3 border rounded text-xs opacity-70 italic text-center" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                  <div className="p-3 border rounded lf-frame text-xs opacity-70 italic text-center" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                     "{activeTheme.name}" is a read-only built-in preset. Click <strong>Duplicate</strong> above to create an editable copy.
                   </div>
                 )}
@@ -5042,7 +5066,7 @@ function App() {
                   </button>
                 </div>
 
-                <div className="p-3 border rounded-lg flex items-center justify-between gap-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                <div className="p-3 border rounded-lg lf-frame flex items-center justify-between gap-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                   <div>
                     <h3 className="text-xs font-bold">Show Entry Title (Month View)</h3>
                     <p className="text-[11px] opacity-60">Display each entry's title text on month thumbnails.</p>
@@ -5061,7 +5085,7 @@ function App() {
                   </button>
                 </div>
 
-                <div className="p-3 border rounded-lg flex items-center justify-between gap-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                <div className="p-3 border rounded-lg lf-frame flex items-center justify-between gap-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                   <div>
                     <h3 className="text-xs font-bold">Show Entry Title (Week View)</h3>
                     <p className="text-[11px] opacity-60">Display each entry's title text on week thumbnails.</p>
@@ -5080,7 +5104,7 @@ function App() {
                   </button>
                 </div>
 
-                <div className="p-3 border rounded-lg flex items-center justify-between gap-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                <div className="p-3 border rounded-lg lf-frame flex items-center justify-between gap-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                   <div>
                     <h3 className="text-xs font-bold">Filter Sidebar to Visible Range</h3>
                     <p className="text-[11px] opacity-60">Sidebar only lists projects logged within the visible day/week/month, instead of the whole year.</p>
@@ -5099,7 +5123,7 @@ function App() {
                   </button>
                 </div>
 
-                <div className="p-4 border rounded-xl space-y-3 shadow-xs" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                <div className="p-4 border rounded-xl lf-frame space-y-3 shadow-xs" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                   <div className="flex items-center justify-between border-b pb-2" style={{ borderColor: 'var(--theme-border)' }}>
                     <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Live Baseline Preview ({viewScale}%)</span>
                     <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded" style={{ backgroundColor: 'var(--theme-primary)', color: 'var(--theme-on-primary)' }}>
@@ -5109,7 +5133,7 @@ function App() {
 
                   <div className="flex items-center justify-around py-3 gap-4">
                     <div className="flex flex-col items-center gap-2">
-                      <div className="flex items-center gap-2 p-2 rounded-lg border shadow-xs" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
+                      <div className="flex items-center gap-2 p-2 rounded-lg lf-frame border shadow-xs" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
                         <div 
                           className="rounded-full flex items-center justify-center font-bold text-[color:var(--theme-on-primary)] shadow-sm border border-white/80 transition-all shrink-0" 
                           style={{ 
@@ -5134,7 +5158,7 @@ function App() {
                     <div className="w-px h-12" style={{ backgroundColor: 'var(--theme-border)' }} />
 
                     <div className="flex flex-col items-center gap-2">
-                      <div className="p-3 rounded-lg border flex items-center justify-center shadow-xs" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
+                      <div className="p-3 rounded-lg lf-frame border flex items-center justify-center shadow-xs" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
                         <div 
                           className="rounded-full flex items-center justify-center font-bold text-[color:var(--theme-on-primary)] shadow-sm border border-white/80 transition-all" 
                           style={{ 
@@ -5152,7 +5176,7 @@ function App() {
                   </div>
                 </div>
 
-                <div className="p-4 border rounded-lg space-y-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                <div className="p-4 border rounded-lg lf-frame space-y-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold">Scale Factor</span>
                     <span className="text-xs font-mono font-bold px-2 py-0.5 rounded" style={{ backgroundColor: 'var(--theme-card)', color: 'var(--theme-primary)' }}>
@@ -5226,7 +5250,7 @@ function App() {
                     {Object.entries(facetSchemas).map(([source, schema]) => {
                       const activeFacetKey = resolveColorFacetKey(source, facetSchemas, colorFacetBySource);
                       return (
-                        <div key={source} className="border rounded-lg p-3 space-y-2" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                        <div key={source} className="border rounded-lg lf-frame p-3 space-y-2" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                           <div className="text-xs font-black uppercase tracking-wider">{source}</div>
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-[11px] opacity-70 shrink-0">Color tiles by:</span>
@@ -5258,7 +5282,7 @@ function App() {
                     const effectiveCategoryHex = categoryCustomHex || defaultCategoryHex;
 
                     return (
-                      <div key={type} className="border rounded-lg p-3 space-y-2" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                      <div key={type} className="border rounded-lg lf-frame p-3 space-y-2" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
                         <div className="flex items-center justify-between border-b pb-2" style={{ borderColor: 'var(--theme-border)' }}>
                           <div className="flex items-center gap-2">
                             <span className="w-3 h-3 rounded-full border border-white/20" style={{ backgroundColor: effectiveCategoryHex }} />
@@ -5288,7 +5312,7 @@ function App() {
                             const currentEffectiveHex = projectColorMap[p.title] || effectiveCategoryHex;
 
                             return (
-                              <div key={p.title} className="flex items-center justify-between p-1.5 rounded border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
+                              <div key={p.title} className="flex items-center justify-between p-1.5 rounded lf-frame border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
                                 <div className="flex items-center gap-2 truncate pr-2">
                                   <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20" style={{ backgroundColor: currentEffectiveHex }} />
                                   <span className="text-xs font-medium truncate">{p.title}</span>
@@ -5352,7 +5376,7 @@ function App() {
           <div className={`fixed inset-0 z-50 flex items-center justify-center ${isMobile ? '' : 'p-6 sm:p-8 bg-black/70 backdrop-blur-sm'}`} onClick={() => setSelectedLogModal(null)}>
             <div
               style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-              className={isMobile ? 'w-full h-full flex flex-col overflow-hidden' : 'w-[90%] max-w-[1300px] h-[85%] max-h-[850px] rounded-2xl flex flex-col overflow-hidden shadow-2xl border'}
+              className={isMobile ? 'w-full h-full flex flex-col overflow-hidden' : 'w-[90%] max-w-[1300px] h-[85%] max-h-[850px] rounded-2xl lf-frame flex flex-col overflow-hidden shadow-2xl border'}
               onClick={(e) => e.stopPropagation()}
             >
               <div className="px-6 py-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
@@ -5413,7 +5437,7 @@ function App() {
                             backgroundColor: 'var(--theme-bg)',
                             borderColor: isThumbnail ? 'var(--theme-secondary)' : 'var(--theme-border)'
                           }}
-                          className={`shrink-0 w-full sm:w-[calc((100%-24px)/2)] lg:w-[calc((100%-48px)/3)] snap-start h-full my-auto flex flex-col p-5 sm:p-6 border rounded-xl gap-4 shadow-sm cursor-pointer transition-all ${
+                          className={`shrink-0 w-full sm:w-[calc((100%-24px)/2)] lg:w-[calc((100%-48px)/3)] snap-start h-full my-auto flex flex-col p-5 sm:p-6 border rounded-xl lf-frame gap-4 shadow-sm cursor-pointer transition-all ${
                             isThumbnail ? 'ring-2 ring-[var(--theme-secondary)]' : ''
                           }`}
                         >
@@ -5442,7 +5466,7 @@ function App() {
                             {log.imageUrl ? (
                               <img
                                 src={log.imageUrl}
-                                className="h-full w-full rounded-md object-cover border"
+                                className="h-full w-full rounded-md lf-frame object-cover border"
                                 style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
                                 alt=""
                               />
@@ -5452,7 +5476,7 @@ function App() {
                               // LogNoteEditor directly below; showing it a
                               // second time in here as well duplicated it.
                               <div
-                                className="h-full w-full rounded-md border"
+                                className="h-full w-full rounded-md lf-frame border"
                                 style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
                               />
                             )}

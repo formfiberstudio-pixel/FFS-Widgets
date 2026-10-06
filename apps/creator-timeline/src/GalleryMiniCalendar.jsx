@@ -14,6 +14,9 @@
 import { useState } from 'react';
 import { formatMinutes } from './timeFormat.js';
 
+// Whether the gallery grid shows a card for this entry (a photo or a note).
+const hasGalleryCard = (log) => Boolean(log.imageUrl) || (typeof log.pageContent === 'string' && log.pageContent.trim() !== '');
+
 function buildMonthSlots(year, monthIndex) {
   const startDayOffset = new Date(year, monthIndex, 1).getDay();
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
@@ -44,7 +47,7 @@ function MonthBlock({ year, monthIndex, logsByDay, hoveredLogId, onHoverLog }) {
               key={i}
               onMouseEnter={() => log && onHoverLog(log.id)}
               onMouseLeave={() => log && onHoverLog(null)}
-              title={log ? `${monthName} ${dayNum}` : undefined}
+              title={log ? `${monthName} ${dayNum}${log.title ? ` · ${log.title}` : ''}` : undefined}
               className="flex items-center justify-center"
               style={{ cursor: log ? 'pointer' : 'default' }}
             >
@@ -83,9 +86,13 @@ export default function GalleryMiniCalendar({ logs, hoveredLogId, onHoverLog, ne
     const d = Number(log.dayNumber);
     if (!byYear[y]) byYear[y] = {};
     if (!byYear[y][m]) byYear[y][m] = {};
-    // First entry wins if this project ever logs twice in one day -- the
-    // mini calendar only needs one representative photo per dot.
-    if (!byYear[y][m][d]) byYear[y][m][d] = log;
+    // One representative entry per dot if this project logs twice in one
+    // day: the first, unless a later one has a card in the gallery grid (a
+    // photo or note) and the first doesn't -- hovering the dot then
+    // highlights something that exists. Entries with nothing but a title
+    // still get their dot.
+    const current = byYear[y][m][d];
+    if (!current || (!hasGalleryCard(current) && hasGalleryCard(log))) byYear[y][m][d] = log;
   });
   // Matches whichever direction the photo grid next to this panel is
   // currently sorted in (see App.jsx's shared galleryNewestFirst toggle) --

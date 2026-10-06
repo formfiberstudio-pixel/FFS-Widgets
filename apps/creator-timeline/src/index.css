@@ -58,3 +58,13 @@
 [data-design="life-log"] button.rounded-md.border:not(.w-5) {
   border-radius: 999px;
 }
+
+/* Life Log design system: every frame (panels, cards, cells, modals, the
+   sidebar's groups and rows) shares the sidebar panel's corner radius, so
+   one value rules them all. Elements opt in with the `lf-frame` class;
+   buttons and chips are not frames and keep their own shapes (the toolbar
+   buttons stay pills, above). Unlayered, so it wins over Tailwind's
+   rounded-* utilities, and scoped, so other themes are unchanged. */
+[data-design="life-log"] .lf-frame {
+  border-radius: var(--theme-radius-lg);
+}

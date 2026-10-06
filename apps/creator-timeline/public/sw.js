@@ -44,7 +44,17 @@ self.addEventListener('fetch', (event) => {
   }
 });
 
+// An animated GIF can't go through the canvas below (it decodes one frame and
+// there is no GIF encoder, so it would come out as a still JPEG). It is
+// relayed as its own original bytes instead -- as long as it fits: the relay
+// request is capped near 4.5MB by Vercel, and the upload to Notion that
+// follows (a base64 JSON body) is capped the same way. A bigger GIF falls
+// through and is flattened, so the share still succeeds rather than failing.
+const GIF_PASSTHROUGH_MAX_BYTES = 3 * 1024 * 1024;
+
 async function resizeImage(file) {
+  if (file.type === 'image/gif' && file.size <= GIF_PASSTHROUGH_MAX_BYTES) return file;
+
   const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   let { width, height } = bitmap;
   if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
