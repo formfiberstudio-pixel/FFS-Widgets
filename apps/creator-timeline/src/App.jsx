@@ -21,7 +21,7 @@ import FacetedSidebarGroup from './FacetedSidebarGroup.jsx';
 import GalleryMiniCalendar from './GalleryMiniCalendar.jsx';
 import WeekSummary from './WeekSummary.jsx';
 import YearGalleryPanel from './YearGalleryPanel.jsx';
-import { collectYearPhotos, groupYearPhotos, weekStartFor, yearGalleryRange } from './yearGallery.js';
+import { collectYearPhotos, groupYearPhotos, weekStartFor, yearGalleryRange, yearGalleryRatio } from './yearGallery.js';
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
@@ -1317,6 +1317,7 @@ function App() {
     const saved = Number(localStorage.getItem('notionWidgetYearGalleryThumbSize'));
     return saved >= YEAR_GALLERY_THUMB_MIN && saved <= YEAR_GALLERY_THUMB_MAX ? saved : YEAR_GALLERY_THUMB_DEFAULT;
   });
+  const [yearGalleryRatioId, setYearGalleryRatioId] = useState(() => yearGalleryRatio(localStorage.getItem('notionWidgetYearGalleryRatio')).id);
   const [yearGalleryNewestFirst, setYearGalleryNewestFirst] = useState(() => localStorage.getItem('notionWidgetYearGalleryNewestFirst') === 'true');
   const [isResizingYearGallery, setIsResizingYearGallery] = useState(false);
   const yearGalleryDragStartX = useRef(0);
@@ -1327,6 +1328,7 @@ function App() {
   useEffect(() => { localStorage.setItem('notionWidgetYearGalleryWidth', yearGalleryWidth); }, [yearGalleryWidth]);
   useEffect(() => { localStorage.setItem('notionWidgetYearGalleryNewestFirst', String(yearGalleryNewestFirst)); }, [yearGalleryNewestFirst]);
   useEffect(() => { localStorage.setItem('notionWidgetYearGalleryThumbSize', String(yearGalleryThumbSize)); }, [yearGalleryThumbSize]);
+  useEffect(() => { localStorage.setItem('notionWidgetYearGalleryRatio', yearGalleryRatioId); }, [yearGalleryRatioId]);
 
   const handleMouseDownYearGalleryResize = (e) => {
     e.preventDefault();
@@ -5083,6 +5085,8 @@ function App() {
               minThumbSize={YEAR_GALLERY_THUMB_MIN}
               maxThumbSize={YEAR_GALLERY_THUMB_MAX}
               onThumbSizeChange={setYearGalleryThumbSize}
+              ratioId={yearGalleryRatioId}
+              onRatioChange={setYearGalleryRatioId}
               width={Math.max(yearGalleryWidth, YEAR_GALLERY_MIN_WIDTH)}
               minWidth={YEAR_GALLERY_MIN_WIDTH}
               radius={panelRadius}

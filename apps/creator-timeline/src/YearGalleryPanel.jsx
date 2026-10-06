@@ -1,3 +1,5 @@
+import { YEAR_GALLERY_RATIOS, yearGalleryRatio } from './yearGallery.js';
+
 // The Year view's right-hand tab: the year's photos as a gallery, the
 // counterpart of the project list on the left. Which photos it shows follows
 // the month or week in the year grid: hovering one is a quick look, a click
@@ -27,6 +29,8 @@ export default function YearGalleryPanel({
   minThumbSize,
   maxThumbSize,
   onThumbSizeChange,
+  ratioId,
+  onRatioChange,
   width,
   minWidth,
   radius,
@@ -34,6 +38,7 @@ export default function YearGalleryPanel({
   onPointerEnter,
   onPointerLeave,
 }) {
+  const ratio = yearGalleryRatio(ratioId);
   return (
     <aside
       ref={panelRef}
@@ -52,9 +57,40 @@ export default function YearGalleryPanel({
       </div>
 
       <div className="mb-3 shrink-0">
-        <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="flex items-center justify-between mb-2">
           <h2 className="text-sm font-bold">Gallery</h2>
-          {/* Photo size: the width of each frame (never wider than the panel). */}
+          <span className="text-xs opacity-60 tabular-nums">{photos.length} photo{photos.length === 1 ? '' : 's'}</span>
+        </div>
+        {/* The frames: their proportions (each button is a little frame drawn
+            in that proportion) and their width (never wider than the panel). */}
+        <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Photo proportions">
+            {YEAR_GALLERY_RATIOS.map((r) => {
+              const active = r.id === ratio.id;
+              const longSide = 12;
+              return (
+                <button
+                  key={r.id}
+                  onClick={() => onRatioChange(r.id)}
+                  title={`${r.label}${active ? '' : ' -- click to use this proportion'}`}
+                  aria-label={`${r.label} photos`}
+                  aria-pressed={active}
+                  className="w-[18px] h-[18px] flex items-center justify-center rounded cursor-pointer transition-opacity"
+                  style={{ opacity: active ? 1 : 0.45 }}
+                >
+                  <span
+                    className="block border-[1.5px]"
+                    style={{
+                      width: r.w >= r.h ? longSide : Math.round((longSide * r.w) / r.h),
+                      height: r.h >= r.w ? longSide : Math.round((longSide * r.h) / r.w),
+                      borderColor: active ? 'var(--theme-primary)' : 'currentColor',
+                      borderRadius: 2,
+                    }}
+                  />
+                </button>
+              );
+            })}
+          </div>
           <input
             type="range"
             min={minThumbSize}
@@ -64,10 +100,9 @@ export default function YearGalleryPanel({
             onChange={(e) => onThumbSizeChange(Number(e.target.value))}
             title="Photo size"
             aria-label="Photo size"
-            className="min-w-0 flex-1 max-w-24 h-1 cursor-pointer"
+            className="min-w-0 flex-1 h-1 cursor-pointer"
             style={{ accentColor: 'var(--theme-primary)' }}
           />
-          <span className="text-xs opacity-60 tabular-nums shrink-0">{photos.length} photo{photos.length === 1 ? '' : 's'}</span>
         </div>
         <div className="flex items-center justify-between gap-2 pb-2 border-b" style={{ borderColor: 'var(--theme-border)' }}>
           <span className="flex items-center gap-1 min-w-0">
@@ -126,8 +161,8 @@ export default function YearGalleryPanel({
                       className="group flex flex-col text-left cursor-pointer min-w-0"
                     >
                       <span
-                        className="block aspect-square w-full overflow-hidden border lf-frame"
-                        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)', borderRadius: `${radius}px` }}
+                        className="block w-full overflow-hidden border lf-frame"
+                        style={{ aspectRatio: `${ratio.w} / ${ratio.h}`, borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)', borderRadius: `${radius}px` }}
                       >
                         <img src={log.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
                       </span>
