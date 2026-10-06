@@ -60,8 +60,9 @@
 }
 
 /* Life Log design system: every frame (panels, cards, cells, modals, the
-   sidebar's groups and rows) shares the sidebar panel's corner radius, so
-   one value rules them all. Elements opt in with the `lf-frame` class;
+   sidebar's groups and rows) shares one corner radius (the project list's
+   own small one, set in the theme's `design`), so one value rules them
+   all. Elements opt in with the `lf-frame` class;
    buttons and chips are not frames and keep their own shapes (the toolbar
    buttons stay pills, above). Unlayered, so it wins over Tailwind's
    rounded-* utilities, and scoped, so other themes are unchanged. */

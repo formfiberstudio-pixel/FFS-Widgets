@@ -281,10 +281,11 @@ const DEFAULT_THEME_PRESETS = [
   // `design` carries what colours can't:
   // the type families (Reflection serif / Utility sans) and the corner
   // radii. By the owner's call every FRAME (panels, cards, cells, modals,
-  // sidebar groups) shares the sidebar panel's radius, so md and lg are
-  // the same value (22); sm is only for the phone's tiny month tiles. It
-  // is only applied to presets that have it, and buttons become pills
-  // (see index.css). This is the default look.
+  // sidebar groups) shares the project list's own small corner (6px, what
+  // its group frames always had), so sm, md and lg are all the same value
+  // rather than the design doc's 8 / 14 / 22. It is only applied to
+  // presets that have it, and buttons become pills (see index.css). This
+  // is the default look.
   {
     id: 'life-log-workshop',
     name: 'Life Log Workshop',
@@ -294,7 +295,7 @@ const DEFAULT_THEME_PRESETS = [
         serif: '"Newsreader", Georgia, serif',
         sans: '"DM Sans", "Helvetica Neue", Arial, sans-serif',
       },
-      radius: { sm: 8, md: 22, lg: 22 },
+      radius: { sm: 6, md: 6, lg: 6 },
     },
     light: {
       bg: '#FAF6F5',
@@ -3276,10 +3277,12 @@ function App() {
                             ? NOTION_COLOR_MAP[projs[0].projectTypeColor]
                             : (themeTokens?.colour?.dot?.[type]?.$value?.hex || currentThemeColors.primary)
                         );
-                        const categoryBorderColor = adjustHexColor(baseTypeHex, 40);
 
+                        // The group frame uses the theme's own neutral border like
+                        // the rest of the UI (it used to be tinted with the
+                        // category's colour); the colour lives on the project dots.
                         return (
-                          <div key={type} className={`border rounded-md lf-frame overflow-hidden shrink-0 shadow-sm ${(hiddenTypes[typeKey] || dimmedByIsolate) ? 'opacity-40' : ''}`} style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
+                          <div key={type} className={`border rounded-md lf-frame overflow-hidden shrink-0 shadow-sm ${(hiddenTypes[typeKey] || dimmedByIsolate) ? 'opacity-40' : ''}`} style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}>
                             <div onClick={() => toggleTypeAccordion(source, type)} className="text-[10px] font-bold uppercase tracking-wider p-2.5 flex items-center justify-between cursor-pointer transition-colors hover:opacity-80">
                               <span className="tracking-wide font-black" style={{ fontSize: `${Math.round(10 * scaleFactor)}px` }}>{type}</span>
                               <div className="flex items-center gap-2">
@@ -3304,7 +3307,7 @@ function App() {
                               </div>
                             </div>
                             {!isHidden && (
-                              <div className="p-2 pt-0 space-y-1.5 border-t" style={{ borderColor: categoryBorderColor, backgroundColor: 'var(--theme-card)' }}>
+                              <div className="p-2 pt-0 space-y-1.5 border-t" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}>
                                 {projs.map((p, i) => {
                                   const isSelected = selectedProjectFilters.includes(p.title);
                                   const dynamicFilterActive = selectedProjectFilters.length > 0;
