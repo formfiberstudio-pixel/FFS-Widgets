@@ -5,7 +5,13 @@
 // one again opens it (see yearGalleryRange). The order toggles between oldest
 // and newest first. Sized by dragging its left edge, like the project list.
 // Clicking a photo opens that day.
+//
+// `width` is the width asked for. The panel is a flex item that may shrink
+// (down to `minWidth`) so the year grid beside it keeps its own minimum when
+// the project list or the window leaves too little room; `panelRef` lets the
+// caller read the width it actually has.
 export default function YearGalleryPanel({
+  panelRef,
   photos,
   rangeLabel,
   filtered,
@@ -15,6 +21,7 @@ export default function YearGalleryPanel({
   onToggleOrder,
   onOpenDay,
   width,
+  minWidth,
   radius,
   onResizeStart,
   onPointerEnter,
@@ -22,8 +29,9 @@ export default function YearGalleryPanel({
 }) {
   return (
     <aside
-      style={{ width: `${width}px`, borderRadius: `${radius}px`, backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-      className="shrink-0 h-full flex flex-col p-4 border shadow-sm relative lf-frame"
+      ref={panelRef}
+      style={{ flex: `0 1 ${width}px`, minWidth: `${minWidth}px`, borderRadius: `${radius}px`, backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+      className="h-full flex flex-col p-4 border shadow-sm relative lf-frame"
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}
     >

@@ -984,6 +984,10 @@ function WeekDayColumn({
 // MAIN APP COMPONENT
 // -------------------------------------------------------------
 const MOBILE_BREAKPOINT = 640;
+// Desktop Year view: the least width (border box) the dot grid keeps -- about
+// 44px a month column -- and the least the gallery tab can be squeezed to.
+const YEAR_GRID_MIN_WIDTH = 600;
+const YEAR_GALLERY_MIN_WIDTH = 220;
 // Set once a browser has been through the move to the Life Log default look.
 const DESIGN_REFRESH_KEY = 'notionWidgetDesignRefresh';
 const DESIGN_REFRESH_VALUE = 'life-log-v1';
@@ -1039,9 +1043,9 @@ function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= MOBILE_BREAKPOINT);
-  // Mobile's header consolidates Sync/Settings/Projects/Import Photos behind
-  // one "more" button instead of showing all four inline -- there isn't
-  // vertical room to spare for a phone screen the way there is on desktop.
+  // The header's "more" button holds Settings / Import Photos (and Projects on
+  // a phone) in a small dropdown, on phone and desktop alike. Sync stays out
+  // of it, beside the Today dot, since it's used constantly.
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   // Mobile's Month view (and desktop's -- see mobileMonthWeeks' many other
   // call sites, it's shared verbatim) is a continuously-scrolling list of
@@ -1295,19 +1299,19 @@ function App() {
   }, [isResizingSidebar]);
 
   // --- YEAR VIEW GALLERY TAB (right-hand panel, desktop Year view only) ---
-  // The mirror of the project list: opens/closes from an edge tab and is
-  // sized by dragging its left edge; both choices are remembered.
-  const [isYearGalleryOpen, setIsYearGalleryOpen] = useState(() => localStorage.getItem('notionWidgetYearGalleryOpen') !== 'false');
+  // The mirror of the project list, but always there (no collapse): sized by
+  // dragging its left edge, and the width is remembered. The width saved is
+  // the one asked for; the panel gives way (CSS, see the render below) when
+  // the project list, or a smaller window, would leave the Year grid less
+  // than YEAR_GRID_MIN_WIDTH, so the dot grid is never squished.
   const [yearGalleryWidth, setYearGalleryWidth] = useState(() => Number(localStorage.getItem('notionWidgetYearGalleryWidth')) || 300);
   const [yearGalleryNewestFirst, setYearGalleryNewestFirst] = useState(() => localStorage.getItem('notionWidgetYearGalleryNewestFirst') === 'true');
   const [isResizingYearGallery, setIsResizingYearGallery] = useState(false);
   const yearGalleryDragStartX = useRef(0);
-  // As wide as 900px, but never more than 60% of the window, so the year
-  // grid always keeps room.
-  const maxYearGalleryWidth = () => Math.min(900, Math.round(window.innerWidth * 0.6));
   const yearGalleryDragStartWidth = useRef(300);
+  const yearGalleryDragMaxWidth = useRef(300);
+  const yearGalleryRef = useRef(null);
 
-  useEffect(() => { localStorage.setItem('notionWidgetYearGalleryOpen', String(isYearGalleryOpen)); }, [isYearGalleryOpen]);
   useEffect(() => { localStorage.setItem('notionWidgetYearGalleryWidth', yearGalleryWidth); }, [yearGalleryWidth]);
   useEffect(() => { localStorage.setItem('notionWidgetYearGalleryNewestFirst', String(yearGalleryNewestFirst)); }, [yearGalleryNewestFirst]);
 
@@ -1315,7 +1319,13 @@ function App() {
     e.preventDefault();
     setIsResizingYearGallery(true);
     yearGalleryDragStartX.current = e.clientX;
-    yearGalleryDragStartWidth.current = yearGalleryWidth;
+    // Start from the width the panel is showing (it may be squeezed below the
+    // saved one), and let it grow only by what the Year grid has to spare
+    // beyond its minimum -- so the limit follows the project list's width.
+    const shown = yearGalleryRef.current ? yearGalleryRef.current.offsetWidth : yearGalleryWidth;
+    const gridSpare = calendarRef.current ? calendarRef.current.offsetWidth - YEAR_GRID_MIN_WIDTH : 0;
+    yearGalleryDragStartWidth.current = shown;
+    yearGalleryDragMaxWidth.current = shown + Math.max(0, gridSpare);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   };
@@ -1325,7 +1335,7 @@ function App() {
       if (!isResizingYearGallery) return;
       // The handle is on the panel's LEFT edge, so dragging left widens it.
       const deltaX = yearGalleryDragStartX.current - e.clientX;
-      setYearGalleryWidth(Math.min(Math.max(yearGalleryDragStartWidth.current + deltaX, 220), maxYearGalleryWidth()));
+      setYearGalleryWidth(Math.min(Math.max(yearGalleryDragStartWidth.current + deltaX, YEAR_GALLERY_MIN_WIDTH), yearGalleryDragMaxWidth.current));
     };
     const handleMouseUp = () => {
       setIsResizingYearGallery(false);
@@ -1445,8 +1455,6 @@ function App() {
   const YEAR_HIGHLIGHT_BUFFER = 6;
   const yearBandThickness = Math.round(yearDotPx * 1.1) + 2 * YEAR_HIGHLIGHT_BUFFER;
   const yearBandCap = `calc(50% - ${yearBandThickness / 2}px)`;
-  // The landscape month band also wraps the month button (about 27px tall).
-  const yearMonthBandHeight = 27 + 2 * YEAR_HIGHLIGHT_BUFFER;
   const yearDotFontPx = Math.round(8 * scaleFactor);
   const cardTitleFontPx = Math.round(11 * scaleFactor);
   const projectTagFontPx = Math.round(10 * scaleFactor);
@@ -1673,10 +1681,6 @@ function App() {
   // --- PROJECT GRADIENT SHADE MAP ---
   const [projectColorMap, setProjectColorMap] = useState({});
 
-  // --- RESPONSIVE ROTATION VARS ---
-  const [yearOrientationMode, setYearOrientationMode] = useState('auto');
-  const [calendarSize, setCalendarSize] = useState({ width: 0, height: 0 });
-
   const appRef = useRef(null);
   const calendarRef = useRef(null);
   const modalCarouselRef = useRef(null);
@@ -1686,29 +1690,11 @@ function App() {
   );
 
   useEffect(() => {
-    if (!calendarRef.current) return;
-    const observer = new ResizeObserver((entries) => {
-      for (let entry of entries) {
-        setCalendarSize({
-          width: entry.contentRect.width,
-          height: entry.contentRect.height,
-        });
-      }
-    });
-    observer.observe(calendarRef.current);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = (e) => setIsDarkMode(e.matches);
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, []);
-
-  const activeYearOrientation = yearOrientationMode === 'auto' 
-    ? (calendarSize.width >= calendarSize.height ? 'landscape' : 'portrait') 
-    : yearOrientationMode;
 
   const currentThemeColors = isDarkMode ? activeTheme.dark : activeTheme.light;
 
@@ -2786,6 +2772,13 @@ function App() {
     ? { fontFamily: 'var(--theme-font-serif)', fontWeight: 400, textTransform: 'none', letterSpacing: 0, lineHeight: 1.1 }
     : null;
   const titleGallerySize = isMobile ? '1.25rem' : '1.6rem';
+  // The tallest title block the calendar views have (Week / Day: the year, then
+  // two lines under it, each as tall as its line-height). Desktop reserves
+  // this much in Year / Month / Week / Day alike, so the header is one height
+  // and the frames below it start at the same place in every view instead of
+  // stepping down as the title grows.
+  const titleBlockMinHeight = `calc(${titleBigSize} + 2px + 2 * ${activeTheme.design ? 1.1 : 1} * ${titleSubSize})`;
+  const isCalendarView = viewMode === 'year' || viewMode === 'month' || viewMode === 'week' || viewMode === 'day';
 
   // -------------------------------------------------------------
   // DYNAMIC THEME & VIEW SCALE INJECTION
@@ -2874,31 +2867,22 @@ function App() {
     );
   }
 
-  // One cell's slice of the highlighted week's band (Year view). Slices of
-  // neighbouring cells abut into one continuous capsule; only the first and
-  // last cell of the week carry a rounded cap, drawn a buffer beyond the dot,
-  // so blank cells before the 1st / after the last day are left out and the
-  // band is only as long as the days it contains. `vertical` is the portrait
-  // layout (months as columns).
-  const renderWeekBand = ({ vertical, isFirst, isLast }) => {
+  // One cell's slice of the highlighted week's band (Year view: months are
+  // columns, so a week runs down). Slices of neighbouring cells abut into one
+  // continuous capsule; only the first and last cell of the week carry a
+  // rounded cap, drawn a buffer beyond the dot, so blank cells before the 1st
+  // / after the last day are left out and the band is only as long as the
+  // days it contains.
+  const renderWeekBand = ({ isFirst, isLast }) => {
     const radius = yearBandThickness / 2;
-    const style = vertical
-      ? {
-          left: '50%', width: yearBandThickness, transform: 'translateX(-50%)',
-          top: isFirst ? yearBandCap : 0, bottom: isLast ? yearBandCap : 0,
-          borderLeftWidth: 1, borderRightWidth: 1,
-          borderTopWidth: isFirst ? 1 : 0, borderBottomWidth: isLast ? 1 : 0,
-          borderTopLeftRadius: isFirst ? radius : 0, borderTopRightRadius: isFirst ? radius : 0,
-          borderBottomLeftRadius: isLast ? radius : 0, borderBottomRightRadius: isLast ? radius : 0,
-        }
-      : {
-          top: '50%', height: yearBandThickness, transform: 'translateY(-50%)',
-          left: isFirst ? yearBandCap : 0, right: isLast ? yearBandCap : 0,
-          borderTopWidth: 1, borderBottomWidth: 1,
-          borderLeftWidth: isFirst ? 1 : 0, borderRightWidth: isLast ? 1 : 0,
-          borderTopLeftRadius: isFirst ? radius : 0, borderBottomLeftRadius: isFirst ? radius : 0,
-          borderTopRightRadius: isLast ? radius : 0, borderBottomRightRadius: isLast ? radius : 0,
-        };
+    const style = {
+      left: '50%', width: yearBandThickness, transform: 'translateX(-50%)',
+      top: isFirst ? yearBandCap : 0, bottom: isLast ? yearBandCap : 0,
+      borderLeftWidth: 1, borderRightWidth: 1,
+      borderTopWidth: isFirst ? 1 : 0, borderBottomWidth: isLast ? 1 : 0,
+      borderTopLeftRadius: isFirst ? radius : 0, borderTopRightRadius: isFirst ? radius : 0,
+      borderBottomLeftRadius: isLast ? radius : 0, borderBottomRightRadius: isLast ? radius : 0,
+    };
     return <span aria-hidden="true" className="absolute pointer-events-none border-amber-500 bg-amber-500/20" style={{ borderStyle: 'solid', ...style }} />;
   };
 
@@ -3124,9 +3108,9 @@ function App() {
           doesn't show through underneath it. */}
       <header
         style={{ backgroundColor: 'var(--theme-bg)' }}
-        className={`sticky top-0 z-30 shrink-0 flex justify-between gap-2 ${isMobile ? 'items-start flex-nowrap mb-2' : 'items-center flex-wrap gap-3 mb-5'}`}
+        className={`sticky top-0 z-30 shrink-0 flex justify-between gap-2 ${isMobile ? 'items-start flex-nowrap mb-2' : `${isCalendarView ? 'items-start' : 'items-center'} flex-wrap gap-3 mb-5`}`}
       >
-        <div className="min-w-0 shrink">
+        <div className="min-w-0 shrink" style={!isMobile && isCalendarView ? { minHeight: titleBlockMinHeight } : undefined}>
           {viewMode === 'gallery' ? (
             <div className="leading-none">
               <button
@@ -3215,10 +3199,10 @@ function App() {
                 className="block font-black uppercase tracking-wide mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
                 style={{ fontSize: titleSubSize, ...serifSubFace }}
               >
-                {currentDate.toLocaleDateString('en-US', { weekday: 'long' })}
+                {currentDate.toLocaleDateString('en-US', { month: 'long' })}
               </button>
               <div className="font-black uppercase tracking-wide" style={{ fontSize: titleSubSize, ...serifSubFace }}>
-                {currentDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                {currentDate.toLocaleDateString('en-US', { weekday: 'short' })} {currentDate.getDate()}
               </div>
             </div>
           ) : viewMode === 'week' ? (
@@ -3281,9 +3265,9 @@ function App() {
         </div>
 
         {/* HEADER CONTROLS -- one design for phone and desktop: the date scale,
-            a Today dot, and a "more" button holding Sync / Settings / Import
-            Photos (plus Projects on a phone, where there is no edge tab for
-            it). Desktop adds Prev / Next beside Today; a phone drops them for
+            a Today dot and a Sync button beside it, and a "more" button
+            holding Settings / Import Photos (plus Projects on a phone, where
+            there is no edge tab for it). Desktop adds Prev / Next beside Today; a phone drops them for
             swiping the calendar itself (see handleCalendarTouchStart/End on
             <main>) -- month and week navigation there should feel like paging
             through photos, not clicking a web nav bar. Hidden on a phone
@@ -3318,6 +3302,16 @@ function App() {
                 </button>
               )}
               <button
+                onClick={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
+                disabled={isLoading || !tenantId}
+                title={isDemoMode ? 'Sync (disabled in demo)' : 'Sync with Notion'}
+                aria-label="Sync with Notion"
+                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                className="w-7 h-7 rounded-full border flex items-center justify-center cursor-pointer disabled:opacity-50 disabled:cursor-default"
+              >
+                <span className={isLoading ? 'animate-spin' : ''}><IconSync /></span>
+              </button>
+              <button
                 onClick={() => setShowMobileMenu((v) => !v)}
                 title="More"
                 style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
@@ -3337,15 +3331,6 @@ function App() {
                   style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
                   className="absolute right-0 top-full mt-2 z-50 w-56 rounded-lg lf-frame border shadow-xl overflow-hidden"
                 >
-                  <button
-                    onClick={() => { setShowMobileMenu(false); if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
-                    disabled={isLoading || !tenantId}
-                    style={{ borderColor: 'var(--theme-border)' }}
-                    className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left border-b cursor-pointer disabled:opacity-50"
-                  >
-                    <span className={isLoading ? 'animate-spin' : ''}><IconSync /></span>
-                    <span>{isDemoMode ? 'Sync (disabled in demo)' : 'Sync'}</span>
-                  </button>
                   <button
                     onClick={() => { setShowMobileMenu(false); setShowSettings(true); }}
                     style={{ borderColor: 'var(--theme-border)' }}
@@ -3750,6 +3735,11 @@ function App() {
             borderRadius: isMobile ? 0 : `${panelRadius}px`,
             backgroundColor: isMobile ? 'transparent' : 'var(--theme-card)',
             borderColor: 'var(--theme-border)',
+            // Year view (desktop): the grid asks for YEAR_GRID_MIN_WIDTH and the
+            // gallery, which can shrink, gives way first. The canvas' own shrink
+            // factor is tiny rather than 0 so that on a window too narrow even
+            // for the gallery's minimum it still shrinks instead of overflowing.
+            ...(viewMode === 'year' && !isMobile ? { flex: `1 0.001 ${YEAR_GRID_MIN_WIDTH}px` } : {}),
           }}
           className={`flex-1 h-full min-h-0 min-w-0 overflow-hidden flex flex-col relative transition-colors ${isMobile ? '' : 'border rounded-xl shadow-sm p-4'}`}
         >
@@ -4841,357 +4831,175 @@ function App() {
 
           {viewMode === 'year' && !isMobile && (
             <div className="flex flex-col h-full w-full min-w-0 min-h-0 relative">
-              <div className="absolute top-0 right-0 z-50 flex items-center border shadow-sm rounded-md p-1 text-[10px] font-bold" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
-                <button 
-                  onClick={() => setYearOrientationMode('auto')}
-                  className={`px-2 py-1 rounded-sm transition-colors ${yearOrientationMode === 'auto' ? 'bg-black/20 font-bold' : 'opacity-60'}`}
-                  title="Auto Switch based on container width vs height"
-                >
-                  AUTO
-                </button>
-                <div className="w-px h-3 mx-1" style={{ backgroundColor: 'var(--theme-border)' }}></div>
-                <button 
-                  onClick={() => setYearOrientationMode('landscape')}
-                  className={`px-2 py-1 rounded-sm transition-colors ${yearOrientationMode === 'landscape' ? 'bg-black/20 font-bold' : 'opacity-60'}`}
-                  title="Force Landscape (Months on Y-Axis)"
-                >
-                  ↔
-                </button>
-                <button 
-                  onClick={() => setYearOrientationMode('portrait')}
-                  className={`px-2 py-1 rounded-sm transition-colors ${yearOrientationMode === 'portrait' ? 'bg-black/20 font-bold' : 'opacity-60'}`}
-                  title="Force Portrait (Months on X-Axis)"
-                >
-                  ↕
-                </button>
-              </div>
-
-              {activeYearOrientation === 'portrait' ? (
-                /* --- PORTRAIT LAYOUT --- */
-                // Below sm, 12 month columns are given a real minimum width
-                // (38px) instead of shrinking to fit no matter what -- at
-                // 375px that no longer divides evenly, so the whole grid
-                // scrolls horizontally rather than squeezing every day dot
-                // and month label down past legibility.
-                <div className="flex flex-col h-full w-full min-w-0 min-h-0 mt-8 relative overflow-x-auto sm:overflow-x-visible">
-                  <div className="grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] items-center mb-2 border-b pb-2 shrink-0 min-w-[486px] sm:min-w-0" style={{ borderColor: 'var(--theme-border)' }}>
-                    <div className="text-[9px] font-bold uppercase tracking-wider opacity-50 text-center">Day</div>
-                    {MONTH_NAMES.map((monthLabel, mIdx) => (
-                      <div
-                        key={monthLabel}
-                        onClick={() => handleYearMonthClick(mIdx)}
-                        onMouseEnter={() => setHoveredMonthButtonIndex(mIdx)}
-                        onMouseLeave={() => setHoveredMonthButtonIndex(null)}
-                        style={{ backgroundColor: (hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx)) ? 'var(--theme-primary-10, rgba(244, 63, 94, 0.15))' : 'var(--theme-bg)', borderColor: (hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx)) ? 'var(--theme-primary)' : 'var(--theme-border)' }}
-                        className="text-[10px] sm:text-[11px] font-bold text-center tracking-wide py-1 mx-1 rounded border transition-all cursor-pointer"
-                      >
-                        {monthLabel}
+              {/* The Year grid: months are columns, weekdays run down the side.
+                  (There used to be a second, landscape layout with months as
+                  rows; the web Year view is portrait only now -- the gallery
+                  tab takes the width that layout needed.) Below sm, 12 month
+                  columns are given a real minimum width (38px) instead of
+                  shrinking to fit no matter what, so the whole grid scrolls
+                  horizontally rather than squeezing every day dot and month
+                  label down past legibility. */}
+              <div className="flex flex-col h-full w-full min-w-0 min-h-0 relative overflow-x-auto sm:overflow-x-visible">
+                <div className="grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] items-center mb-2 border-b pb-2 shrink-0 min-w-[486px] sm:min-w-0" style={{ borderColor: 'var(--theme-border)' }}>
+                  <div className="text-[9px] font-bold uppercase tracking-wider opacity-50 text-center">Day</div>
+                  {MONTH_NAMES.map((monthLabel, mIdx) => (
+                    <div
+                      key={monthLabel}
+                      onClick={() => handleYearMonthClick(mIdx)}
+                      onMouseEnter={() => setHoveredMonthButtonIndex(mIdx)}
+                      onMouseLeave={() => setHoveredMonthButtonIndex(null)}
+                      style={{ backgroundColor: (hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx)) ? 'var(--theme-primary-10, rgba(244, 63, 94, 0.15))' : 'var(--theme-bg)', borderColor: (hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx)) ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                      className="text-[10px] sm:text-[11px] font-bold text-center tracking-wide py-1 mx-1 rounded border transition-all cursor-pointer"
+                    >
+                      {monthLabel}
+                    </div>
+                  ))}
+                </div>
+                
+                <div className="flex-1 flex flex-col justify-between min-h-0 min-w-[486px] sm:min-w-0 relative">
+                  <div className="absolute inset-0 grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] pointer-events-none z-0">
+                    <div />
+                    {MONTH_NAMES.map((_, mIdx) => (
+                      <div key={mIdx} className="relative h-full flex justify-center">
+                        <div className="absolute top-0 bottom-0 w-[1.5px]" style={{ backgroundColor: 'var(--theme-border)' }} />
+                        {(hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx)) && (() => {
+                          // Hugs this month's first to last day (not the blank rows
+                          // either side of it), a buffer past the dots all round.
+                          const firstRow = new Date(year, mIdx, 1).getDay();
+                          const lastRowsAfter = 37 - (firstRow + new Date(year, mIdx + 1, 0).getDate());
+                          return (
+                            <span
+                              aria-hidden="true"
+                              className="absolute pointer-events-none border border-amber-500 bg-amber-500/20"
+                              style={{
+                                left: '50%', width: yearBandThickness, transform: 'translateX(-50%)',
+                                top: `calc(${firstRow} * 100% / 37 + 50% / 37 - ${yearBandThickness / 2}px)`,
+                                bottom: `calc(${lastRowsAfter} * 100% / 37 + 50% / 37 - ${yearBandThickness / 2}px)`,
+                                borderRadius: yearBandThickness / 2,
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>
-                  
-                  <div className="flex-1 flex flex-col justify-between min-h-0 min-w-[486px] sm:min-w-0 relative">
-                    <div className="absolute inset-0 grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] pointer-events-none z-0">
-                      <div />
-                      {MONTH_NAMES.map((_, mIdx) => (
-                        <div key={mIdx} className="relative h-full flex justify-center">
-                          <div className="absolute top-0 bottom-0 w-[1.5px]" style={{ backgroundColor: 'var(--theme-border)' }} />
-                          {(hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx)) && (() => {
-                            // Hugs this month's first to last day (not the blank rows
-                            // either side of it), a buffer past the dots all round.
-                            const firstRow = new Date(year, mIdx, 1).getDay();
-                            const lastRowsAfter = 37 - (firstRow + new Date(year, mIdx + 1, 0).getDate());
-                            return (
-                              <span
-                                aria-hidden="true"
-                                className="absolute pointer-events-none border border-amber-500 bg-amber-500/20"
-                                style={{
-                                  left: '50%', width: yearBandThickness, transform: 'translateX(-50%)',
-                                  top: `calc(${firstRow} * 100% / 37 + 50% / 37 - ${yearBandThickness / 2}px)`,
-                                  bottom: `calc(${lastRowsAfter} * 100% / 37 + 50% / 37 - ${yearBandThickness / 2}px)`,
-                                  borderRadius: yearBandThickness / 2,
-                                }}
-                              />
-                            );
-                          })()}
+
+                  {Array.from({ length: 37 }).map((_, rowIndex) => {
+                    const weekdayStr = TIMELINE_WEEKDAYS[rowIndex % 7];
+                    const isWeekendRow = weekdayStr === 'SUN' || weekdayStr === 'SAT';
+                    const weekIndex = Math.floor(rowIndex / 7);
+                                          
+                    return (
+                      <div key={rowIndex} className="flex-1 grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] items-center min-h-0 relative z-10">
+                        {/* The row's guide: dashed, through the dots' centres (it
+                            used to be a border along the row's bottom edge, which
+                            bounded the dots instead). Starts after the weekday
+                            label, and sits under the dots. */}
+                        <div className="absolute right-0 top-1/2 left-[30px] sm:left-[40px] border-t border-dashed pointer-events-none" style={{ borderColor: 'var(--theme-border)' }} />
+                        <div className="h-full flex items-center justify-center">
+                           <div className={`w-full text-[8px] sm:text-[9px] font-black tracking-tight py-0.5 text-center rounded ${isWeekendRow ? 'font-bold' : 'opacity-40'}`} style={{ color: isWeekendRow ? 'var(--theme-primary)' : undefined }}>
+                             {weekdayStr.slice(0, 2)}
+                           </div>
                         </div>
-                      ))}
-                    </div>
 
-                    {Array.from({ length: 37 }).map((_, rowIndex) => {
-                      const weekdayStr = TIMELINE_WEEKDAYS[rowIndex % 7];
-                      const isWeekendRow = weekdayStr === 'SUN' || weekdayStr === 'SAT';
-                      const weekIndex = Math.floor(rowIndex / 7);
-                                            
-                      return (
-                        <div key={rowIndex} className="flex-1 grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] items-center min-h-0 relative z-10">
-                          {/* The row's guide: dashed, through the dots' centres (it
-                              used to be a border along the row's bottom edge, which
-                              bounded the dots instead). Starts after the weekday
-                              label, and sits under the dots. */}
-                          <div className="absolute right-0 top-1/2 left-[30px] sm:left-[40px] border-t border-dashed pointer-events-none" style={{ borderColor: 'var(--theme-border)' }} />
-                          <div className="h-full flex items-center justify-center">
-                             <div className={`w-full text-[8px] sm:text-[9px] font-black tracking-tight py-0.5 text-center rounded ${isWeekendRow ? 'font-bold' : 'opacity-40'}`} style={{ color: isWeekendRow ? 'var(--theme-primary)' : undefined }}>
-                               {weekdayStr.slice(0, 2)}
-                             </div>
-                          </div>
+                        {MONTH_NAMES.map((_, mIdx) => {
+                          const firstDayOfMonthObj = new Date(year, mIdx, 1);
+                          const startOffsetColumn = firstDayOfMonthObj.getDay();
+                          const daysInMonth = new Date(year, mIdx + 1, 0).getDate();
+                          const targetDayNum = rowIndex - startOffsetColumn + 1;
+                          const isValidCalendarDay = targetDayNum > 0 && targetDayNum <= daysInMonth;
 
-                          {MONTH_NAMES.map((_, mIdx) => {
-                            const firstDayOfMonthObj = new Date(year, mIdx, 1);
-                            const startOffsetColumn = firstDayOfMonthObj.getDay();
-                            const daysInMonth = new Date(year, mIdx + 1, 0).getDate();
-                            const targetDayNum = rowIndex - startOffsetColumn + 1;
-                            const isValidCalendarDay = targetDayNum > 0 && targetDayNum <= daysInMonth;
+                          const isHoveredWeekCell = highlightedWeekStarts.has(new Date(year, mIdx, rowIndex - startOffsetColumn + 1 - (rowIndex % 7)).getTime());
 
-                            const isHoveredWeekCell = highlightedWeekStarts.has(new Date(year, mIdx, rowIndex - startOffsetColumn + 1 - (rowIndex % 7)).getTime());
+                          if (!isValidCalendarDay) {
+                            return <div key={mIdx} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => setHoveredWeek({ mIdx, weekIndex })} onMouseLeave={() => setHoveredWeek(null)} className="h-full w-full flex items-center justify-center transition-colors cursor-pointer px-0.5" />;
+                          }
 
-                            if (!isValidCalendarDay) {
-                              return <div key={mIdx} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => setHoveredWeek({ mIdx, weekIndex })} onMouseLeave={() => setHoveredWeek(null)} className="h-full w-full flex items-center justify-center transition-colors cursor-pointer px-0.5" />;
-                            }
-
-                            const targetDate = new Date(year, mIdx, targetDayNum);
-                            const logs = getLogsForDate(targetDate);
-                            const hasLog = logs.length > 0;
-                            const uniqueProjects = new Set(logs.map(l => l.Projects || 'Untitled Project'));
-                            const hasMultipleProjects = uniqueProjects.size > 1;
-                            const primaryLog = hasLog ? logs[0] : null;
-                            const displayDotHex = getDisplayDotColor(logs, targetDate);
-                            const specialDay = getSpecialDayForDate(targetDate, specialDays);
-                            const dotStyle = getDayDotStyling(targetDate, hasLog, displayDotHex, specialDay);
-                            const isSpecialDay = !!(getOntarioStatHolidayName(targetDate) || targetDate.getDay() === 0 || targetDate.getDay() === 6 || specialDay);
-                            
-                            const isHoveredProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
-                            const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
-
-                            return (
-                              <div key={mIdx} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className="h-full w-full flex items-center justify-center relative cursor-pointer group/node transition-colors px-0.5">
-                                {isHoveredWeekCell && renderWeekBand({
-                                  vertical: true,
-                                  isFirst: rowIndex % 7 === 0 || targetDayNum === 1,
-                                  isLast: rowIndex % 7 === 6 || targetDayNum === daysInMonth || rowIndex === 36,
-                                })}
-                                <div
-                                  onClick={(e) => { e.stopPropagation(); setSelectedLogModal({ dateObj: targetDate, logs }); }}  
-                                  style={{ 
-                                    width: `${yearDotPx}px`,
-                                    height: `${yearDotPx}px`,
-                                    fontSize: `${yearDotFontPx}px`,
-                                    backgroundColor: dotStyle.bg,
-                                    color: dotStyle.text,
-                                    borderColor: dotStyle.border 
-                                  }}
-                                  className={`rounded-full flex items-center justify-center transition-all duration-200 relative z-20 border bg-[var(--theme-card)] ${
-                                    hasLog || isSpecialDay ? 'font-bold shadow-xs' : ''
-                                  // scale-125 on highlight (used to sit
-                                  // alongside the ring below) pushed dots at
-                                  // the grid's own edge past the container's
-                                  // overflow-hidden boundary -- dropped, the
-                                  // ring alone still reads as highlighted.
-                                  } ${hasLog ? 'scale-110' : ''} ${isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1 font-bold z-30' : isToday(targetDate) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 font-bold' : ''} ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
-                                >
-                                  {targetDayNum}
-                                  {hasMultipleProjects && (
-                                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-[6px] font-black flex items-center justify-center leading-none p-0 border border-white/80 shadow-xs select-none" style={{ backgroundColor: 'var(--theme-secondary)', color: 'var(--theme-on-secondary)' }}>
-                                      +
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : (
-                /* --- LANDSCAPE LAYOUT --- */
-                // Same reasoning as the portrait grid above: below sm, 37 day
-                // columns get a real minimum width instead of shrinking to
-                // nothing, and the whole thing scrolls horizontally once
-                // that minimum no longer fits.
-                <div className="flex flex-col h-full w-full min-w-0 min-h-0 mt-8 overflow-x-auto sm:overflow-x-visible">
-                  <div className="grid grid-cols-[50px_1fr] sm:grid-cols-[65px_1fr] items-center mb-2 border-b pb-2 shrink-0 min-w-[568px] sm:min-w-0" style={{ borderColor: 'var(--theme-border)' }}>
-                    <div className="text-[9px] font-bold uppercase tracking-wider opacity-50 text-center">Month</div>
-                    <div className="grid gap-0 text-center min-w-0" style={{ gridTemplateColumns: 'repeat(37, minmax(14px, 1fr))' }}>
-                      {Array.from({ length: 37 }).map((_, colIndex) => {
-                        const weekdayStr = TIMELINE_WEEKDAYS[colIndex % 7];
-                        const isWeekend = weekdayStr === 'SUN' || weekdayStr === 'SAT';
-                        return <div key={colIndex} className={`text-[8px] sm:text-[9px] font-black tracking-tight py-1 ${isWeekend ? 'font-bold' : 'opacity-40'}`} style={{ color: isWeekend ? 'var(--theme-primary)' : undefined }}>{weekdayStr.slice(0, 2)}</div>;
-                      })}
-                    </div>
-                  </div>
-                  
-                  <div className="flex-1 flex flex-col justify-between min-h-0 min-w-[568px] sm:min-w-0 relative">
-                    {/* Day-of-week guides: a dashed vertical line through the centre
-                        of each of the 37 day columns, behind the dots -- the
-                        counterpart of the portrait layout's month columns. Starts
-                        after the month-button column, and sits under the rows. */}
-                    <div className="absolute inset-0 grid grid-cols-[50px_1fr] sm:grid-cols-[65px_1fr] pointer-events-none z-0" aria-hidden="true">
-                      <div />
-                      <div className="grid h-full min-w-0" style={{ gridTemplateColumns: 'repeat(37, minmax(14px, 1fr))' }}>
-                        {Array.from({ length: 37 }).map((_, colIndex) => (
-                          <div key={colIndex} className="relative h-full">
-                            <div className="absolute left-1/2 top-0 bottom-0 border-l border-dashed" style={{ borderColor: 'var(--theme-border)' }} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {MONTH_NAMES.map((monthLabel, mIdx) => {
-                      const firstDayOfMonthObj = new Date(year, mIdx, 1);
-                      const startOffsetColumn = firstDayOfMonthObj.getDay(); 
-                      const daysInMonth = new Date(year, mIdx + 1, 0).getDate();
-                      const isMonthHovered = hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx);
-
-                      return (
-                        <div
-                          key={monthLabel}
-                          className="grid grid-cols-[50px_1fr] sm:grid-cols-[65px_1fr] items-center h-full min-h-0 min-w-0 relative"
-                        >
-                          {/* MONTH BUTTON ON LEFT TRIGGER */}
-                          <div 
-                            onClick={() => handleYearMonthClick(mIdx)} 
-                            onMouseEnter={() => setHoveredMonthButtonIndex(mIdx)}
-                            onMouseLeave={() => setHoveredMonthButtonIndex(null)}
-                            style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }} 
-                            className="text-[10px] sm:text-[11px] font-bold text-center tracking-wide py-1 mx-1 rounded border transition-all cursor-pointer hover:border-[var(--theme-primary)] z-30"
-                          >
-                            {monthLabel}
-                          </div>
+                          const targetDate = new Date(year, mIdx, targetDayNum);
+                          const logs = getLogsForDate(targetDate);
+                          const hasLog = logs.length > 0;
+                          const uniqueProjects = new Set(logs.map(l => l.Projects || 'Untitled Project'));
+                          const hasMultipleProjects = uniqueProjects.size > 1;
+                          const primaryLog = hasLog ? logs[0] : null;
+                          const displayDotHex = getDisplayDotColor(logs, targetDate);
+                          const specialDay = getSpecialDayForDate(targetDate, specialDays);
+                          const dotStyle = getDayDotStyling(targetDate, hasLog, displayDotHex, specialDay);
+                          const isSpecialDay = !!(getOntarioStatHolidayName(targetDate) || targetDate.getDay() === 0 || targetDate.getDay() === 6 || specialDay);
                           
-                          <div className="grid items-center relative h-full min-w-0" style={{ gridTemplateColumns: 'repeat(37, minmax(14px, 1fr))' }}>
-                            <div className="absolute left-2 right-2 top-1/2 -translate-y-1/2 h-[1.5px] z-0 pointer-events-none" style={{ backgroundColor: 'var(--theme-border)' }} />
+                          const isHoveredProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
+                          const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
 
-                            {isMonthHovered && (
-                              // From the month button (one buffer left of it) to this
-                              // month's last day (one buffer past its dot) -- not the
-                              // blank columns after it. Placed by grid column so its
-                              // right edge follows the dots, whatever the width.
-                              <span
-                                aria-hidden="true"
-                                className="absolute pointer-events-none border border-amber-500 bg-amber-500/20"
-                                style={{
-                                  gridColumn: `1 / ${startOffsetColumn + daysInMonth + 1}`,
-                                  gridRow: 1,
-                                  top: '50%',
-                                  transform: 'translateY(-50%)',
-                                  height: yearMonthBandHeight,
-                                  left: `calc(-65px + 4px - ${YEAR_HIGHLIGHT_BUFFER}px)`,
-                                  right: `calc(${50 / (startOffsetColumn + daysInMonth)}% - ${yearBandThickness / 2}px)`,
-                                  borderRadius: 8,
+                          return (
+                            <div key={mIdx} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className="h-full w-full flex items-center justify-center relative cursor-pointer group/node transition-colors px-0.5">
+                              {isHoveredWeekCell && renderWeekBand({
+                                isFirst: rowIndex % 7 === 0 || targetDayNum === 1,
+                                isLast: rowIndex % 7 === 6 || targetDayNum === daysInMonth || rowIndex === 36,
+                              })}
+                              <div
+                                onClick={(e) => { e.stopPropagation(); setSelectedLogModal({ dateObj: targetDate, logs }); }}  
+                                style={{ 
+                                  width: `${yearDotPx}px`,
+                                  height: `${yearDotPx}px`,
+                                  fontSize: `${yearDotFontPx}px`,
+                                  backgroundColor: dotStyle.bg,
+                                  color: dotStyle.text,
+                                  borderColor: dotStyle.border 
                                 }}
-                              />
-                            )}
-
-                            {Array.from({ length: 37 }).map((_, colIndex) => {
-                              const weekIndex = Math.floor(colIndex / 7);
-                              const isHoveredWeekCell = highlightedWeekStarts.has(new Date(year, mIdx, colIndex - startOffsetColumn + 1 - (colIndex % 7)).getTime());
-                              const targetDayNum = colIndex - startOffsetColumn + 1;
-                              const isValidCalendarDay = targetDayNum > 0 && targetDayNum <= daysInMonth;
-
-                              if (!isValidCalendarDay) {
-                                return <div key={colIndex} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => setHoveredWeek({ mIdx, weekIndex })} onMouseLeave={() => setHoveredWeek(null)} className="h-full flex items-center justify-center transition-colors cursor-pointer px-0.5" />;
-                              }
-                              
-                              const targetDate = new Date(year, mIdx, targetDayNum);
-                              const logs = getLogsForDate(targetDate);
-                              const hasLog = logs.length > 0;
-                              const uniqueProjects = new Set(logs.map(l => l.Projects || 'Untitled Project'));
-                              const hasMultipleProjects = uniqueProjects.size > 1;
-                              const primaryLog = hasLog ? logs[0] : null;
-                              const displayDotHex = getDisplayDotColor(logs, targetDate);
-                              const specialDay = getSpecialDayForDate(targetDate, specialDays);
-                              const dotStyle = getDayDotStyling(targetDate, hasLog, displayDotHex, specialDay);
-                              const isSpecialDay = !!(getOntarioStatHolidayName(targetDate) || targetDate.getDay() === 0 || targetDate.getDay() === 6 || specialDay);
-                              
-                              const isHoveredProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
-                              const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
-                              
-                              return (
-                                <div key={colIndex} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className="h-full flex items-center justify-center relative cursor-pointer group/node transition-colors px-0.5">
-                                  {isHoveredWeekCell && renderWeekBand({
-                                    vertical: false,
-                                    isFirst: colIndex % 7 === 0 || targetDayNum === 1,
-                                    isLast: colIndex % 7 === 6 || targetDayNum === daysInMonth,
-                                  })}
-                                  <div
-                                    onClick={(e) => { e.stopPropagation(); setSelectedLogModal({ dateObj: targetDate, logs }); }}  
-                                    style={{ 
-                                      width: `${yearDotPx}px`,
-                                      height: `${yearDotPx}px`,
-                                      fontSize: `${yearDotFontPx}px`,
-                                      backgroundColor: dotStyle.bg,
-                                      color: dotStyle.text,
-                                      borderColor: dotStyle.border 
-                                    }}
-                                    className={`rounded-full flex items-center justify-center transition-all duration-200 relative z-20 border bg-[var(--theme-card)] ${
-                                      hasLog || isSpecialDay ? 'font-bold shadow-xs' : ''
-                                    // scale-125 on highlight (used to sit
-                                  // alongside the ring below) pushed dots at
-                                  // the grid's own edge past the container's
-                                  // overflow-hidden boundary -- dropped, the
-                                  // ring alone still reads as highlighted.
-                                  } ${hasLog ? 'scale-110' : ''} ${isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1 font-bold z-30' : isToday(targetDate) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 font-bold' : ''} ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
-                                  >
-                                    {targetDayNum}
-                                    {hasMultipleProjects && (
-                                      <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-[6px] font-black flex items-center justify-center leading-none p-0 border border-white/80 shadow-xs select-none" style={{ backgroundColor: 'var(--theme-secondary)', color: 'var(--theme-on-secondary)' }}>
-                                        +
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                                className={`rounded-full flex items-center justify-center transition-all duration-200 relative z-20 border bg-[var(--theme-card)] ${
+                                  hasLog || isSpecialDay ? 'font-bold shadow-xs' : ''
+                                // scale-125 on highlight (used to sit
+                                // alongside the ring below) pushed dots at
+                                // the grid's own edge past the container's
+                                // overflow-hidden boundary -- dropped, the
+                                // ring alone still reads as highlighted.
+                                } ${hasLog ? 'scale-110' : ''} ${isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1 font-bold z-30' : isToday(targetDate) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 font-bold' : ''} ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
+                              >
+                                {targetDayNum}
+                                {hasMultipleProjects && (
+                                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-[6px] font-black flex items-center justify-center leading-none p-0 border border-white/80 shadow-xs select-none" style={{ backgroundColor: 'var(--theme-secondary)', color: 'var(--theme-on-secondary)' }}>
+                                    +
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
                 </div>
-              )}
+              </div>
             </div>
           )}
         </main>
 
         {/* YEAR GALLERY TAB -- desktop Year view only: the year's photos in a
             panel on the right, the counterpart of the project list on the
-            left (same edge tab, same drag-to-resize). It filters to whichever
-            month or week is hovered in the grid, and flips between oldest
-            and newest first. */}
+            left (same drag-to-resize, but always shown). It filters to
+            whichever month or week is hovered or pinned in the grid, and
+            flips between oldest and newest first. */}
         {viewMode === 'year' && !isMobile && (() => {
           const activeGalleryFilter = heldGalleryFilter ?? pinnedYearFilter;
           const { start, end, label } = yearGalleryRange(year, activeGalleryFilter);
-          const photos = isYearGalleryOpen ? collectYearPhotos(getLogsForDate, start, end, yearGalleryNewestFirst) : [];
+          const photos = collectYearPhotos(getLogsForDate, start, end, yearGalleryNewestFirst);
           return (
-            <>
-              <button
-                onClick={() => setIsYearGalleryOpen((prev) => !prev)}
-                title={isYearGalleryOpen ? 'Hide Gallery' : 'Show Gallery'}
-                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-primary)' }}
-                className="shrink-0 self-start mt-4 -mx-6 z-20 w-4 h-14 rounded-md border flex items-center justify-center cursor-pointer hover:w-5 hover:border-[var(--theme-primary)] transition-all shadow-sm"
-              >
-                <span className="text-[10px] font-bold leading-none">{isYearGalleryOpen ? '›' : '‹'}</span>
-              </button>
-              {isYearGalleryOpen && (
-                <YearGalleryPanel
-                  photos={photos}
-                  rangeLabel={label}
-                  filtered={Boolean(activeGalleryFilter)}
-                  pinned={Boolean(pinnedYearFilter)}
-                  onClearFilter={() => setPinnedYearFilter(null)}
-                  newestFirst={yearGalleryNewestFirst}
-                  onToggleOrder={() => setYearGalleryNewestFirst((prev) => !prev)}
-                  onOpenDay={(dateObj) => setSelectedLogModal({ dateObj, logs: getLogsForDate(dateObj) })}
-                  width={Math.min(yearGalleryWidth, maxYearGalleryWidth())}
-                  radius={panelRadius}
-                  onResizeStart={handleMouseDownYearGalleryResize}
-                  onPointerEnter={() => { yearGalleryPointerInside.current = true; }}
-                  onPointerLeave={() => { yearGalleryPointerInside.current = false; setHeldGalleryFilter(null); }}
-                />
-              )}
-            </>
+            <YearGalleryPanel
+              panelRef={yearGalleryRef}
+              photos={photos}
+              rangeLabel={label}
+              filtered={Boolean(activeGalleryFilter)}
+              pinned={Boolean(pinnedYearFilter)}
+              onClearFilter={() => setPinnedYearFilter(null)}
+              newestFirst={yearGalleryNewestFirst}
+              onToggleOrder={() => setYearGalleryNewestFirst((prev) => !prev)}
+              onOpenDay={(dateObj) => setSelectedLogModal({ dateObj, logs: getLogsForDate(dateObj) })}
+              width={Math.max(yearGalleryWidth, YEAR_GALLERY_MIN_WIDTH)}
+              minWidth={YEAR_GALLERY_MIN_WIDTH}
+              radius={panelRadius}
+              onResizeStart={handleMouseDownYearGalleryResize}
+              onPointerEnter={() => { yearGalleryPointerInside.current = true; }}
+              onPointerLeave={() => { yearGalleryPointerInside.current = false; setHeldGalleryFilter(null); }}
+            />
           );
         })()}
       </div>
