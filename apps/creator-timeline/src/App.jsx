@@ -2662,6 +2662,17 @@ function App() {
     else setCurrentDate(new Date(currentDate.getFullYear() + 1, currentDate.getMonth(), 1));
   };
 
+  // Opens Import Photos for one day (start === end) or one week -- the Day and
+  // Week pages' "Import Photos for..." buttons on the web. (The phone's own
+  // buttons, further down, do the same steps inline.) Back returns to the
+  // page it was opened from.
+  const openImportForRange = (start, end) => {
+    setPreGalleryViewMode(viewMode);
+    pushBackEntry({ viewMode, currentDate, galleryTarget });
+    setImportDateRange({ start, end });
+    setViewMode('import');
+  };
+
   // Import Photos panel (viewMode 'import'), opened for a fixed single day
   // or week via the Day/Week "Import Photos for..." buttons: shifts
   // importDateRange to the adjacent block, same granularity it was opened
@@ -3225,10 +3236,28 @@ function App() {
                 const parseLocal = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
                 const startLabel = parseLocal(importDateRange.start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
                 const endLabel = parseLocal(importDateRange.end).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                const unit = importDateRange.start === importDateRange.end ? 'day' : 'week';
+                // Arrows step to the neighbouring day / week where there is no
+                // swipe to do it (the phone swipes; see shiftImportDateRange).
+                const stepButton = (direction, glyph) => (
+                  <button
+                    onClick={() => shiftImportDateRange(direction)}
+                    title={`${direction < 0 ? 'Previous' : 'Next'} ${unit}`}
+                    aria-label={`${direction < 0 ? 'Previous' : 'Next'} ${unit}`}
+                    style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                    className="w-7 h-7 rounded-full border flex items-center justify-center text-base font-bold leading-none cursor-pointer"
+                  >
+                    {glyph}
+                  </button>
+                );
                 return (
-                  <p className="text-sm mt-1 opacity-60">
-                    Only for {importDateRange.start === importDateRange.end ? startLabel : `${startLabel} – ${endLabel}`}
-                  </p>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    {!isMobile && stepButton(-1, '‹')}
+                    <p className="text-sm opacity-60">
+                      Only for {importDateRange.start === importDateRange.end ? startLabel : `${startLabel} – ${endLabel}`}
+                    </p>
+                    {!isMobile && stepButton(1, '›')}
+                  </div>
                 );
               })()}
             </div>
@@ -4615,6 +4644,19 @@ function App() {
                 onToggle={(title) => setHoveredProjectTitle(hoveredProjectTitle === title ? null : title)}
                 getDot={(row) => getPillBackground(row.sampleLog, getDisplayDotColor(row.sampleDayLogs, row.sampleDate))}
               />
+
+              <div className="shrink-0 flex justify-end mt-3">
+                <button
+                  onClick={() => openImportForRange(toLocalDateInputValue(startOfWeek), toLocalDateInputValue(endOfWeek))}
+                  disabled={isDemoMode || !tenantId}
+                  title={isDemoMode || !tenantId ? 'Import Photos is not available in the demo' : 'Add photos taken this week'}
+                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
+                  className="px-4 py-2 rounded-lg border text-sm font-bold cursor-pointer flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <IconUpload />
+                  <span>Import Photos for This Week</span>
+                </button>
+              </div>
             </div>
           )}
 
@@ -4637,6 +4679,18 @@ function App() {
                   >
                     <span>←</span>
                     <span>Back</span>
+                  </button>
+                ),
+                trailing: (
+                  <button
+                    onClick={() => { const key = toLocalDateInputValue(currentDate); openImportForRange(key, key); }}
+                    disabled={isDemoMode || !tenantId}
+                    title={isDemoMode || !tenantId ? 'Import Photos is not available in the demo' : 'Add photos taken this day'}
+                    style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)' }}
+                    className="shrink-0 px-3 py-1.5 rounded-lg border text-xs font-bold cursor-pointer flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <IconUpload />
+                    <span>Import Photos for This Day</span>
                   </button>
                 ),
               })}

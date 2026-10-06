@@ -173,13 +173,31 @@ function ProjectAssignList({
   );
 }
 
-export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, fixedDateRange, projectColorMap, onStepChange }) {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth < MOBILE_BREAKPOINT);
+const COARSE_POINTER_QUERY = '(pointer: coarse)';
+const wantsTouchReviewLayout = () =>
+  window.innerWidth < MOBILE_BREAKPOINT || Boolean(window.matchMedia?.(COARSE_POINTER_QUERY).matches);
+
+function useTouchReviewLayout() {
+  const [touch, setTouch] = useState(wantsTouchReviewLayout);
   useEffect(() => {
-    const onResize = () => setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    const update = () => setTouch(wantsTouchReviewLayout());
+    window.addEventListener('resize', update);
+    const query = window.matchMedia?.(COARSE_POINTER_QUERY);
+    query?.addEventListener?.('change', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      query?.removeEventListener?.('change', update);
+    };
   }, []);
+  return touch;
+}
+
+export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, fixedDateRange, projectColorMap, onStepChange }) {
+  // The phone's review layout (a strip of the current date block's photos over
+  // the project list) is used on a narrow window AND on a touch-first device
+  // such as a tablet, whatever its width -- an iPad opens the web version, but
+  // is held and tapped like a phone.
+  const isMobile = useTouchReviewLayout();
 
   // Every photo carries its own projectKey, starting unassigned ('') --
   // set individually (desktop's per-photo dropdown, mobile's tap-to-assign
@@ -922,7 +940,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           {visiblePhotos.length === 0 ? (
             <div className="text-xs italic opacity-50 py-8 text-center">
               {photos.length > 0
-                ? 'No photos staged for this date yet — swipe back, or tap "+ Add Photos" above.'
+                ? 'No photos staged for this date yet — move to another date, or tap "+ Add Photos" above.'
                 : 'No photos yet — tap "+ Add Photos" above.'}
             </div>
           ) : (
