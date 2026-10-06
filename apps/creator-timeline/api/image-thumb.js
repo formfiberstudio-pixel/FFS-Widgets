@@ -5,36 +5,6 @@ const DEFAULT_WIDTH = 640;
 const MAX_WIDTH = 800;
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_SOURCE_BYTES = 15 * 1024 * 1024;
-// Vercel caps a serverless function's response body at 4.5MB; stay under it.
-const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
-// An animated GIF is decoded frame by frame and re-encoded, which costs time
-// in proportion to its length -- past this, hand the original over instead.
-const MAX_ANIMATED_FRAMES = 150;
-
-// GIF87a / GIF89a both start with "GIF8".
-export const isGif = (buffer) => buffer.length > 6 && buffer.toString('latin1', 0, 4) === 'GIF8';
-
-// A GIF's thumbnail has to stay animated, so it is resized frame by frame
-// into an animated WebP (far smaller than the GIF, and every current browser
-// and Android WebView plays it) instead of the single-frame JPEG everything
-// else becomes. Returns null when that isn't practical (too many frames, a
-// result over the response cap, or an encode failure) so the caller can send
-// the browser to the original GIF instead.
-export async function animatedThumbnail(source, width) {
-  try {
-    const options = { animated: true, limitInputPixels: false };
-    const { pages = 1 } = await sharp(source, options).metadata();
-    if (pages > MAX_ANIMATED_FRAMES) return null;
-    const out = await sharp(source, options)
-      .resize({ width, withoutEnlargement: true })
-      .webp({ quality: 70, effort: 3 })
-      .toBuffer();
-    return out.byteLength <= MAX_RESPONSE_BYTES ? out : null;
-  } catch (err) {
-    console.error('[image-thumb] Could not make an animated thumbnail:', err.message);
-    return null;
-  }
-}
 
 export default async function handler(req, res) {
   const { url, w } = req.query;
@@ -89,24 +59,7 @@ export default async function handler(req, res) {
     // Notion's own file hosting, i.e. the widget owner's own uploaded
     // photos, not arbitrary internet input. MAX_SOURCE_BYTES above remains
     // the actual resource-exhaustion guard.
-    const source = Buffer.from(arrayBuffer);
-
-    if (isGif(source)) {
-      const animated = await animatedThumbnail(source, width);
-      if (animated) {
-        res.setHeader('Content-Type', 'image/webp');
-        res.setHeader('Cache-Control', 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800');
-        return res.status(200).send(animated);
-      }
-      // Too long or too heavy to re-encode in a request: let the browser
-      // load the original (still animated) from Notion itself. The URL is
-      // signed and expires, so the redirect is only cached briefly.
-      res.setHeader('Location', parsed.toString());
-      res.setHeader('Cache-Control', 'public, max-age=300');
-      return res.status(302).end();
-    }
-
-    const thumbnail = await sharp(source, { limitInputPixels: false })
+    const thumbnail = await sharp(Buffer.from(arrayBuffer), { limitInputPixels: false })
       .rotate() // reads the source's EXIF orientation and physically rotates pixels upright, since we strip metadata below and a portrait phone photo is otherwise stored as landscape pixels + an orientation tag
       .resize({ width, withoutEnlargement: true })
       .jpeg({ quality: 78 })

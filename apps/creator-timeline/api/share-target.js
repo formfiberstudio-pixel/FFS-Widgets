@@ -30,9 +30,6 @@ export const config = {
   },
 };
 
-// GIF87a / GIF89a both start with "GIF8".
-const isGif = (buffer) => buffer.length > 6 && buffer.toString('latin1', 0, 4) === 'GIF8';
-
 function parseMultipart(req) {
   return new Promise((resolve, reject) => {
     const busboy = Busboy({ headers: req.headers });
@@ -109,17 +106,7 @@ export default async function handler(req, res) {
       if (isSwRelay) {
         // sw.js already resized this to a JPEG and read its EXIF date
         // before that re-encode stripped it -- nothing left to do here.
-        // The one exception is an animated GIF, which sw.js relays as its
-        // original bytes (see GIF_PASSTHROUGH_MAX_BYTES there) so it keeps
-        // moving; it must keep its own type, not be labelled a JPEG.
-        const mimeType = f.mimeType === 'image/gif' ? 'image/gif' : 'image/jpeg';
-        return { filename: f.filename, mimeType, base64: f.buffer.toString('base64'), capturedAt: f.capturedAt };
-      }
-
-      // An animated GIF that arrived unshrunk is kept as it is rather than
-      // flattened: Vercel already capped this request near 4.5MB.
-      if (f.mimeType === 'image/gif' || isGif(f.buffer)) {
-        return { filename: f.filename, mimeType: 'image/gif', base64: f.buffer.toString('base64'), capturedAt: null };
+        return { filename: f.filename, mimeType: 'image/jpeg', base64: f.buffer.toString('base64'), capturedAt: f.capturedAt };
       }
 
       // Fallback path: a raw, still full-size original, only reachable
@@ -148,26 +135,7 @@ export default async function handler(req, res) {
     }));
 
     const token = crypto.randomBytes(12).toString('hex');
-    try {
-      await saveSharedPhotos(token, processed);
-    } catch (err) {
-      // A GIF kept at full size makes this record much larger than a batch
-      // of resized JPEGs, and the store may refuse it. Don't lose the
-      // share over that: retry with each GIF flattened to a still, which is
-      // what every GIF used to become. Anything else failing is a real error.
-      if (!processed.some((p) => p.mimeType === 'image/gif')) throw err;
-      // (Truncated: the store's error text echoes the whole command back.)
-      console.error('[share-target] Could not store the GIFs as-is, retrying flattened:', String(err.message).slice(0, 200));
-      const flattened = await Promise.all(processed.map(async (p) => {
-        if (p.mimeType !== 'image/gif') return p;
-        const jpeg = await sharp(Buffer.from(p.base64, 'base64'))
-          .resize(1800, 1800, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: 82 })
-          .toBuffer();
-        return { ...p, mimeType: 'image/jpeg', base64: jpeg.toString('base64') };
-      }));
-      await saveSharedPhotos(token, flattened);
-    }
+    await saveSharedPhotos(token, processed);
 
     if (isSwRelay) return res.status(200).json({ success: true, shareToken: token });
     return redirect(res, `/?tenant=${tenantId}&shareToken=${token}`);
