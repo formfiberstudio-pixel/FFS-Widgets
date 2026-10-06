@@ -1113,7 +1113,7 @@ function App() {
   const monthScrollContainerRef = useRef(null);
   const monthWeekRowRefs = useRef([]);
   const [selectedProjectFilters, setSelectedProjectFilters] = useState([]);
-  const [selectedLogModal, setSelectedLogModal] = useState(null);
+  const [selectedLogModal, setMobileLogModal] = useState(null);
   // Which single project's photo gallery is showing in place of the
   // calendar canvas (viewMode === 'gallery') -- source is carried alongside
   // the title since two different sources could otherwise name a project
@@ -1196,6 +1196,21 @@ function App() {
   // share-target landing rather than a drill-down.
   const dismissBackEntry = () => {
     if (backStackRef.current.length > 0) window.history.back();
+  };
+
+  // Every "open this day" tap in the calendar goes through here. On desktop
+  // the day opens as a PAGE (Day view) in the calendar's own canvas rather
+  // than a pop-up window -- it's a drill-down, so the browser's back button
+  // returns to where it was opened from. The phone keeps its full-screen
+  // takeover. `null` closes that takeover.
+  const setSelectedLogModal = (target) => {
+    if (!target || isMobile) {
+      setMobileLogModal(target);
+      return;
+    }
+    pushBackEntry({ viewMode, currentDate, galleryTarget });
+    setCurrentDate(target.dateObj);
+    setViewMode('day');
   };
 
   useEffect(() => {
@@ -2730,6 +2745,205 @@ function App() {
     );
   }
 
+  // The day's detail -- its date and holidays, then one card per entry
+  // (photo, title, note, thumbnail pick). Shown as a PAGE in the calendar's
+  // canvas on desktop (Day view) and as the phone's full-screen takeover
+  // (the modal below); `leading` / `trailing` are the Back / Close controls.
+  const renderDayDetail = ({ dateObj, logs, leading = null, trailing = null, asPage = false }) => {
+    const dateKey = dateObj.toISOString().split('T')[0];
+    const currentThumbId = thumbnailOverrides[dateKey] || (logs[0]?.id);
+    const specDay = getSpecialDayForDate(dateObj, specialDays);
+
+    const scrollCarousel = (direction) => {
+      if (!modalCarouselRef.current) return;
+      const firstChild = modalCarouselRef.current.firstElementChild;
+      const scrollAmount = firstChild ? firstChild.clientWidth + 24 : 450;
+      modalCarouselRef.current.scrollBy({ left: direction === 'left' ? -scrollAmount : scrollAmount, behavior: 'smooth' });
+    };
+
+    return (
+      <>
+      <div className="px-6 py-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+        <div className="flex items-center gap-2 flex-wrap">
+          {leading}
+          <span className="text-sm font-bold tracking-wider" style={{ color: 'var(--theme-primary)' }}>
+            {dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })}
+          </span>
+          {getOntarioStatHolidayName(dateObj) && (
+            <span className="text-xs font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs border" style={{ color: 'var(--theme-secondary)', borderColor: 'var(--theme-secondary)', backgroundColor: 'var(--theme-card)' }}>
+              <span>—</span>
+              <span>{getOntarioStatHolidayName(dateObj)}</span>
+            </span>
+          )}
+          {specDay && (
+            <span className="text-xs font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs border" style={{ color: 'var(--theme-secondary)', borderColor: 'var(--theme-secondary)', backgroundColor: 'var(--theme-card)' }}>
+              <span>🎉</span>
+              <span>{specDay.name} ({specDay.occurrence})</span>
+            </span>
+          )}
+        </div>
+        {trailing}
+      </div>
+      
+      <div className={`relative flex-1 flex p-6 sm:p-8 ${asPage ? 'items-start overflow-y-auto' : 'items-center overflow-hidden'}`}>
+        {logs.length > 1 && (
+          <button 
+            onClick={() => scrollCarousel('left')}
+            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+            className={`absolute left-3 z-30 w-10 h-10 rounded-full flex items-center justify-center border shadow-md transition-all cursor-pointer hover:border-[var(--theme-primary)] ${asPage ? 'top-1/2 -translate-y-1/2' : ''}`}
+            title="Scroll Left"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+        )}
+
+        <div 
+          ref={modalCarouselRef} 
+          className={`w-full flex gap-6 overflow-x-auto scroll-smooth snap-x snap-mandatory select-none ${asPage ? 'items-start' : 'h-full items-stretch'}`}
+          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        >
+          {logs.length > 0 ? (
+            logs.map((log) => {
+              const isThumbnail = log.id === currentThumbId;
+
+              const httpsUrl = log.url || `https://www.notion.so/${log.id.replace(/-/g, '')}`;
+              const desktopUrl = httpsUrl.replace('https://', 'notion://');
+              const notionPageUrl = desktopUrl.includes('?') ? `${desktopUrl}&pvs=4` : `${desktopUrl}?pvs=4`;
+
+              return (
+                <div 
+                  key={log.id} 
+                  onClick={() => setThumbnailOverrides(prev => ({ ...prev, [dateKey]: log.id }))}
+                  style={{ 
+                    backgroundColor: 'var(--theme-bg)',
+                    borderColor: isThumbnail ? 'var(--theme-secondary)' : 'var(--theme-border)'
+                  }}
+                  className={`shrink-0 w-full sm:w-[calc((100%-24px)/2)] lg:w-[calc((100%-48px)/3)] snap-start ${asPage ? 'h-auto' : 'h-full my-auto'} flex flex-col p-5 sm:p-6 border rounded-xl lf-frame gap-4 shadow-sm cursor-pointer transition-all ${
+                    isThumbnail ? 'ring-2 ring-[var(--theme-secondary)]' : ''
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    {log.facets ? (
+                      <div className="flex flex-wrap items-center gap-1 min-w-0">
+                        {Object.values(log.facets).flat().map((v, i) => (
+                          <span
+                            key={`${v.name}-${i}`}
+                            className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block"
+                            style={{ color: NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default, borderColor: NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default }}
+                          >
+                            {v.name}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block" style={{ color: getDotColor(log), borderColor: getDotColor(log) }}>{log.projectType}</span>
+                    )}
+                    <span className={`text-xs font-bold px-2.5 py-1 rounded-full shrink-0 ${isThumbnail ? 'bg-[var(--theme-secondary)] text-[color:var(--theme-on-secondary)]' : 'opacity-60'}`}>
+                      {isThumbnail ? '★ Current Thumbnail' : 'Click to set as thumbnail'}
+                    </span>
+                  </div>
+
+                  <div className="relative shrink-0" style={{ height: `${dayModalImageHeight}px` }}>
+                    {log.imageUrl ? (
+                      <img
+                        src={log.imageUrl}
+                        className="h-full w-full rounded-md lf-frame object-cover border"
+                        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
+                        alt=""
+                      />
+                    ) : (
+                      // No photo -- just the empty frame. The note
+                      // itself (if any) already reads in full via
+                      // LogNoteEditor directly below; showing it a
+                      // second time in here as well duplicated it.
+                      <div
+                        className="h-full w-full rounded-md lf-frame border"
+                        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
+                      />
+                    )}
+
+                    <div
+                      onMouseDown={handleMouseDownDayModalResize}
+                      onClick={(e) => e.stopPropagation()}
+                      className={`group/handle absolute left-0 right-0 bottom-0 translate-y-1/2 z-30 h-6 flex items-center justify-between cursor-ns-resize transition-opacity duration-150 ${
+                        isResizingDayModalHeight ? 'opacity-100' : 'opacity-0 hover:opacity-100'
+                      }`}
+                      title="Click & Drag down/up to scale entry card aspect ratio"
+                    >
+                      <div className="pl-0.5 flex items-center pointer-events-none">
+                        <svg className="w-2.5 h-3 drop-shadow-xs" style={{ fill: 'var(--theme-primary)' }} viewBox="0 0 8 10">
+                          <polygon points="0,0 8,5 0,10" />
+                        </svg>
+                      </div>
+
+                      <div className={`flex-1 h-[2px] mx-1 transition-all flex items-center justify-center ${
+                        isResizingDayModalHeight ? 'shadow-md' : ''
+                      }`} style={{ backgroundColor: 'var(--theme-primary)' }}>
+                        <div className="text-[9px] font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 transition-transform" style={{ backgroundColor: 'var(--theme-primary)', color: 'var(--theme-on-primary)' }}>
+                          <span>↕ PULL TO RESIZE</span>
+                          <span className="font-mono">({Math.round(dayModalImageHeight)}px)</span>
+                        </div>
+                      </div>
+
+                      <div className="pr-0.5 flex items-center pointer-events-none">
+                        <svg className="w-2.5 h-3 drop-shadow-xs" style={{ fill: 'var(--theme-primary)' }} viewBox="0 0 8 10">
+                          <polygon points="8,0 0,5 8,10" />
+                        </svg>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <LogTitleEditor log={log} tenantId={tenantId} onSaved={handleTitleSaved} className="text-base font-bold" />
+                    <a
+                      href={notionPageUrl} 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-primary)' }}
+                      className="text-xs font-semibold px-2.5 py-1 rounded border shrink-0 flex items-center gap-1 transition-colors hover:border-[var(--theme-primary)]"
+                      title="Open in Notion Center Peek"
+                    >
+                      <span>Open in Notion</span>
+                      <span className="text-[10px]">↗</span>
+                    </a>
+                  </div>
+
+                  <LogNoteEditor
+                    log={log}
+                    tenantId={tenantId}
+                    onSaved={handleNoteSaved}
+                    onPhotoAdded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
+                  />
+                </div>
+              );
+            })
+          ) : (
+            <div className="flex items-center justify-center text-center py-12 w-full italic text-sm opacity-50">
+              No logged actions for this target date.
+            </div>
+          )}
+        </div>
+
+        {logs.length > 1 && (
+          <button 
+            onClick={() => scrollCarousel('right')}
+            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+            className={`absolute right-3 z-30 w-10 h-10 rounded-full flex items-center justify-center border shadow-md transition-all cursor-pointer hover:border-[var(--theme-primary)] ${asPage ? 'top-1/2 -translate-y-1/2' : ''}`}
+            title="Scroll Right"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
+      </div>
+      </>
+    );
+  };
+
   return (
     <div
       ref={appRef}
@@ -3063,6 +3277,7 @@ function App() {
                 <button onClick={() => setViewMode('year')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
                 <button onClick={() => setViewMode('month')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
                 <button onClick={() => setViewMode('week')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
+                <button onClick={() => setViewMode('day')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'day' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Day</button>
               </div>
             )}
 
@@ -4219,11 +4434,35 @@ function App() {
             </div>
           )}
 
-          {/* DAY VIEW -- mobile only; desktop still uses the day-detail
-              modal a tap on any other view already opens. A dedicated page
-              instead of a modal mainly exists so Import Photos can be
-              scoped to exactly one date (see the button below), the same
-              way Week view scopes it to that week. */}
+          {/* DAY VIEW (desktop) -- the day's detail as a page in the canvas,
+              not a pop-up window: tapping any day in Year/Month/Week lands
+              here (see setSelectedLogModal), the toolbar's Prev/Next step
+              through days, and Back returns to where it was opened from. */}
+          {viewMode === 'day' && !isMobile && (
+            <div className="flex flex-col h-full w-full min-h-0 overflow-hidden">
+              {renderDayDetail({
+                dateObj: currentDate,
+                logs: getLogsForDate(currentDate),
+                asPage: true,
+                leading: (
+                  <button
+                    onClick={() => { if (backStackRef.current.length > 0) window.history.back(); else setViewMode('month'); }}
+                    title="Back to the calendar"
+                    className="flex items-center gap-1.5 text-sm font-bold cursor-pointer opacity-70 hover:opacity-100 transition-opacity mr-2"
+                    style={{ color: 'var(--theme-primary)' }}
+                  >
+                    <span>←</span>
+                    <span>Back</span>
+                  </button>
+                ),
+              })}
+            </div>
+          )}
+
+          {/* DAY VIEW (phone) -- a dedicated page instead of a modal mainly
+              exists so Import Photos can be scoped to exactly one date (see
+              the button below), the same way Week view scopes it to that
+              week. */}
           {viewMode === 'day' && isMobile && (() => {
             const dayLogs = getLogsForDate(currentDate);
             const dateKey = toLocalDateInputValue(currentDate);
@@ -5356,214 +5595,28 @@ function App() {
         </div>
       )}
 
-      {/* DETAIL LOG MODAL */}
-      {selectedLogModal && (() => {
-        const dateKey = selectedLogModal.dateObj.toISOString().split('T')[0];
-        const currentThumbId = thumbnailOverrides[dateKey] || (selectedLogModal.logs[0]?.id);
-        const logs = selectedLogModal.logs;
-        const specDay = getSpecialDayForDate(selectedLogModal.dateObj, specialDays);
-
-        const scrollCarousel = (direction) => {
-          if (!modalCarouselRef.current) return;
-          const firstChild = modalCarouselRef.current.firstElementChild;
-          const scrollAmount = firstChild ? firstChild.clientWidth + 24 : 450;
-          modalCarouselRef.current.scrollBy({ left: direction === 'left' ? -scrollAmount : scrollAmount, behavior: 'smooth' });
-        };
-
-        return (
-          // Full-screen on mobile instead of a centered dialog over a
-          // dimmed backdrop -- a phone doesn't have the spare space for
-          // "floating card with margin around it" the way a desktop window
-          // does, and there's nothing behind it worth seeing through a
-          // backdrop blur anyway.
-          <div className={`fixed inset-0 z-50 flex items-center justify-center ${isMobile ? '' : 'p-6 sm:p-8 bg-black/70 backdrop-blur-sm'}`} onClick={() => setSelectedLogModal(null)}>
-            <div
-              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
-              className={isMobile ? 'w-full h-full flex flex-col overflow-hidden' : 'w-[90%] max-w-[1300px] h-[85%] max-h-[850px] rounded-2xl lf-frame flex flex-col overflow-hidden shadow-2xl border'}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-6 py-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-sm font-bold tracking-wider" style={{ color: 'var(--theme-primary)' }}>
-                    {selectedLogModal.dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })}
-                  </span>
-                  {getOntarioStatHolidayName(selectedLogModal.dateObj) && (
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs border" style={{ color: 'var(--theme-secondary)', borderColor: 'var(--theme-secondary)', backgroundColor: 'var(--theme-card)' }}>
-                      <span>—</span>
-                      <span>{getOntarioStatHolidayName(selectedLogModal.dateObj)}</span>
-                    </span>
-                  )}
-                  {specDay && (
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs border" style={{ color: 'var(--theme-secondary)', borderColor: 'var(--theme-secondary)', backgroundColor: 'var(--theme-card)' }}>
-                      <span>🎉</span>
-                      <span>{specDay.name} ({specDay.occurrence})</span>
-                    </span>
-                  )}
-                </div>
+      {/* DAY DETAIL -- phone only: a full-screen takeover. Desktop opens the
+          same content as a page instead (viewMode 'day', see renderDayDetail
+          and setSelectedLogModal), so nothing pops up over the calendar. */}
+      {selectedLogModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setSelectedLogModal(null)}>
+          <div
+            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+            className="w-full h-full flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {renderDayDetail({
+              dateObj: selectedLogModal.dateObj,
+              logs: selectedLogModal.logs,
+              trailing: (
                 <button onClick={() => setSelectedLogModal(null)} className="p-1 cursor-pointer opacity-60 hover:opacity-100">
                   <IconClose />
                 </button>
-              </div>
-              
-              <div className="relative flex-1 flex items-center overflow-hidden p-6 sm:p-8">
-                {logs.length > 1 && (
-                  <button 
-                    onClick={() => scrollCarousel('left')}
-                    style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                    className="absolute left-3 z-30 w-10 h-10 rounded-full flex items-center justify-center border shadow-md transition-all cursor-pointer hover:border-[var(--theme-primary)]"
-                    title="Scroll Left"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-                    </svg>
-                  </button>
-                )}
-
-                <div 
-                  ref={modalCarouselRef} 
-                  className="w-full h-full flex gap-6 overflow-x-auto scroll-smooth snap-x snap-mandatory items-stretch select-none"
-                  style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-                >
-                  {logs.length > 0 ? (
-                    logs.map((log) => {
-                      const isThumbnail = log.id === currentThumbId;
-
-                      const httpsUrl = log.url || `https://www.notion.so/${log.id.replace(/-/g, '')}`;
-                      const desktopUrl = httpsUrl.replace('https://', 'notion://');
-                      const notionPageUrl = desktopUrl.includes('?') ? `${desktopUrl}&pvs=4` : `${desktopUrl}?pvs=4`;
-
-                      return (
-                        <div 
-                          key={log.id} 
-                          onClick={() => setThumbnailOverrides(prev => ({ ...prev, [dateKey]: log.id }))}
-                          style={{ 
-                            backgroundColor: 'var(--theme-bg)',
-                            borderColor: isThumbnail ? 'var(--theme-secondary)' : 'var(--theme-border)'
-                          }}
-                          className={`shrink-0 w-full sm:w-[calc((100%-24px)/2)] lg:w-[calc((100%-48px)/3)] snap-start h-full my-auto flex flex-col p-5 sm:p-6 border rounded-xl lf-frame gap-4 shadow-sm cursor-pointer transition-all ${
-                            isThumbnail ? 'ring-2 ring-[var(--theme-secondary)]' : ''
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            {log.facets ? (
-                              <div className="flex flex-wrap items-center gap-1 min-w-0">
-                                {Object.values(log.facets).flat().map((v, i) => (
-                                  <span
-                                    key={`${v.name}-${i}`}
-                                    className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block"
-                                    style={{ color: NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default, borderColor: NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default }}
-                                  >
-                                    {v.name}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : (
-                              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block" style={{ color: getDotColor(log), borderColor: getDotColor(log) }}>{log.projectType}</span>
-                            )}
-                            <span className={`text-xs font-bold px-2.5 py-1 rounded-full shrink-0 ${isThumbnail ? 'bg-[var(--theme-secondary)] text-[color:var(--theme-on-secondary)]' : 'opacity-60'}`}>
-                              {isThumbnail ? '★ Current Thumbnail' : 'Click to set as thumbnail'}
-                            </span>
-                          </div>
-
-                          <div className="relative shrink-0" style={{ height: `${dayModalImageHeight}px` }}>
-                            {log.imageUrl ? (
-                              <img
-                                src={log.imageUrl}
-                                className="h-full w-full rounded-md lf-frame object-cover border"
-                                style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
-                                alt=""
-                              />
-                            ) : (
-                              // No photo -- just the empty frame. The note
-                              // itself (if any) already reads in full via
-                              // LogNoteEditor directly below; showing it a
-                              // second time in here as well duplicated it.
-                              <div
-                                className="h-full w-full rounded-md lf-frame border"
-                                style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
-                              />
-                            )}
-
-                            <div
-                              onMouseDown={handleMouseDownDayModalResize}
-                              onClick={(e) => e.stopPropagation()}
-                              className={`group/handle absolute left-0 right-0 bottom-0 translate-y-1/2 z-30 h-6 flex items-center justify-between cursor-ns-resize transition-opacity duration-150 ${
-                                isResizingDayModalHeight ? 'opacity-100' : 'opacity-0 hover:opacity-100'
-                              }`}
-                              title="Click & Drag down/up to scale entry card aspect ratio"
-                            >
-                              <div className="pl-0.5 flex items-center pointer-events-none">
-                                <svg className="w-2.5 h-3 drop-shadow-xs" style={{ fill: 'var(--theme-primary)' }} viewBox="0 0 8 10">
-                                  <polygon points="0,0 8,5 0,10" />
-                                </svg>
-                              </div>
-
-                              <div className={`flex-1 h-[2px] mx-1 transition-all flex items-center justify-center ${
-                                isResizingDayModalHeight ? 'shadow-md' : ''
-                              }`} style={{ backgroundColor: 'var(--theme-primary)' }}>
-                                <div className="text-[9px] font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 transition-transform" style={{ backgroundColor: 'var(--theme-primary)', color: 'var(--theme-on-primary)' }}>
-                                  <span>↕ PULL TO RESIZE</span>
-                                  <span className="font-mono">({Math.round(dayModalImageHeight)}px)</span>
-                                </div>
-                              </div>
-
-                              <div className="pr-0.5 flex items-center pointer-events-none">
-                                <svg className="w-2.5 h-3 drop-shadow-xs" style={{ fill: 'var(--theme-primary)' }} viewBox="0 0 8 10">
-                                  <polygon points="8,0 0,5 8,10" />
-                                </svg>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center justify-between gap-2">
-                            <LogTitleEditor log={log} tenantId={tenantId} onSaved={handleTitleSaved} className="text-base font-bold" />
-                            <a
-                              href={notionPageUrl} 
-                              target="_blank" 
-                              rel="noopener noreferrer" 
-                              onClick={(e) => e.stopPropagation()}
-                              style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-primary)' }}
-                              className="text-xs font-semibold px-2.5 py-1 rounded border shrink-0 flex items-center gap-1 transition-colors hover:border-[var(--theme-primary)]"
-                              title="Open in Notion Center Peek"
-                            >
-                              <span>Open in Notion</span>
-                              <span className="text-[10px]">↗</span>
-                            </a>
-                          </div>
-
-                          <LogNoteEditor
-                            log={log}
-                            tenantId={tenantId}
-                            onSaved={handleNoteSaved}
-                            onPhotoAdded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
-                          />
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <div className="flex items-center justify-center text-center py-12 w-full italic text-sm opacity-50">
-                      No logged actions for this target date.
-                    </div>
-                  )}
-                </div>
-
-                {logs.length > 1 && (
-                  <button 
-                    onClick={() => scrollCarousel('right')}
-                    style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                    className="absolute right-3 z-30 w-10 h-10 rounded-full flex items-center justify-center border shadow-md transition-all cursor-pointer hover:border-[var(--theme-primary)]"
-                    title="Scroll Right"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                    </svg>
-                  </button>
-                )}
-              </div>
-            </div>
+              ),
+            })}
           </div>
-        );
-      })()}
+        </div>
+      )}
     </div>
   );
 }
