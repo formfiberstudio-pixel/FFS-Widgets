@@ -3554,6 +3554,7 @@ function App() {
                   onAddNote={projectTimer.addNote}
                   onRemoveNote={projectTimer.removeNote}
                   onAddPhotos={projectTimer.addPhotos}
+                  onLoadPhoto={projectTimer.loadPhoto}
                   onRemovePhoto={projectTimer.removePhoto}
                 />
               </div>

@@ -92,13 +92,15 @@ export function buildSessionTitle({ dateStr, projectTitle, minutes }) {
 export const MAX_SESSION_NOTES = 50;
 export const MAX_SESSION_NOTE_LENGTH = 500;
 
-// Photos added while a timer runs. The cap mirrors MAX_SESSION_PHOTOS in
-// api/_lib/timeTracking.js. A photo is uploaded as base64 text in one
-// request, and Vercel refuses a request body over 4.5MB, so a photo whose
-// data URL is longer than this (an animated GIF, in practice: other photos
-// are downscaled first) is turned away rather than failing on Stop.
+// Photos added while a timer runs. MAX_SESSION_PHOTOS mirrors the server's
+// (api/_lib/timeTracking.js). A photo is sent to the server as base64 text in
+// one request and kept there until the session is saved, so it is held to a
+// size the store accepts: this is a little under the server's own limit
+// (MAX_TIMER_PHOTO_DATA_URL_LENGTH in api/_lib/timerState.js). Photos are
+// downscaled to fit it; an animated GIF is passed through as it is, so one
+// that is too big is turned away.
 export const MAX_SESSION_PHOTOS = 12;
-export const MAX_TIMER_PHOTO_DATA_URL_LENGTH = 4000000;
+export const MAX_TIMER_PHOTO_DATA_URL_LENGTH = 800000;
 
 // One-line, trimmed, length-capped; '' when there's nothing to keep.
 export const cleanNoteText = (text) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_SESSION_NOTE_LENGTH);

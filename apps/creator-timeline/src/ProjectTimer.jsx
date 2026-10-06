@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { cleanNoteText, clockLabel, dialSweepDegrees, formatClock, formatDuration, formatMinutes, localDateString, MAX_SESSION_NOTE_LENGTH, MAX_SESSION_NOTES, MAX_SESSION_PHOTOS, MAX_TIMER_PHOTO_DATA_URL_LENGTH, timerElapsedMs } from './timeFormat.js';
 import { resizeImageForUpload } from './imageResize.js';
+import { canReadClipboardImages, imageFilesFromClipboardData, readClipboardImageFiles } from './clipboardImages.js';
 import { deleteTimerPhotos, getTimerPhoto, pruneTimerPhotos, putTimerPhoto } from './timerPhotos.js';
 
-// One running timer per tenant, kept in localStorage so a reload (or the
-// Android WebView being reclaimed) doesn't lose it. Elapsed time is always
-// derived from `startedAt`, never counted by ticks, so a throttled
-// background tab can't drift. A running timer is local to this browser;
-// only the finished session is saved to Notion.
+// One running timer per tenant. For a real tenant it lives on the SERVER (see
+// api/_lib/timerState.js), so every device they use shows the same one and can
+// add notes and photos to it: each action here is sent to the server, which
+// answers with the timer as it now stands, and this device checks back every
+// so often (and whenever the page is looked at again) to pick up what the
+// others did. A copy is kept in localStorage so a reload (or the Android
+// WebView being reclaimed) shows it at once while the server is asked.
+// Demo mode (no tenant) runs entirely locally, as the timer first did.
+//
+// Elapsed time is always derived from `startedAt`, never counted by ticks, so a
+// throttled background tab can't drift. The server stamps every time with its
+// own clock, and each answer says what that clock reads now, so a device
+// whose clock is off keeps `clockOffset` (server minus this device) and adds it
+// to its own to show the same time as the others.
 const storageKey = (key) => `notionWidgetTimer:${key}`;
 
 function readStored(key) {
@@ -30,19 +40,67 @@ function writeStored(key, timer) {
   } catch { /* storage unavailable -- the timer still works for this session */ }
 }
 
+// How often a device checks the server for changes made elsewhere: sooner
+// while a timer is running, since that is when something may change.
+const POLL_RUNNING_MS = 15000;
+const POLL_IDLE_MS = 45000;
+
+// One request to the server's timer, resolving to its answer plus this
+// device's clockOffset (the server's clock minus its own, taken to be half a
+// round trip old).
+async function timerRequest(tenantId, op, fields = {}) {
+  const sent = Date.now();
+  let response;
+  try {
+    response = await fetch('/api/backlog-photo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenantId, action: 'timer', op, ...fields }),
+    });
+  } catch {
+    // The browser's own message ("Failed to fetch") says nothing useful.
+    throw new Error('Couldn’t reach the server — check your connection');
+  }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.success) throw new Error(result.error || 'Couldn’t reach the timer right now');
+  return { ...result, clockOffset: Math.round(result.serverNow - (sent + Date.now()) / 2) };
+}
+
+// The server's timer as this device keeps it.
+const fromServer = (result) => (result.timer ? { ...result.timer, synced: true, clockOffset: result.clockOffset } : null);
+
+// The time right now on the server's clock, as best this device can tell.
+const nowFor = (timer) => Date.now() + (timer?.clockOffset || 0);
+
+// A photo is downscaled -- smaller each try -- until it fits what the server
+// will take; null when it never does (an animated GIF over the limit).
+const PHOTO_RESIZE_STEPS = [[1400, 0.78], [1100, 0.68], [800, 0.6]];
+
+async function prepareTimerPhoto(file) {
+  for (const [maxDim, quality] of PHOTO_RESIZE_STEPS) {
+    const dataUrl = await resizeImageForUpload(file, maxDim, quality);
+    if (dataUrl.length <= MAX_TIMER_PHOTO_DATA_URL_LENGTH) return dataUrl;
+    if (file.type === 'image/gif') break; // passed through as it is: smaller settings change nothing
+  }
+  return null;
+}
+
 // timer shape: { project: { key, title, source, referenceLogId }, startedAt,
-// pausedMs?, pausedAt?, notes?, photos?, endedAt?, error? }. notes is the list of
-// { at: ms timestamp, text } jotted while it ran, uploaded with the session
-// when it's stopped. photos is the list of { id, at } for pictures added
-// while it ran: the pictures themselves wait in IndexedDB (see
-// timerPhotos.js) and go up with the session, ahead of the notes. pausedAt is set only while the
+// pausedMs?, pausedAt?, notes?, photos?, version?, synced?, clockOffset?,
+// endedAt?, error? }. notes is the list of { at: ms timestamp, text } jotted
+// while it ran, saved with the session when it's stopped. photos is the list
+// of { id, at } for pictures added while it ran: the pictures themselves are
+// kept by the server (and cached on this device, see timerPhotos.js) and go up
+// with the session, ahead of the notes. pausedAt is set only while the
 // timer is paused and pausedMs totals the pauses already resumed from, so
 // time spent = timerElapsedMs() (see timeFormat.js), never wall-clock span.
-// endedAt/error only exist while a finished session failed to save and is
-// waiting on Retry or Discard.
+// version / synced / clockOffset come from the server. endedAt/error only
+// exist while a finished session failed to save and is waiting on Retry or
+// Discard -- that one is this device's alone.
 export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
   // Demo mode has no tenant; the timer then runs entirely locally.
   const key = tenantId || (isDemoMode ? 'demo' : null);
+  const remote = !!tenantId && !isDemoMode;
   const keyRef = useRef(key);
   keyRef.current = key;
   const onSavedRef = useRef(onSessionSaved);
@@ -55,6 +113,10 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const noticeTimeout = useRef(null);
+  // Requests this device has under way. While any are, a check of the server
+  // is skipped (its answer could be older than the one coming back).
+  const inFlight = useRef(0);
+  const pulling = useRef(false);
 
   // The tenant id arrives after first render in real use.
   useEffect(() => {
@@ -80,6 +142,114 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     writeStored(keyRef.current, next);
   }, []);
 
+  // Sends one change to the server and shows the timer as it answers. With
+  // `optimistic` the change shows at once (and is taken back if the server
+  // refuses it); without, the screen waits for the answer. Resolves to the
+  // server's answer, or null when it failed.
+  const run = useCallback(async (op, fields, optimistic) => {
+    const before = timerRef.current;
+    if (optimistic !== undefined) commit(optimistic);
+    inFlight.current += 1;
+    try {
+      const result = await timerRequest(tenantId, op, fields);
+      commit(fromServer(result));
+      return result;
+    } catch (err) {
+      if (optimistic !== undefined) commit(before);
+      flash(err.message || 'Couldn’t reach the timer right now');
+      return null;
+    } finally {
+      inFlight.current -= 1;
+    }
+  }, [tenantId, commit, flash]);
+
+  // A picture of the session: the copy on this device, or -- for one added on
+  // another device -- fetched from the server and kept here.
+  const loadPhoto = useCallback(async (id) => {
+    const local = await getTimerPhoto(id);
+    if (local || !remote) return local;
+    try {
+      const result = await timerRequest(tenantId, 'getPhoto', { id });
+      if (!result.imageBase64) return null;
+      await putTimerPhoto(id, result.imageBase64);
+      return result.imageBase64;
+    } catch {
+      return null;
+    }
+  }, [remote, tenantId]);
+
+  // A timer started before the server held timers exists only on this device.
+  // Hand it over (its start, pauses, notes, then its photos one by one) so the
+  // other devices see it too.
+  const adoptLocal = useCallback(async (local) => {
+    inFlight.current += 1;
+    try {
+      let latest = await timerRequest(tenantId, 'adopt', {
+        project: local.project,
+        startedAt: local.startedAt,
+        pausedAt: local.pausedAt,
+        pausedMs: local.pausedMs,
+        notes: local.notes || [],
+      });
+      for (const photo of local.photos || []) {
+        const dataUrl = await getTimerPhoto(photo.id);
+        if (!dataUrl) continue;
+        latest = await timerRequest(tenantId, 'addPhoto', { id: photo.id, imageBase64: dataUrl });
+      }
+      commit(fromServer(latest));
+    } catch { /* offline: it stays on this device and is offered again next time */ } finally {
+      inFlight.current -= 1;
+    }
+  }, [tenantId, commit]);
+
+  // Looks at the server's timer and brings this device in line with it: one
+  // started elsewhere appears, one stopped elsewhere goes, changes show up.
+  const pull = useCallback(async () => {
+    if (!remote || pulling.current || inFlight.current > 0) return;
+    if (timerRef.current?.endedAt) return; // a failed save waiting on Retry is this device's alone
+    pulling.current = true;
+    try {
+      const result = await timerRequest(tenantId, 'get');
+      // Something of ours began while the answer was on its way: that is newer.
+      if (inFlight.current > 0) return;
+      const current = timerRef.current;
+      if (current?.endedAt) return;
+      const server = result.timer;
+      if (server) {
+        if (!current || current.version !== server.version || current.project.key !== server.project.key) {
+          commit(fromServer(result));
+        } else if (Math.abs((current.clockOffset || 0) - result.clockOffset) > 1500) {
+          commit({ ...current, clockOffset: result.clockOffset });
+        }
+      } else if (current) {
+        if (current.synced) {
+          deleteTimerPhotos((current.photos || []).map((photo) => photo.id));
+          commit(null);
+          flash('That timer was stopped on another device');
+        } else {
+          await adoptLocal(current);
+        }
+      }
+    } catch { /* offline: keep showing what this device has */ } finally {
+      pulling.current = false;
+    }
+  }, [remote, tenantId, commit, flash, adoptLocal]);
+
+  const hasTimer = !!timer;
+  useEffect(() => {
+    if (!remote) return undefined;
+    pull();
+    const id = setInterval(() => { if (!document.hidden) pull(); }, hasTimer ? POLL_RUNNING_MS : POLL_IDLE_MS);
+    const onVisible = () => { if (!document.hidden) pull(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [remote, hasTimer, pull]);
+
   // Saves a finished session; true on success. On failure the session stays
   // in the chip (with the error) so no tracked time is lost.
   const save = useCallback(async (session, endedAt) => {
@@ -94,23 +264,28 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     const startLabel = clockLabel(started);
     const endLabel = clockLabel(ended);
     setSaving(true);
+    inFlight.current += 1;
     try {
-      // The photos come back off this device first (one that has gone missing,
-      // with the site's data cleared, is just left out).
-      const photoData = (await Promise.all(photoIds.map(getTimerPhoto))).filter(Boolean);
+      // The first photo, to show as the new entry's picture straight away
+      // (one that has gone missing is just left out).
+      const firstPhoto = photoIds.length ? await loadPhoto(photoIds[0]) : null;
       let pageId;
-      if (isDemoMode || !tenantId) {
+      let alreadySaved = false;
+      if (!remote) {
         pageId = `demo-timer-${endedAt}`;
       } else {
-        // A request can't carry them all, so each photo goes up on its own, in
-        // the order taken, and the session then attaches them together.
+        // The pictures are already on the server, so each is uploaded to Notion
+        // by id, one request each (a request can't carry them all), in the order
+        // taken; the session then attaches them together. One the server no
+        // longer has (the session was saved from another device) is skipped.
         const photoUploadIds = [];
-        for (const imageBase64 of photoData) {
+        for (const id of photoIds) {
           const upload = await fetch('/api/backlog-photo', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tenantId, action: 'uploadTimerPhoto', imageBase64 }),
+            body: JSON.stringify({ tenantId, action: 'uploadTimerPhoto', timerPhotoId: id }),
           });
+          if (upload.status === 404) continue;
           const uploaded = await upload.json().catch(() => ({}));
           if (!upload.ok || !uploaded.success) throw new Error(uploaded.error || 'Could not upload a photo');
           photoUploadIds.push(uploaded.fileUploadId);
@@ -128,18 +303,26 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
             startLabel,
             endLabel,
             notes,
+            // Lets the server make ONE entry when two devices press Stop at once,
+            // and clear the running timer when it is saved.
+            sessionStartedAt: session.startedAt,
             ...(photoUploadIds.length ? { photoUploadIds } : {}),
           }),
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok || !result.success) throw new Error(result.error || 'Could not save to Notion');
         pageId = result.pageId;
+        alreadySaved = !!result.duplicate;
       }
       commit(null);
       deleteTimerPhotos(photoIds);
-      onSavedRef.current?.({ id: pageId, project: session.project, minutes, dateStr, startLabel, endLabel, notes, photos: photoData });
+      if (alreadySaved) {
+        flash('That session was already saved from another device');
+        return true;
+      }
+      onSavedRef.current?.({ id: pageId, project: session.project, minutes, dateStr, startLabel, endLabel, notes, photos: firstPhoto ? [firstPhoto] : [] });
       const extras = [
-        photoData.length ? `${photoData.length} photo${photoData.length === 1 ? '' : 's'}` : '',
+        photoIds.length ? `${photoIds.length} photo${photoIds.length === 1 ? '' : 's'}` : '',
         notes.length ? `${notes.length} note${notes.length === 1 ? '' : 's'}` : '',
       ].filter(Boolean).join(' and ');
       flash(`Saved ${formatMinutes(minutes)}${extras ? ` with ${extras}` : ''} to ${session.project.title}${isDemoMode ? ' (demo only)' : ''}`);
@@ -148,55 +331,91 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
       commit({ ...session, endedAt, error: err.message || 'Could not save' });
       return false;
     } finally {
+      inFlight.current -= 1;
       setSaving(false);
     }
-  }, [tenantId, isDemoMode, commit, flash]);
+  }, [remote, tenantId, isDemoMode, commit, flash, loadPhoto]);
 
   const stop = useCallback(async () => {
-    if (!timer || timer.endedAt) return false;
+    let current = timerRef.current;
+    if (!current || current.endedAt) return false;
+    if (remote) {
+      // Look first: notes and photos added from another device belong to this
+      // session, and it may already have been stopped over there.
+      try {
+        const result = await timerRequest(tenantId, 'get');
+        if (!result.timer) {
+          deleteTimerPhotos((current.photos || []).map((photo) => photo.id));
+          commit(null);
+          flash('That timer was already stopped on another device');
+          return true;
+        }
+        current = fromServer(result);
+        commit(current);
+      } catch { /* offline: stop with what this device has */ }
+    }
     // Stopping while paused ends the session at the moment of the pause, so
     // the time spent paused isn't counted.
-    const endedAt = timer.pausedAt ?? Date.now();
-    if (timerElapsedMs({ ...timer, endedAt }) < 60000 && !timer.notes?.length && !timer.photos?.length) {
+    const endedAt = current.pausedAt ?? nowFor(current);
+    if (timerElapsedMs({ ...current, endedAt }) < 60000 && !current.notes?.length && !current.photos?.length) {
+      if (remote) await timerRequest(tenantId, 'clear').catch(() => {});
       commit(null);
       flash('Under a minute, so it wasn’t logged');
       return true;
     }
-    return save(timer, endedAt);
-  }, [timer, commit, flash, save]);
+    return save(current, endedAt);
+  }, [remote, tenantId, commit, flash, save]);
 
   const start = useCallback(async (project) => {
     if (!keyRef.current) return;
-    if (timer?.endedAt) { flash('Save or discard the previous session first'); return; }
-    if (timer && timer.project.key === project.key) return;
+    const current = timerRef.current;
+    if (current?.endedAt) { flash('Save or discard the previous session first'); return; }
+    if (current && current.project.key === project.key) return;
     // Starting another project saves the current session first; if that
     // save fails, the old session stays put rather than being replaced.
-    if (timer && !(await stop())) return;
-    commit({ project, startedAt: Date.now() });
-  }, [timer, stop, commit, flash]);
+    if (current && !(await stop())) return;
+    if (!remote) {
+      commit({ project, startedAt: Date.now() });
+      return;
+    }
+    const result = await run('start', { project }, { project, startedAt: Date.now(), version: 0, synced: false });
+    // Another device had a timer going already: that one stands.
+    if (result?.existing && result.timer && result.timer.project.key !== project.key) {
+      flash(`Already tracking ${result.timer.project.title} on another device`);
+    }
+  }, [remote, stop, commit, flash, run]);
 
   const discard = useCallback(() => {
-    deleteTimerPhotos((timerRef.current?.photos || []).map((photo) => photo.id));
-    commit(null);
-  }, [commit]);
+    const current = timerRef.current;
+    deleteTimerPhotos((current?.photos || []).map((photo) => photo.id));
+    if (remote && current) run('clear', {}, null);
+    else commit(null);
+  }, [remote, commit, run]);
 
   const addNote = useCallback((text) => {
-    if (!timer || timer.endedAt) return false;
+    const current = timerRef.current;
+    if (!current || current.endedAt) return false;
     const clean = cleanNoteText(text);
     if (!clean) return false;
-    const notes = timer.notes || [];
+    const notes = current.notes || [];
     if (notes.length >= MAX_SESSION_NOTES) { flash(`That’s the limit of ${MAX_SESSION_NOTES} notes for one session`); return false; }
-    commit({ ...timer, notes: [...notes, { at: Date.now(), text: clean }] });
+    const next = { ...current, notes: [...notes, { at: nowFor(current), text: clean }] };
+    if (remote) run('addNote', { text: clean }, next);
+    else commit(next);
     return true;
-  }, [timer, commit, flash]);
+  }, [remote, commit, flash, run]);
 
   const removeNote = useCallback((index) => {
-    if (!timer || timer.endedAt || !timer.notes?.[index]) return;
-    commit({ ...timer, notes: timer.notes.filter((_, i) => i !== index) });
-  }, [timer, commit]);
+    const current = timerRef.current;
+    const note = current?.notes?.[index];
+    if (!current || current.endedAt || !note) return;
+    const next = { ...current, notes: current.notes.filter((_, i) => i !== index) };
+    if (remote) run('removeNote', { at: note.at, text: note.text }, next);
+    else commit(next);
+  }, [remote, commit, run]);
 
-  // Adds pictures to the running session: each is downscaled the same way
-  // Import Photos does, kept on this device, and listed on the timer by id.
+  // Adds pictures to the running session: each is downscaled to fit what the
+  // server keeps, cached on this device, and listed on the timer by id.
   // Resolves to how many were added.
   const addPhotos = useCallback(async (files) => {
     const started = timerRef.current;
@@ -206,16 +425,22 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     const added = [];
     for (const file of Array.from(files).slice(0, room)) {
       try {
-        const dataUrl = await resizeImageForUpload(file);
-        if (dataUrl.length > MAX_TIMER_PHOTO_DATA_URL_LENGTH) { flash('That photo is too large to add'); continue; }
+        const dataUrl = await prepareTimerPhoto(file);
+        if (!dataUrl) { flash('That photo is too large to add'); continue; }
         const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         await putTimerPhoto(id, dataUrl);
+        if (remote) {
+          // The server takes the picture and answers with the timer listing it.
+          const result = await run('addPhoto', { id, imageBase64: dataUrl });
+          if (!result) { deleteTimerPhotos([id]); break; }
+          if (!result.timer) { deleteTimerPhotos([id]); flash('That timer was stopped on another device'); break; }
+        }
         added.push({ id, at: Date.now() });
       } catch {
         flash('Couldn’t read that photo');
       }
     }
-    if (!added.length) return 0;
+    if (!added.length || remote) return added.length;
     const latest = timerRef.current;
     // Stopped or discarded while the pictures were being prepared: they have no timer to join.
     if (!latest || latest.endedAt || latest.startedAt !== started.startedAt) {
@@ -224,53 +449,64 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     }
     commit({ ...latest, photos: [...(latest.photos || []), ...added].slice(0, MAX_SESSION_PHOTOS) });
     return added.length;
-  }, [commit, flash]);
+  }, [remote, commit, flash, run]);
 
   const removePhoto = useCallback((id) => {
     const current = timerRef.current;
     if (!current || current.endedAt || !current.photos?.some((photo) => photo.id === id)) return;
     deleteTimerPhotos([id]);
-    commit({ ...current, photos: current.photos.filter((photo) => photo.id !== id) });
-  }, [commit]);
+    const next = { ...current, photos: current.photos.filter((photo) => photo.id !== id) };
+    if (remote) run('removePhoto', { id }, next);
+    else commit(next);
+  }, [remote, commit, run]);
 
   const pause = useCallback(() => {
-    if (!timer || timer.endedAt || timer.pausedAt) return;
-    commit({ ...timer, pausedAt: Date.now() });
-  }, [timer, commit]);
+    const current = timerRef.current;
+    if (!current || current.endedAt || current.pausedAt) return;
+    const next = { ...current, pausedAt: nowFor(current) };
+    if (remote) run('pause', {}, next);
+    else commit(next);
+  }, [remote, commit, run]);
 
   const resume = useCallback(() => {
-    if (!timer || timer.endedAt || !timer.pausedAt) return;
-    const { pausedAt, ...running } = timer;
-    commit({ ...running, pausedMs: (timer.pausedMs || 0) + (Date.now() - pausedAt) });
-  }, [timer, commit]);
+    const current = timerRef.current;
+    if (!current || current.endedAt || !current.pausedAt) return;
+    const { pausedAt, ...running } = current;
+    const next = { ...running, pausedMs: (current.pausedMs || 0) + Math.max(0, nowFor(current) - pausedAt) };
+    if (remote) run('resume', {}, next);
+    else commit(next);
+  }, [remote, commit, run]);
 
   const retry = useCallback(() => {
-    if (!timer?.endedAt) return;
-    save({ project: timer.project, startedAt: timer.startedAt, pausedMs: timer.pausedMs, notes: timer.notes, photos: timer.photos }, timer.endedAt);
-  }, [timer, save]);
+    const current = timerRef.current;
+    if (!current?.endedAt) return;
+    save({ project: current.project, startedAt: current.startedAt, pausedMs: current.pausedMs, notes: current.notes, photos: current.photos }, current.endedAt);
+  }, [save]);
 
-  return { timer, saving, notice, start, stop, discard, retry, pause, resume, addNote, removeNote, addPhotos, removePhoto };
+  return { timer, saving, notice, start, stop, discard, retry, pause, resume, addNote, removeNote, addPhotos, removePhoto, loadPhoto };
 }
 
 // Ticks once a second, only while `active`, and re-reads the clock when the
 // tab becomes visible again. Lives in the chip (not the hook) so the
 // per-second re-render stays inside this one small component instead of
 // re-rendering the whole calendar.
-function useNow(active) {
-  const [now, setNow] = useState(() => Date.now());
+// `offset` is the server's clock minus this device's (see the top of the file), so
+// what this returns is the time on the clock the timer was stamped with.
+function useNow(active, offset = 0) {
+  const [now, setNow] = useState(() => Date.now() + offset);
   // Refresh before paint when ticking (re)starts, so resuming from a pause
   // never shows a frame computed from the stale pre-pause clock.
-  useLayoutEffect(() => { if (active) setNow(Date.now()); }, [active]);
+  useLayoutEffect(() => { if (active) setNow(Date.now() + offset); }, [active, offset]);
   useEffect(() => {
     if (!active) return undefined;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    const onVisible = () => setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now() + offset), 1000);
+    const onVisible = () => setNow(Date.now() + offset);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       clearInterval(id);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [active]);
+  }, [active, offset]);
   return now;
 }
 
@@ -305,7 +541,7 @@ const chipButtonClass = 'shrink-0 px-2 py-0.5 rounded-full border text-[11px] fo
 export function TimerChip({ timer, saving, notice, onStop, onDiscard, onRetry, onPause, onResume }) {
   const live = !!timer && !timer.endedAt; // not finished (running or paused)
   const paused = live && !!timer.pausedAt;
-  const now = useNow(live && !paused);
+  const now = useNow(live && !paused, timer?.clockOffset);
   const elapsed = timer ? timerElapsedMs(timer, now) : 0;
   const elapsedSeconds = Math.floor(elapsed / 1000);
   const [discardArmed, pressDiscard] = useTwoStepDiscard(onDiscard);
@@ -391,13 +627,13 @@ const PlayIcon = ({ size = 18 }) => (
 );
 
 // One photo of the session, loaded back from this device by its id.
-function TimerPhotoThumb({ id, readOnly, onRemove }) {
+function TimerPhotoThumb({ id, readOnly, onRemove, onLoadPhoto }) {
   const [src, setSrc] = useState(null);
   useEffect(() => {
     let alive = true;
-    getTimerPhoto(id).then((dataUrl) => { if (alive) setSrc(dataUrl); });
+    (onLoadPhoto || getTimerPhoto)(id).then((dataUrl) => { if (alive) setSrc(dataUrl); });
     return () => { alive = false; };
-  }, [id]);
+  }, [id, onLoadPhoto]);
   return (
     <div className="relative aspect-square overflow-hidden border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)', borderRadius: 'var(--theme-radius-sm, 0.25rem)' }}>
       {src && <img src={src} alt="A photo added to this session" className="w-full h-full object-cover" />}
@@ -416,22 +652,57 @@ function TimerPhotoThumb({ id, readOnly, onRemove }) {
   );
 }
 
-// Photos for the running session. They are kept on this device and go up
-// with the session on Stop, saved FIRST in the Notion entry -- above the
-// notes -- so a gallery view of the database previews them. Read-only once
-// the session has ended (a failed save waiting on Retry).
-function TimerPhotos({ photos, readOnly, onAdd, onRemove }) {
+// Photos for the running session. They go up with the session on Stop, saved
+// FIRST in the Notion entry -- above the notes -- so a gallery view of the
+// database previews them. Add them from a file (or the camera on a phone), or
+// paste a copied image: Ctrl/Cmd+V anywhere on the page, or the Paste button.
+// Read-only once the session has ended (a failed save waiting on Retry).
+function TimerPhotos({ photos, readOnly, onAdd, onRemove, onLoadPhoto }) {
   const inputRef = useRef(null);
   const [adding, setAdding] = useState(false);
+  const [hint, setHint] = useState('');
+
+  const addFiles = useCallback(async (files) => {
+    setHint('');
+    setAdding(true);
+    try { await onAdd(files); } finally { setAdding(false); }
+  }, [onAdd]);
+
+  // A paste with an image on the clipboard adds it, wherever the pointer or
+  // focus is -- an image can't mean anything else here. A paste of text is
+  // left alone, so typing a note still pastes normally.
+  useEffect(() => {
+    if (readOnly) return undefined;
+    const onPaste = (e) => {
+      const files = imageFilesFromClipboardData(e.clipboardData);
+      if (!files.length) return;
+      e.preventDefault();
+      addFiles(files);
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [readOnly, addFiles]);
+
   if (readOnly && !photos.length) return null;
   const full = photos.length >= MAX_SESSION_PHOTOS;
+
   const pick = async (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!files.length) return;
-    setAdding(true);
-    try { await onAdd(files); } finally { setAdding(false); }
+    if (files.length) await addFiles(files);
   };
+  const pasteFromClipboard = async () => {
+    setHint('');
+    try {
+      const files = await readClipboardImageFiles();
+      if (!files.length) { setHint('There’s no image on the clipboard — copy one first.'); return; }
+      await addFiles(files);
+    } catch {
+      setHint('Couldn’t read the clipboard here — press Ctrl/⌘+V to paste instead.');
+    }
+  };
+  const actionClass = 'text-[11px] font-bold cursor-pointer disabled:opacity-40 disabled:cursor-default';
+
   return (
     <div className="w-full mt-3 pt-3 border-t text-left" style={{ borderColor: 'var(--theme-border)' }}>
       <div className="flex items-center justify-between gap-2 mb-1.5">
@@ -439,29 +710,42 @@ function TimerPhotos({ photos, readOnly, onAdd, onRemove }) {
           Photos{photos.length ? ` · ${photos.length}` : ''}
         </div>
         {!readOnly && (
-          <>
+          <div className="flex items-center gap-3">
             <input ref={inputRef} type="file" accept="image/*" multiple className="hidden" onChange={pick} />
+            {canReadClipboardImages() && (
+              <button
+                type="button"
+                onClick={pasteFromClipboard}
+                disabled={adding || full}
+                title="Add the image you have copied (or press Ctrl/⌘+V)"
+                className={actionClass}
+                style={{ color: 'var(--theme-primary)' }}
+              >
+                Paste
+              </button>
+            )}
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
               disabled={adding || full}
               title={full ? `That’s the limit of ${MAX_SESSION_PHOTOS} photos for one session` : 'Add photos to this session'}
-              className="text-[11px] font-bold cursor-pointer disabled:opacity-40 disabled:cursor-default"
+              className={actionClass}
               style={{ color: 'var(--theme-primary)' }}
             >
               {adding ? 'Adding…' : '+ Add photo'}
             </button>
-          </>
+          </div>
         )}
       </div>
       {photos.length > 0 && (
         <div className="grid grid-cols-4 gap-1.5">
           {photos.map((photo) => (
-            <TimerPhotoThumb key={photo.id} id={photo.id} readOnly={readOnly} onRemove={() => onRemove(photo.id)} />
+            <TimerPhotoThumb key={photo.id} id={photo.id} readOnly={readOnly} onRemove={() => onRemove(photo.id)} onLoadPhoto={onLoadPhoto} />
           ))}
         </div>
       )}
-      {!readOnly && <p className="text-[10px] opacity-60 mt-1.5">Saved to Notion first, above the notes, when you stop.</p>}
+      {hint && <p role="status" className="text-[10px] mt-1.5" style={{ color: 'var(--theme-secondary)' }}>{hint}</p>}
+      {!readOnly && <p className="text-[10px] opacity-60 mt-1.5">Saved to Notion first, above the notes, when you stop. You can also paste an image with Ctrl/⌘+V.</p>}
     </div>
   );
 }
@@ -531,10 +815,10 @@ function TimerNotes({ notes, readOnly, onAdd, onRemove }) {
 // the card's width, so it follows the sidebar as it's dragged wider or
 // narrower (and fills the phone overlay). It's capped so a very wide
 // sidebar or a short window never lets it swallow the project list.
-export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry, onPause, onResume, onAddNote, onRemoveNote, onAddPhotos, onRemovePhoto }) {
+export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry, onPause, onResume, onAddNote, onRemoveNote, onAddPhotos, onRemovePhoto, onLoadPhoto }) {
   const live = !timer.endedAt; // not finished (running or paused)
   const paused = live && !!timer.pausedAt;
-  const now = useNow(live && !paused);
+  const now = useNow(live && !paused, timer.clockOffset);
   const elapsed = timerElapsedMs(timer, now);
   const elapsedSeconds = Math.floor(elapsed / 1000);
   const [discardArmed, pressDiscard] = useTwoStepDiscard(onDiscard);
@@ -637,7 +921,7 @@ export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, 
         </div>
       </div>
 
-      <TimerPhotos photos={timer.photos || []} readOnly={!live} onAdd={onAddPhotos} onRemove={onRemovePhoto} />
+      <TimerPhotos photos={timer.photos || []} readOnly={!live} onAdd={onAddPhotos} onRemove={onRemovePhoto} onLoadPhoto={onLoadPhoto} />
       <TimerNotes notes={timer.notes || []} readOnly={!live} onAdd={onAddNote} onRemove={onRemoveNote} />
 
       {notice && <div className="text-[11px] opacity-70 mt-1">{notice}</div>}

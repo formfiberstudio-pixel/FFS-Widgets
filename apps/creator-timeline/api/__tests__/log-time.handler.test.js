@@ -22,6 +22,9 @@ const tenantRecord = {
 
 let referencePage;
 let notionCalls;
+// What Upstash holds: key -> the raw string it was sent (the tenant record, the
+// running timer, its photos, the saved-session claims).
+let kv;
 const realFetch = globalThis.fetch;
 
 before(() => {
@@ -31,9 +34,18 @@ before(() => {
       // Upstash REST client: POST /pipeline with an array of commands, and
       // a stored object comes back as a JSON string under each `result`.
       const commands = JSON.parse(options.body);
-      const results = commands.map(([command]) => ({
-        result: String(command).toUpperCase() === 'GET' ? JSON.stringify(tenantRecord) : 'OK',
-      }));
+      const results = commands.map(([command, ...args]) => {
+        const name = String(command).toUpperCase();
+        if (name === 'GET') return { result: kv.has(args[0]) ? kv.get(args[0]) : null };
+        if (name === 'SET') {
+          const [key, value, ...flags] = args;
+          if (flags.map((f) => String(f).toUpperCase()).includes('NX') && kv.has(key)) return { result: null };
+          kv.set(key, String(value));
+          return { result: 'OK' };
+        }
+        if (name === 'DEL') return { result: args.reduce((n, key) => n + (kv.delete(key) ? 1 : 0), 0) };
+        return { result: 'OK' };
+      });
       return new Response(JSON.stringify(results), { status: 200 });
     }
     let parsedBody = null;
@@ -59,6 +71,7 @@ after(() => { globalThis.fetch = realFetch; });
 
 function reset() {
   notionCalls = [];
+  kv = new Map([[`tenant:${TENANT_ID}`, JSON.stringify(tenantRecord)]]);
   referencePage = {
     parent: { database_id: 'db-1' },
     properties: {
@@ -234,4 +247,165 @@ test('uploadTimerPhoto needs a photo', async () => {
   assert.equal(res.statusCode, 400);
   assert.match(res.body.error, /imageBase64/);
   assert.equal(notionCalls.length, 0);
+});
+
+// ---------------------------------------------------------------- the running timer, held on the server
+
+const PROJECT = { key: 'Activity Log::Blog', title: 'Blog', source: 'Activity Log', referenceLogId: 'ref-log', projectType: 'Writing' };
+const PHOTO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBD';
+const timerCall = (op, fields = {}) => call({ action: 'timer', op, ...fields });
+const storedTimer = () => (kv.has(`activeTimer:${TENANT_ID}`) ? JSON.parse(kv.get(`activeTimer:${TENANT_ID}`)) : null);
+
+test('timer: start, note, pause and resume are held on the server, and a second device sees them', async () => {
+  reset();
+  const before = Date.now();
+  const started = await timerCall('start', { project: PROJECT });
+  assert.equal(started.statusCode, 200, JSON.stringify(started.body));
+  assert.equal(started.body.success, true);
+  assert.ok(started.body.timer.startedAt >= before && started.body.timer.startedAt <= Date.now());
+  assert.ok(started.body.serverNow >= started.body.timer.startedAt);
+  assert.equal(started.body.timer.project.title, 'Blog');
+
+  // "the phone" looks, and adds a note
+  const seen = await timerCall('get');
+  assert.equal(seen.body.timer.startedAt, started.body.timer.startedAt);
+  const noted = await timerCall('addNote', { text: 'added from the phone' });
+  assert.deepEqual(noted.body.timer.notes.map((n) => n.text), ['added from the phone']);
+
+  // "the computer" pauses, then resumes
+  assert.ok((await timerCall('pause')).body.timer.pausedAt);
+  const resumed = await timerCall('resume');
+  assert.equal(resumed.body.timer.pausedAt, undefined);
+  assert.ok(resumed.body.timer.pausedMs >= 0);
+  assert.equal(storedTimer().version, 4); // start, note, pause, resume (looking changes nothing)
+});
+
+test('timer: starting while one runs hands back the running timer', async () => {
+  reset();
+  const first = await timerCall('start', { project: PROJECT });
+  const second = await timerCall('start', { project: { ...PROJECT, key: 'x::Other', title: 'Other' } });
+  assert.equal(second.body.existing, true);
+  assert.equal(second.body.timer.project.title, 'Blog');
+  assert.equal(second.body.timer.startedAt, first.body.timer.startedAt);
+});
+
+test('timer: asking for one that is not running answers no timer', async () => {
+  reset();
+  const res = await timerCall('get');
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.timer, null);
+  assert.equal((await timerCall('addNote', { text: 'hello' })).body.timer, null);
+});
+
+test('timer: a photo is stored, listed by id, handed to another device, and removed', async () => {
+  reset();
+  await timerCall('start', { project: PROJECT });
+  const added = await timerCall('addPhoto', { id: 'photo-0001-aaaa', imageBase64: PHOTO });
+  assert.equal(added.statusCode, 200, JSON.stringify(added.body));
+  assert.deepEqual(added.body.timer.photos.map((p) => p.id), ['photo-0001-aaaa']);
+  assert.equal(kv.get(`timerPhoto:${TENANT_ID}:photo-0001-aaaa`), PHOTO);
+  // the timer record itself carries no picture data
+  assert.equal(kv.get(`activeTimer:${TENANT_ID}`).includes('base64'), false);
+
+  assert.equal((await timerCall('getPhoto', { id: 'photo-0001-aaaa' })).body.imageBase64, PHOTO);
+  assert.equal((await timerCall('getPhoto', { id: 'photo-9999-zzzz' })).body.imageBase64, null);
+
+  const removed = await timerCall('removePhoto', { id: 'photo-0001-aaaa' });
+  assert.deepEqual(removed.body.timer.photos, []);
+  assert.equal(kv.has(`timerPhoto:${TENANT_ID}:photo-0001-aaaa`), false);
+});
+
+test('timer: a photo that is too large or not an image is refused, and nothing is kept', async () => {
+  reset();
+  await timerCall('start', { project: PROJECT });
+  for (const imageBase64 of ['not an image', 'data:text/html;base64,PGgxPg==', `data:image/jpeg;base64,${'A'.repeat(950000)}`, undefined]) {
+    const res = await timerCall('addPhoto', { id: 'photo-0002-bbbb', imageBase64 });
+    assert.equal(res.statusCode, 400);
+  }
+  assert.deepEqual(storedTimer().photos, []);
+  assert.equal(kv.has(`timerPhoto:${TENANT_ID}:photo-0002-bbbb`), false);
+});
+
+test('timer: clear (discard) removes the timer and its pictures', async () => {
+  reset();
+  await timerCall('start', { project: PROJECT });
+  await timerCall('addPhoto', { id: 'photo-0003-cccc', imageBase64: PHOTO });
+  const res = await timerCall('clear');
+  assert.equal(res.body.timer, null);
+  assert.equal(kv.has(`activeTimer:${TENANT_ID}`), false);
+  assert.equal(kv.has(`timerPhoto:${TENANT_ID}:photo-0003-cccc`), false);
+});
+
+test('timer: a bad request is a 400 with the reason, and an unknown operation is refused', async () => {
+  reset();
+  assert.equal((await timerCall('start', { project: { title: 'no key' } })).statusCode, 400);
+  assert.match((await timerCall('explode')).body.error, /Unknown/);
+  assert.equal((await call({ action: 'timer' })).statusCode, 400);
+  await timerCall('start', { project: PROJECT });
+  assert.equal((await timerCall('addNote', { text: '   ' })).statusCode, 400);
+});
+
+test('uploadTimerPhoto can upload a picture the timer holds, by its id', async () => {
+  reset();
+  await timerCall('start', { project: PROJECT });
+  await timerCall('addPhoto', { id: 'photo-0004-dddd', imageBase64: PHOTO });
+  notionCalls = [];
+  const res = await call({ action: 'uploadTimerPhoto', timerPhotoId: 'photo-0004-dddd' });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.match(res.body.fileUploadId, /^upload-/);
+  assert.equal(notionCalls.some((c) => c.isUpload), true);
+
+  const missing = await call({ action: 'uploadTimerPhoto', timerPhotoId: 'photo-0005-eeee' });
+  assert.equal(missing.statusCode, 404);
+  const invalid = await call({ action: 'uploadTimerPhoto', timerPhotoId: '../nope' });
+  assert.equal(invalid.statusCode, 400);
+});
+
+test('logTime for the running session claims it, saves once, and clears the timer and its photos', async () => {
+  reset();
+  const { body: { timer } } = await timerCall('start', { project: PROJECT });
+  await timerCall('addPhoto', { id: 'photo-0006-ffff', imageBase64: PHOTO });
+  notionCalls = [];
+
+  const res = await call({ ...VALID, sessionStartedAt: timer.startedAt });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(res.body.pageId, 'new-session-page');
+  assert.equal(notionCalls.filter((c) => c.url.endsWith('/v1/pages') && c.method === 'POST').length, 1);
+  assert.equal(kv.has(`activeTimer:${TENANT_ID}`), false);
+  assert.equal(kv.has(`timerPhoto:${TENANT_ID}:photo-0006-ffff`), false);
+
+  // the other device presses Stop a moment later: no second entry
+  notionCalls = [];
+  const again = await call({ ...VALID, sessionStartedAt: timer.startedAt });
+  assert.equal(again.statusCode, 200);
+  assert.equal(again.body.duplicate, true);
+  assert.equal(again.body.pageId, 'new-session-page');
+  assert.equal(notionCalls.length, 0);
+});
+
+test('logTime that fails lets the session be claimed again, so a retry goes through', async () => {
+  reset();
+  const { body: { timer } } = await timerCall('start', { project: PROJECT });
+  const failed = await call({ ...VALID, referenceLogId: 'missing-page', sessionStartedAt: timer.startedAt });
+  assert.equal(failed.statusCode, 400);
+  assert.equal([...kv.keys()].some((k) => k.startsWith('timerSaved:')), false);
+  assert.ok(storedTimer(), 'the running timer stays until a save succeeds');
+  const retry = await call({ ...VALID, sessionStartedAt: timer.startedAt });
+  assert.equal(retry.statusCode, 200);
+  assert.equal(retry.body.pageId, 'new-session-page');
+});
+
+test('logTime for an older session leaves a newer running timer alone', async () => {
+  reset();
+  const { body: { timer } } = await timerCall('start', { project: PROJECT });
+  const res = await call({ ...VALID, sessionStartedAt: timer.startedAt - 3600000 });
+  assert.equal(res.statusCode, 200);
+  assert.equal(storedTimer().startedAt, timer.startedAt);
+});
+
+test('logTime rejects a session time that is not a number', async () => {
+  reset();
+  const res = await call({ ...VALID, sessionStartedAt: 'yesterday' });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /session/i);
 });

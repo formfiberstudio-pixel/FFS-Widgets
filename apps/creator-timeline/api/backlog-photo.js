@@ -3,6 +3,19 @@ import { getTenant, saveTenant, LICENSE_REVERIFY_MS } from './_lib/tenantStore.j
 import { verifyGumroadLicense } from './_lib/gumroad.js';
 import { notionFetch } from './_lib/notionFetch.js';
 import { uploadImageToNotion } from './_lib/notionUpload.js';
+import { applyTimerOp, TimerOpError, validTimerPhotoDataUrl, validTimerPhotoId } from './_lib/timerState.js';
+import {
+  claimSavedSession,
+  deleteActiveTimer,
+  deleteTimerPhotoData,
+  getActiveTimer,
+  getSavedSessionPageId,
+  getTimerPhotoData,
+  markSavedSession,
+  putTimerPhotoData,
+  releaseSavedSession,
+  saveActiveTimer,
+} from './_lib/timerStore.js';
 import { buildSessionChildren, buildSessionNote, buildSessionProperties, buildSessionTitle, sanitizeSessionNotes, validPhotoUploadIds } from './_lib/timeTracking.js';
 
 // Needs the newer version for file_uploads (see notionUpload.js) -- used
@@ -43,6 +56,13 @@ const NOTION_VERSION = '2026-03-11';
 // session are first uploaded one request each (action: 'uploadTimerPhoto',
 // which returns a file_upload id), then attached by logTime as the page's
 // first blocks and its cover, ahead of the notes. See _lib/timeTracking.js.
+//
+// And action: 'timer' -- the RUNNING timer, held here (in Redis) rather than
+// in one browser so every device sees it and can add notes and photos to it:
+// get / start / adopt / pause / resume / addNote / removeNote / addPhoto /
+// getPhoto / removePhoto / clear (see _lib/timerState.js). Stopping saves it
+// with logTime, which also claims the session so two devices stopping at the
+// same moment make one entry, and clears the timer.
 // Decodes a base64 photo (a data URL or bare base64), works out its type from
 // its own bytes, and uploads it to Notion; resolves to the file_upload id.
 async function uploadBase64Photo(imageBase64, notionToken) {
@@ -64,7 +84,7 @@ async function uploadBase64Photo(imageBase64, notionToken) {
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds, op, timerPhotoId, sessionStartedAt } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
 
@@ -85,8 +105,14 @@ export default async function handler(req, res) {
     if (notes !== undefined && !Array.isArray(notes)) return res.status(400).json({ error: 'Invalid notes' });
     if (projectTitle !== undefined && typeof projectTitle !== 'string') return res.status(400).json({ error: 'Invalid project name' });
     if (photoUploadIds !== undefined && !validPhotoUploadIds(photoUploadIds)) return res.status(400).json({ error: 'Invalid photos' });
+    if (sessionStartedAt !== undefined && !Number.isFinite(sessionStartedAt)) return res.status(400).json({ error: 'Invalid session' });
   } else if (action === 'uploadTimerPhoto') {
-    if (typeof imageBase64 !== 'string' || !imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
+    // The picture comes either in the request, or -- for a photo the running
+    // timer already holds -- by its id, which spares sending it twice.
+    if (timerPhotoId !== undefined && !validTimerPhotoId(timerPhotoId)) return res.status(400).json({ error: 'Invalid photo' });
+    if (timerPhotoId === undefined && (typeof imageBase64 !== 'string' || !imageBase64)) return res.status(400).json({ error: 'Missing imageBase64' });
+  } else if (action === 'timer') {
+    if (typeof op !== 'string') return res.status(400).json({ error: 'Missing operation' });
   } else {
     if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
     if (!pageId) {
@@ -135,6 +161,39 @@ export default async function handler(req, res) {
     'Notion-Version': NOTION_VERSION,
     'Content-Type': 'application/json',
   };
+
+  if (action === 'timer') {
+    try {
+      const body = req.body || {};
+      // Every timestamp is this server's clock, and each answer says what it is
+      // now, so a device can allow for its own clock being off.
+      const now = Date.now();
+      const current = await getActiveTimer(tenantId);
+
+      // A picture the timer holds, for a device that didn't take it.
+      if (op === 'getPhoto') {
+        const held = validTimerPhotoId(body.id) && current?.photos?.some((photo) => photo.id === body.id);
+        return res.status(200).json({ success: true, imageBase64: held ? await getTimerPhotoData(tenantId, body.id) : null });
+      }
+      if (op === 'addPhoto' && !validTimerPhotoDataUrl(body.imageBase64)) {
+        return res.status(400).json({ error: 'That photo can’t be added (it is too large, or not an image).' });
+      }
+
+      const result = applyTimerOp(current ?? null, op, body, now);
+      const next = result.timer ?? null;
+      if (next !== (current ?? null)) {
+        if (op === 'addPhoto') await putTimerPhotoData(tenantId, body.id, body.imageBase64);
+        if (next) await saveActiveTimer(tenantId, next);
+        else await deleteActiveTimer(tenantId);
+      }
+      if (result.removedPhotoIds?.length) await deleteTimerPhotoData(tenantId, result.removedPhotoIds);
+      return res.status(200).json({ success: true, timer: next, serverNow: now, existing: Boolean(result.existing) });
+    } catch (err) {
+      if (err instanceof TimerOpError) return res.status(400).json({ error: err.message });
+      console.error('[backlog-photo] timer failed:', err.message);
+      return res.status(500).json({ error: 'Could not reach the timer right now.' });
+    }
+  }
 
   if (action === 'updateNote') {
     try {
@@ -288,7 +347,12 @@ export default async function handler(req, res) {
   // all that comes back. Notion drops an upload that is never attached.
   if (action === 'uploadTimerPhoto') {
     try {
-      const fileUploadId = await uploadBase64Photo(imageBase64, notionToken);
+      let source = imageBase64;
+      if (timerPhotoId !== undefined) {
+        source = await getTimerPhotoData(tenantId, timerPhotoId);
+        if (!source) return res.status(404).json({ error: 'That photo is no longer available.' });
+      }
+      const fileUploadId = await uploadBase64Photo(source, notionToken);
       return res.status(200).json({ success: true, fileUploadId });
     } catch (err) {
       console.error('[backlog-photo] uploadTimerPhoto failed:', err.message);
@@ -297,7 +361,19 @@ export default async function handler(req, res) {
   }
 
   if (action === 'logTime') {
+    // Two devices can press Stop on the same timer at about the same moment.
+    // The first to claim the session (by its start time) saves it; the other
+    // is told it is already saved (or being) rather than making a second entry.
+    const sessionKey = sessionStartedAt === undefined ? null : String(Math.trunc(sessionStartedAt));
+    let claimed = false;
+    let saved = false;
     try {
+      if (sessionKey) {
+        claimed = await claimSavedSession(tenantId, sessionKey);
+        if (!claimed) {
+          return res.status(200).json({ success: true, duplicate: true, pageId: await getSavedSessionPageId(tenantId, sessionKey) });
+        }
+      }
       const refRes = await notionFetch(`https://api.notion.com/v1/pages/${referenceLogId}`, { method: 'GET', headers });
       if (!refRes.ok) {
         const errData = await refRes.json().catch(() => ({}));
@@ -335,11 +411,31 @@ export default async function handler(req, res) {
       });
       const createData = await createRes.json();
       if (createData.object === 'error') return res.status(400).json({ error: createData.message });
+      saved = true;
+
+      // Saved: remember the page against the session, and clear the running
+      // timer (and its photos) if it is this very session. Neither failing
+      // undoes the entry, so they are best effort.
+      if (sessionKey) {
+        try {
+          await markSavedSession(tenantId, sessionKey, createData.id);
+          const running = await getActiveTimer(tenantId);
+          if (running && running.startedAt === Math.trunc(sessionStartedAt)) {
+            await deleteActiveTimer(tenantId);
+            await deleteTimerPhotoData(tenantId, (running.photos || []).map((photo) => photo.id));
+          }
+        } catch (err) {
+          console.error('[backlog-photo] logTime cleanup failed:', err.message);
+        }
+      }
 
       return res.status(200).json({ success: true, pageId: createData.id, title: sessionTitle });
     } catch (err) {
       console.error('[backlog-photo] logTime failed:', err.message);
       return res.status(500).json({ error: err.message });
+    } finally {
+      // Nothing was saved: let a retry (from either device) claim the session.
+      if (claimed && !saved) await releaseSavedSession(tenantId, sessionKey).catch(() => {});
     }
   }
 
