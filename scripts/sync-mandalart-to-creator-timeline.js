@@ -3,11 +3,18 @@
 // or more Notion databases, using the same page/property shape as
 // apps/creator-timeline/api/add-notion-log.js.
 //
-// Which sub-goals feed which database is configured in a routes file (see
-// sync-routes.example.json) rather than hardcoded — a photo tagged to a
-// sub-goal listed in a route's subGoalIds gets synced to that route's
-// database. A sub-goal can appear in more than one route (it'll sync to
-// each), and a route can list any number of sub-goals.
+// Which sub-goals feed which database is normally configured right in the
+// app now (Settings > Notion tab, added there specifically so this script
+// wouldn't need its own separate config) — the snapshot's own
+// `notionRoutes` field IS the routing config, read straight from there by
+// default. A photo tagged to a sub-goal listed in a route's subGoalIds gets
+// synced to that route's database. A sub-goal can appear in more than one
+// route (it'll sync to each), and a route can list any number of
+// sub-goals. `--routes <path>` still works as an explicit override (e.g.
+// testing a different config without touching the app), and the OLD
+// hand-edited sync-routes.json (see sync-routes.example.json) is still
+// tried as a last-resort fallback if the snapshot has no routes configured
+// yet — for anyone using this script before ever opening that Settings tab.
 //
 // Mandalart's DailyLogEntry only has a date key, free text, and a list of
 // DailyPhotoEntry (each optionally tagged to a pillar/sub-goal). There's no
@@ -23,7 +30,8 @@
 // Without --live, this only prints what it would create — nothing is sent to
 // Notion. Requires NOTION_TOKEN in .env (see .env.example) before --live
 // will do anything. --list-subgoals prints every pillar/sub-goal in the
-// snapshot with its id, so you can build the routes file.
+// snapshot with its id, for building routes (in the app, or by hand in
+// sync-routes.json).
 
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -35,7 +43,11 @@ const NOTION_VERSION = '2026-03-11';
 const DEFAULT_ROUTES_PATH = fileURLToPath(new URL('./sync-routes.json', import.meta.url));
 
 function parseArgs(argv) {
-  const args = { live: false, listSubGoals: false, routes: DEFAULT_ROUTES_PATH };
+  // `routes` starts null now (was defaulted to DEFAULT_ROUTES_PATH) — null
+  // means "use the snapshot's own notionRoutes," which resolveRoutes()
+  // below now handles; an explicit --routes value is treated as a
+  // deliberate override.
+  const args = { live: false, listSubGoals: false, routes: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--snapshot') args.snapshot = argv[++i];
     else if (argv[i] === '--photos-dir') args.photosDir = argv[++i];
@@ -73,26 +85,61 @@ function printSubGoalList(snapshot) {
     }
     console.log('');
   }
-  console.log('Copy sub-goal ids into a route\'s "subGoalIds" array in sync-routes.json.');
+  console.log('Set these up as routes in the app\'s own Settings > Notion tab (each route picks its own sub-goals), or by hand in sync-routes.json.');
 }
 
-async function loadRoutes(routesPath) {
+function validRoute(route) {
+  return Boolean(route.databaseId) && Array.isArray(route.subGoalIds) && route.subGoalIds.length > 0;
+}
+
+async function loadRoutesFromFile(routesPath) {
   let raw;
   try {
     raw = await readFile(routesPath, 'utf-8');
   } catch (err) {
-    throw new Error(`Couldn't read routes file at ${routesPath} — copy sync-routes.example.json to sync-routes.json and fill it in. (${err.message})`);
+    throw new Error(
+      `Couldn't read routes file at ${routesPath} — either configure routes in the app's own Settings > Notion ` +
+      `tab (this script reads those automatically from the snapshot), or copy sync-routes.example.json to ` +
+      `sync-routes.json and fill it in by hand. (${err.message})`
+    );
   }
   const parsed = JSON.parse(raw);
   if (!Array.isArray(parsed.routes) || parsed.routes.length === 0) {
     throw new Error(`${routesPath} has no routes defined.`);
   }
   for (const route of parsed.routes) {
-    if (!route.databaseId || !Array.isArray(route.subGoalIds) || route.subGoalIds.length === 0) {
+    if (!validRoute(route)) {
       throw new Error(`Route "${route.label || '(unlabeled)'}" needs a databaseId and a non-empty subGoalIds array.`);
     }
   }
   return parsed.routes;
+}
+
+/** Routes normally come straight from the snapshot's own `notionRoutes`
+ *  field now (Settings > Notion tab writes them there, same shape this
+ *  script always expected — icon/label/databaseId/subGoalIds). A route
+ *  still mid-setup in the app (no database picked yet, or no sub-goals
+ *  assigned) is silently skipped rather than treated as an error — only a
+ *  route loaded from an explicit --routes FILE is held to the strict
+ *  "every field must be filled in" standard `loadRoutesFromFile` already
+ *  enforced, since that file is something deliberately hand-written.
+ *  `--routes <path>` is a full override (ignores the snapshot entirely);
+ *  with no override and nothing usable in the snapshot, falls back to the
+ *  OLD default sync-routes.json path for anyone using this before ever
+ *  configuring anything in the app. */
+async function resolveRoutes(args, snapshot) {
+  if (args.routes) {
+    return loadRoutesFromFile(args.routes);
+  }
+  const fromSnapshot = (snapshot.notionRoutes || []).filter(validRoute);
+  const skipped = (snapshot.notionRoutes || []).length - fromSnapshot.length;
+  if (skipped > 0) {
+    console.log(`  (skipping ${skipped} route(s) from the app that aren't fully set up yet — needs a database picked and at least one sub-goal)`);
+  }
+  if (fromSnapshot.length > 0) {
+    return fromSnapshot;
+  }
+  return loadRoutesFromFile(DEFAULT_ROUTES_PATH);
 }
 
 function titleFor(pillarLookup, subGoalId) {
@@ -230,7 +277,7 @@ async function main() {
     return;
   }
 
-  const routes = await loadRoutes(args.routes);
+  const routes = await resolveRoutes(args, snapshot);
   const pillarLookup = buildPillarLookup(snapshot.pillars);
 
   const dates = Object.keys(snapshot.dailyLogEntries || {}).sort();
