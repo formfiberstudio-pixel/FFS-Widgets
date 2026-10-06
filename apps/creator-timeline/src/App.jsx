@@ -20,6 +20,8 @@ import {
 import FacetedSidebarGroup from './FacetedSidebarGroup.jsx';
 import GalleryMiniCalendar from './GalleryMiniCalendar.jsx';
 import WeekSummary from './WeekSummary.jsx';
+import YearGalleryPanel from './YearGalleryPanel.jsx';
+import { collectYearPhotos, weekStartFor, yearGalleryRange } from './yearGallery.js';
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
@@ -1292,6 +1294,103 @@ function App() {
     };
   }, [isResizingSidebar]);
 
+  // --- YEAR VIEW GALLERY TAB (right-hand panel, desktop Year view only) ---
+  // The mirror of the project list: opens/closes from an edge tab and is
+  // sized by dragging its left edge; both choices are remembered.
+  const [isYearGalleryOpen, setIsYearGalleryOpen] = useState(() => localStorage.getItem('notionWidgetYearGalleryOpen') !== 'false');
+  const [yearGalleryWidth, setYearGalleryWidth] = useState(() => Number(localStorage.getItem('notionWidgetYearGalleryWidth')) || 300);
+  const [yearGalleryNewestFirst, setYearGalleryNewestFirst] = useState(() => localStorage.getItem('notionWidgetYearGalleryNewestFirst') === 'true');
+  const [isResizingYearGallery, setIsResizingYearGallery] = useState(false);
+  const yearGalleryDragStartX = useRef(0);
+  // As wide as 900px, but never more than 60% of the window, so the year
+  // grid always keeps room.
+  const maxYearGalleryWidth = () => Math.min(900, Math.round(window.innerWidth * 0.6));
+  const yearGalleryDragStartWidth = useRef(300);
+
+  useEffect(() => { localStorage.setItem('notionWidgetYearGalleryOpen', String(isYearGalleryOpen)); }, [isYearGalleryOpen]);
+  useEffect(() => { localStorage.setItem('notionWidgetYearGalleryWidth', yearGalleryWidth); }, [yearGalleryWidth]);
+  useEffect(() => { localStorage.setItem('notionWidgetYearGalleryNewestFirst', String(yearGalleryNewestFirst)); }, [yearGalleryNewestFirst]);
+
+  const handleMouseDownYearGalleryResize = (e) => {
+    e.preventDefault();
+    setIsResizingYearGallery(true);
+    yearGalleryDragStartX.current = e.clientX;
+    yearGalleryDragStartWidth.current = yearGalleryWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isResizingYearGallery) return;
+      // The handle is on the panel's LEFT edge, so dragging left widens it.
+      const deltaX = yearGalleryDragStartX.current - e.clientX;
+      setYearGalleryWidth(Math.min(Math.max(yearGalleryDragStartWidth.current + deltaX, 220), maxYearGalleryWidth()));
+    };
+    const handleMouseUp = () => {
+      setIsResizingYearGallery(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    if (isResizingYearGallery) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizingYearGallery]);
+
+  // The gallery follows the month button or week being hovered in the year
+  // grid. Pointing at the gallery to reach a photo ends that hover, so the
+  // filter is held for a moment after it -- and for as long as the pointer is
+  // over the gallery itself -- or the photos you were filtering to would
+  // vanish before you could click one.
+  const hoverGalleryFilter = hoveredWeek
+    ? { kind: 'week', weekStart: weekStartFor(currentDate.getFullYear(), hoveredWeek.mIdx, hoveredWeek.weekIndex).getTime() }
+    : hoveredMonthButtonIndex !== null
+    ? { kind: 'month', mIdx: hoveredMonthButtonIndex }
+    : null;
+  const hoverGalleryKey = hoverGalleryFilter ? (hoverGalleryFilter.kind === 'week' ? `week:${hoverGalleryFilter.weekStart}` : `month:${hoverGalleryFilter.mIdx}`) : '';
+  const [heldGalleryFilter, setHeldGalleryFilter] = useState(null);
+  // The month or week a click has pinned in the Year view ({ kind, mIdx,
+  // weekIndex? }): the gallery keeps showing it, and the grid keeps it
+  // highlighted, after the pointer moves away. Clicking the same one again
+  // opens it (see handleYearMonthClick / handleYearWeekClick). It belongs to
+  // one year's grid, so it is dropped when the year or the view changes.
+  const [pinnedYearFilter, setPinnedYearFilter] = useState(null);
+  // Sundays (as times) of the week(s) lit up in the Year grid: the one being
+  // hovered and the one pinned. A week that crosses a month boundary is ONE
+  // week -- Mar 29-31 and Apr 1-4 light up together -- so cells are matched
+  // by their week's Sunday, not by their row in a month.
+  const highlightedWeekStarts = new Set();
+  if (hoverGalleryFilter?.kind === 'week') highlightedWeekStarts.add(hoverGalleryFilter.weekStart);
+  if (pinnedYearFilter?.kind === 'week') highlightedWeekStarts.add(pinnedYearFilter.weekStart);
+  useEffect(() => {
+    setPinnedYearFilter(null);
+    // A grid cell that unmounts under the pointer (clicking a month opens
+    // the Month view) never sends its mouseleave, so clear the hover state
+    // too, or the Year view would come back with that month still lit.
+    setHoveredWeek(null);
+    setHoveredMonthButtonIndex(null);
+    setHeldGalleryFilter(null);
+  }, [viewMode, currentDate.getFullYear()]);
+  const yearGalleryPointerInside = useRef(false);
+  useEffect(() => {
+    if (hoverGalleryKey) {
+      setHeldGalleryFilter(hoverGalleryFilter);
+      return undefined;
+    }
+    // Checked when the delay is up, not when it starts: the pointer is
+    // usually still on its way to the gallery at the moment the hover ends.
+    const id = setTimeout(() => {
+      if (!yearGalleryPointerInside.current) setHeldGalleryFilter(null);
+    }, 400);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hoverGalleryKey]);
+
   // --- VIEW SCALE / TEXT SIZE STATE ---
   const [viewScale, setViewScale] = useState(() => {
     const saved = localStorage.getItem('notionWidgetViewScale');
@@ -1338,6 +1437,16 @@ function App() {
   const monthDotPx = Math.round(24 * scaleFactor);
   const monthDotFontPx = Math.round(11 * scaleFactor);
   const yearDotPx = Math.round(16 * scaleFactor);
+  // Year view hover highlights (a week from the grid, a month from its
+  // button) hug the dots: the same YEAR_HIGHLIGHT_BUFFER on every side of
+  // them, ends included, instead of filling whole grid cells / rows. A band
+  // is yearBandThickness across; yearBandCap is the inset from a cell edge
+  // that puts a band's end one buffer past the dot's own edge.
+  const YEAR_HIGHLIGHT_BUFFER = 6;
+  const yearBandThickness = Math.round(yearDotPx * 1.1) + 2 * YEAR_HIGHLIGHT_BUFFER;
+  const yearBandCap = `calc(50% - ${yearBandThickness / 2}px)`;
+  // The landscape month band also wraps the month button (about 27px tall).
+  const yearMonthBandHeight = 27 + 2 * YEAR_HIGHLIGHT_BUFFER;
   const yearDotFontPx = Math.round(8 * scaleFactor);
   const cardTitleFontPx = Math.round(11 * scaleFactor);
   const projectTagFontPx = Math.round(10 * scaleFactor);
@@ -2370,6 +2479,26 @@ function App() {
   const handleShowAllFilters = () => { setSelectedProjectFilters([]); setIsolatedTarget(null); };
   const toggleProjectFilter = (title) => setSelectedProjectFilters((prev) => prev.includes(title) ? prev.filter(t => t !== title) : [...prev, title]);
 
+  // Year view: hover is a quick look, one click pins the month / week as the
+  // gallery's filter, and a click on the one already pinned goes into it.
+  const isSameYearFilter = (a, b) => (
+    !!a && !!b && a.kind === b.kind && (a.mIdx ?? null) === (b.mIdx ?? null) && (a.weekStart ?? null) === (b.weekStart ?? null)
+  );
+  const handleYearMonthClick = (mIdx) => {
+    const filter = { kind: 'month', mIdx };
+    if (isSameYearFilter(pinnedYearFilter, filter)) {
+      setCurrentDate(new Date(year, mIdx, 1));
+      setViewMode('month');
+    } else {
+      setPinnedYearFilter(filter);
+    }
+  };
+  const handleYearWeekClick = (mIdx, weekIndex) => {
+    const filter = { kind: 'week', weekStart: weekStartFor(year, mIdx, weekIndex).getTime() };
+    if (isSameYearFilter(pinnedYearFilter, filter)) handleWeekClick(mIdx, weekIndex);
+    else setPinnedYearFilter(filter);
+  };
+
   const handleWeekClick = (mIdx, weekIndex) => {
     const firstDayOfMonthObj = new Date(year, mIdx, 1);
     const startOffsetColumn = firstDayOfMonthObj.getDay();
@@ -2745,6 +2874,34 @@ function App() {
     );
   }
 
+  // One cell's slice of the highlighted week's band (Year view). Slices of
+  // neighbouring cells abut into one continuous capsule; only the first and
+  // last cell of the week carry a rounded cap, drawn a buffer beyond the dot,
+  // so blank cells before the 1st / after the last day are left out and the
+  // band is only as long as the days it contains. `vertical` is the portrait
+  // layout (months as columns).
+  const renderWeekBand = ({ vertical, isFirst, isLast }) => {
+    const radius = yearBandThickness / 2;
+    const style = vertical
+      ? {
+          left: '50%', width: yearBandThickness, transform: 'translateX(-50%)',
+          top: isFirst ? yearBandCap : 0, bottom: isLast ? yearBandCap : 0,
+          borderLeftWidth: 1, borderRightWidth: 1,
+          borderTopWidth: isFirst ? 1 : 0, borderBottomWidth: isLast ? 1 : 0,
+          borderTopLeftRadius: isFirst ? radius : 0, borderTopRightRadius: isFirst ? radius : 0,
+          borderBottomLeftRadius: isLast ? radius : 0, borderBottomRightRadius: isLast ? radius : 0,
+        }
+      : {
+          top: '50%', height: yearBandThickness, transform: 'translateY(-50%)',
+          left: isFirst ? yearBandCap : 0, right: isLast ? yearBandCap : 0,
+          borderTopWidth: 1, borderBottomWidth: 1,
+          borderLeftWidth: isFirst ? 1 : 0, borderRightWidth: isLast ? 1 : 0,
+          borderTopLeftRadius: isFirst ? radius : 0, borderBottomLeftRadius: isFirst ? radius : 0,
+          borderTopRightRadius: isLast ? radius : 0, borderBottomRightRadius: isLast ? radius : 0,
+        };
+    return <span aria-hidden="true" className="absolute pointer-events-none border-amber-500 bg-amber-500/20" style={{ borderStyle: 'solid', ...style }} />;
+  };
+
   // The day's detail -- its date and holidays, then one card per entry
   // (photo, title, note, thumbnail pick). Shown as a PAGE in the calendar's
   // canvas on desktop (Day view) and as the phone's full-screen takeover
@@ -2967,7 +3124,7 @@ function App() {
           doesn't show through underneath it. */}
       <header
         style={{ backgroundColor: 'var(--theme-bg)' }}
-        className={`sticky top-0 z-30 shrink-0 flex items-center justify-between gap-2 ${isMobile ? 'flex-nowrap mb-2' : 'flex-wrap gap-3 mb-5'}`}
+        className={`sticky top-0 z-30 shrink-0 flex justify-between gap-2 ${isMobile ? 'items-start flex-nowrap mb-2' : 'items-center flex-wrap gap-3 mb-5'}`}
       >
         <div className="min-w-0 shrink">
           {viewMode === 'gallery' ? (
@@ -3089,17 +3246,10 @@ function App() {
               </div>
             </div>
           ) : (
+            // The year sits at the same spot as in Month / Week / Day (flush
+            // left, top of the header); the phone's previous / next-year
+            // arrows follow it rather than pushing it right.
             <div className="flex items-center gap-1">
-              {isMobile && (
-                <button
-                  onClick={handlePrev}
-                  title="Previous year"
-                  className="font-light leading-none cursor-pointer hover:opacity-70 transition-opacity"
-                  style={{ fontSize: '1.5rem', color: 'var(--theme-primary)' }}
-                >
-                  ‹
-                </button>
-              )}
               <div
                 className="font-light tracking-tight leading-none"
                 style={{ fontSize: titleBigSize, color: 'var(--theme-primary)', ...serifTitleFace }}
@@ -3108,9 +3258,19 @@ function App() {
               </div>
               {isMobile && (
                 <button
+                  onClick={handlePrev}
+                  title="Previous year"
+                  className="font-light leading-none cursor-pointer hover:opacity-70 transition-opacity ml-1 px-1"
+                  style={{ fontSize: '1.5rem', color: 'var(--theme-primary)' }}
+                >
+                  ‹
+                </button>
+              )}
+              {isMobile && (
+                <button
                   onClick={handleNext}
                   title="Next year"
-                  className="font-light leading-none cursor-pointer hover:opacity-70 transition-opacity"
+                  className="font-light leading-none cursor-pointer hover:opacity-70 transition-opacity px-1"
                   style={{ fontSize: '1.5rem', color: 'var(--theme-primary)' }}
                 >
                   ›
@@ -3118,78 +3278,83 @@ function App() {
               )}
             </div>
           )}
-          <p className="hidden sm:block text-sm mt-2 opacity-60">Driven by Figma Tokens & Notion Data.</p>
         </div>
 
-        {isMobile ? (
-          /* MOBILE CONTROLS -- consolidated to one row so the calendar gets
-             the rest of the screen. Sync/Settings/Projects/Import Photos
-             move behind a single "more" button instead of sitting inline;
-             Prev/Next are dropped entirely in favor of swiping the calendar
-             itself (see handleCalendarTouchStart/End on <main>) -- month and
-             week navigation on a phone should feel like paging through
-             photos, not like clicking a web nav bar. Hidden entirely during
-             Import, which has its own project picker and needs the room
-             (Back to Calendar in the title covers navigating away). */
-          viewMode !== 'import' && (
-            <div className="relative flex flex-col items-end gap-1.5 shrink-0">
-              {viewMode !== 'gallery' && (
-                <div className="flex items-center p-0.5 rounded-lg border shrink-0" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
-                  <button onClick={() => setViewMode('year')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
-                  <button onClick={() => setViewMode('month')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
-                  <button onClick={() => setViewMode('week')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
-                  <button onClick={() => setViewMode('day')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'day' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Day</button>
-                </div>
-              )}
-
-              <div className="flex items-center gap-1.5 shrink-0">
-                {viewMode !== 'gallery' && (
-                  <button
-                    onClick={() => { if (viewMode === 'month') scrollMobileMonthToDate(today); else setCurrentDate(today); }}
-                    title="Jump to today"
-                    style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)' }}
-                    className="w-7 h-7 rounded-full border flex items-center justify-center cursor-pointer"
-                  >
-                    <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: 'var(--theme-primary)' }} />
-                  </button>
-                )}
-                <button
-                  onClick={() => setShowMobileMenu((v) => !v)}
-                  title="More"
-                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                  className="w-7 h-7 rounded-full border flex items-center justify-center text-base font-black leading-none cursor-pointer"
-                >
-                  ⋯
-                </button>
+        {/* HEADER CONTROLS -- one design for phone and desktop: the date scale,
+            a Today dot, and a "more" button holding Sync / Settings / Import
+            Photos (plus Projects on a phone, where there is no edge tab for
+            it). Desktop adds Prev / Next beside Today; a phone drops them for
+            swiping the calendar itself (see handleCalendarTouchStart/End on
+            <main>) -- month and week navigation there should feel like paging
+            through photos, not clicking a web nav bar. Hidden on a phone
+            during Import, which has its own project picker and needs the room
+            (Back to Calendar in the title covers navigating away). */}
+        {!(isMobile && viewMode === 'import') && (
+          <div className="relative flex flex-col items-end gap-1.5 shrink-0">
+            {viewMode !== 'gallery' && viewMode !== 'import' && (
+              <div className="flex items-center p-0.5 rounded-lg border shrink-0" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
+                <button onClick={() => setViewMode('year')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
+                <button onClick={() => setViewMode('month')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
+                <button onClick={() => setViewMode('week')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
+                <button onClick={() => setViewMode('day')} className={`px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'day' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Day</button>
               </div>
+            )}
 
-              {showMobileMenu && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              {!isMobile && viewMode !== 'gallery' && viewMode !== 'import' && (
                 <>
-                  {/* Full-screen tap-catcher to dismiss -- not a visible
-                      backdrop, since the menu is a small anchored dropdown
-                      rather than a full modal. */}
-                  <div className="fixed inset-0 z-40" onClick={() => setShowMobileMenu(false)} />
-                  <div
-                    style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                    className="absolute right-0 top-full mt-2 z-50 w-56 rounded-lg lf-frame border shadow-xl overflow-hidden"
+                  <button onClick={handlePrev} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="h-7 px-3 text-[11px] font-semibold border rounded-md cursor-pointer transition-colors">← Prev</button>
+                  <button onClick={handleNext} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="h-7 px-3 text-[11px] font-semibold border rounded-md cursor-pointer transition-colors">Next →</button>
+                </>
+              )}
+              {viewMode !== 'gallery' && viewMode !== 'import' && (
+                <button
+                  onClick={() => { if (isMobile && viewMode === 'month') scrollMobileMonthToDate(today); else setCurrentDate(today); }}
+                  title="Jump to today"
+                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)' }}
+                  className="w-7 h-7 rounded-full border flex items-center justify-center cursor-pointer"
+                >
+                  <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: 'var(--theme-primary)' }} />
+                </button>
+              )}
+              <button
+                onClick={() => setShowMobileMenu((v) => !v)}
+                title="More"
+                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                className="w-7 h-7 rounded-full border flex items-center justify-center text-base font-black leading-none cursor-pointer"
+              >
+                ⋯
+              </button>
+            </div>
+
+            {showMobileMenu && (
+              <>
+                {/* Full-screen tap-catcher to dismiss -- not a visible
+                    backdrop, since the menu is a small anchored dropdown
+                    rather than a full modal. */}
+                <div className="fixed inset-0 z-40" onClick={() => setShowMobileMenu(false)} />
+                <div
+                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
+                  className="absolute right-0 top-full mt-2 z-50 w-56 rounded-lg lf-frame border shadow-xl overflow-hidden"
+                >
+                  <button
+                    onClick={() => { setShowMobileMenu(false); if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
+                    disabled={isLoading || !tenantId}
+                    style={{ borderColor: 'var(--theme-border)' }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left border-b cursor-pointer disabled:opacity-50"
                   >
-                    <button
-                      onClick={() => { setShowMobileMenu(false); if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
-                      disabled={isLoading || !tenantId}
-                      style={{ borderColor: 'var(--theme-border)' }}
-                      className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left border-b cursor-pointer disabled:opacity-50"
-                    >
-                      <span className={isLoading ? 'animate-spin' : ''}><IconSync /></span>
-                      <span>{isDemoMode ? 'Sync (disabled in demo)' : 'Sync'}</span>
-                    </button>
-                    <button
-                      onClick={() => { setShowMobileMenu(false); setShowSettings(true); }}
-                      style={{ borderColor: 'var(--theme-border)' }}
-                      className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left border-b cursor-pointer"
-                    >
-                      <IconSettings />
-                      <span>Settings</span>
-                    </button>
+                    <span className={isLoading ? 'animate-spin' : ''}><IconSync /></span>
+                    <span>{isDemoMode ? 'Sync (disabled in demo)' : 'Sync'}</span>
+                  </button>
+                  <button
+                    onClick={() => { setShowMobileMenu(false); setShowSettings(true); }}
+                    style={{ borderColor: 'var(--theme-border)' }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left border-b cursor-pointer"
+                  >
+                    <IconSettings />
+                    <span>Settings</span>
+                  </button>
+                  {isMobile && (
                     <button
                       onClick={() => { setShowMobileMenu(false); setIsSidebarOpen(!isSidebarOpen); }}
                       style={{ borderColor: 'var(--theme-border)' }}
@@ -3198,94 +3363,24 @@ function App() {
                       <IconFolder />
                       <span>{isSidebarOpen ? 'Hide Projects' : 'Projects'}</span>
                     </button>
-                    <button
-                      onClick={() => {
-                        setShowMobileMenu(false);
-                        if (viewMode !== 'gallery' && viewMode !== 'import') {
-                          setPreGalleryViewMode(viewMode);
-                          pushBackEntry({ viewMode, currentDate, galleryTarget });
-                        }
-                        setViewMode('import');
-                      }}
-                      disabled={isDemoMode || !tenantId}
-                      className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left cursor-pointer disabled:opacity-50"
-                    >
-                      <IconUpload />
-                      <span>Import Photos</span>
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          )
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <div className={`${viewMode === 'import' ? 'hidden sm:flex' : 'flex'} flex-wrap items-center gap-2`}>
-              <button
-                onClick={() => { if (tenantId) fetchLogsFromNotion(tenantId, sourceFilter); }}
-                disabled={isLoading || !tenantId}
-                title={isDemoMode ? 'Sync is disabled in this demo' : 'Sync Notion Data'}
-                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50"
-              >
-                <span className={isLoading ? "animate-spin" : ""}><IconSync /></span>
-                <span>Sync</span>
-              </button>
-
-              <button
-                onClick={() => setShowSettings(true)}
-                title="Widget Settings & Customization"
-                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors"
-              >
-                <IconSettings />
-                <span>Settings</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  if (viewMode !== 'gallery' && viewMode !== 'import') {
-                    setPreGalleryViewMode(viewMode);
-                    pushBackEntry({ viewMode, currentDate, galleryTarget });
-                  }
-                  setViewMode('import');
-                }}
-                disabled={isDemoMode || !tenantId}
-                title={isDemoMode ? 'Import is disabled in this demo' : 'Backlog photos from your device, dated from each photo\'s own EXIF data'}
-                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
-                className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <IconUpload />
-                <span>Import Photos</span>
-              </button>
-            </div>
-
-            <button
-              onClick={() => setCurrentDate(today)}
-              style={{
-                backgroundColor: 'var(--theme-card)',
-                borderColor: 'var(--theme-primary)',
-                color: 'var(--theme-primary)'
-              }}
-              className="px-2.5 py-1.5 text-xs font-semibold rounded-md flex items-center gap-1.5 border cursor-pointer"
-            >
-              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--theme-primary)' }} />Today
-            </button>
-
-            {viewMode !== 'gallery' && viewMode !== 'import' && (
-              <div className="flex items-center p-0.5 rounded-lg border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
-                <button onClick={() => setViewMode('year')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'year' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Year</button>
-                <button onClick={() => setViewMode('month')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'month' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Month</button>
-                <button onClick={() => setViewMode('week')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'week' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Week</button>
-                <button onClick={() => setViewMode('day')} className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${viewMode === 'day' ? 'bg-black/20 font-bold' : 'opacity-60'}`}>Day</button>
-              </div>
-            )}
-
-            {viewMode !== 'gallery' && viewMode !== 'import' && (
-              <div className="flex items-center gap-1">
-                <button onClick={handlePrev} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">← Prev</button>
-                <button onClick={handleNext} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="px-2.5 py-1.5 text-xs font-semibold border rounded-md cursor-pointer transition-colors">Next →</button>
-              </div>
+                  )}
+                  <button
+                    onClick={() => {
+                      setShowMobileMenu(false);
+                      if (viewMode !== 'gallery' && viewMode !== 'import') {
+                        setPreGalleryViewMode(viewMode);
+                        pushBackEntry({ viewMode, currentDate, galleryTarget });
+                      }
+                      setViewMode('import');
+                    }}
+                    disabled={isDemoMode || !tenantId}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left cursor-pointer disabled:opacity-50"
+                  >
+                    <IconUpload />
+                    <span>Import Photos</span>
+                  </button>
+                </div>
+              </>
             )}
           </div>
         )}
@@ -4784,10 +4879,10 @@ function App() {
                     {MONTH_NAMES.map((monthLabel, mIdx) => (
                       <div
                         key={monthLabel}
-                        onClick={() => { setCurrentDate(new Date(year, mIdx, 1)); setViewMode('month'); }}
+                        onClick={() => handleYearMonthClick(mIdx)}
                         onMouseEnter={() => setHoveredMonthButtonIndex(mIdx)}
                         onMouseLeave={() => setHoveredMonthButtonIndex(null)}
-                        style={{ backgroundColor: hoveredMonthButtonIndex === mIdx ? 'var(--theme-primary-10, rgba(244, 63, 94, 0.15))' : 'var(--theme-bg)', borderColor: hoveredMonthButtonIndex === mIdx ? 'var(--theme-primary)' : 'var(--theme-border)' }}
+                        style={{ backgroundColor: (hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx)) ? 'var(--theme-primary-10, rgba(244, 63, 94, 0.15))' : 'var(--theme-bg)', borderColor: (hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx)) ? 'var(--theme-primary)' : 'var(--theme-border)' }}
                         className="text-[10px] sm:text-[11px] font-bold text-center tracking-wide py-1 mx-1 rounded border transition-all cursor-pointer"
                       >
                         {monthLabel}
@@ -4799,8 +4894,26 @@ function App() {
                     <div className="absolute inset-0 grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] pointer-events-none z-0">
                       <div />
                       {MONTH_NAMES.map((_, mIdx) => (
-                        <div key={mIdx} className={`relative h-full flex justify-center transition-colors ${hoveredMonthButtonIndex === mIdx ? 'bg-[var(--theme-primary)]/10 rounded-lg' : ''}`}>
+                        <div key={mIdx} className="relative h-full flex justify-center">
                           <div className="absolute top-0 bottom-0 w-[1.5px]" style={{ backgroundColor: 'var(--theme-border)' }} />
+                          {(hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx)) && (() => {
+                            // Hugs this month's first to last day (not the blank rows
+                            // either side of it), a buffer past the dots all round.
+                            const firstRow = new Date(year, mIdx, 1).getDay();
+                            const lastRowsAfter = 37 - (firstRow + new Date(year, mIdx + 1, 0).getDate());
+                            return (
+                              <span
+                                aria-hidden="true"
+                                className="absolute pointer-events-none border border-amber-500 bg-amber-500/20"
+                                style={{
+                                  left: '50%', width: yearBandThickness, transform: 'translateX(-50%)',
+                                  top: `calc(${firstRow} * 100% / 37 + 50% / 37 - ${yearBandThickness / 2}px)`,
+                                  bottom: `calc(${lastRowsAfter} * 100% / 37 + 50% / 37 - ${yearBandThickness / 2}px)`,
+                                  borderRadius: yearBandThickness / 2,
+                                }}
+                              />
+                            );
+                          })()}
                         </div>
                       ))}
                     </div>
@@ -4809,11 +4922,14 @@ function App() {
                       const weekdayStr = TIMELINE_WEEKDAYS[rowIndex % 7];
                       const isWeekendRow = weekdayStr === 'SUN' || weekdayStr === 'SAT';
                       const weekIndex = Math.floor(rowIndex / 7);
-                      const isStartOfWeek = rowIndex % 7 === 0;
-                      const isEndOfWeek = rowIndex % 7 === 6 || rowIndex === 36;
-                      
+                                            
                       return (
-                        <div key={rowIndex} className="flex-1 grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] items-center min-h-0 border-b border-dashed last:border-0 relative z-10" style={{ borderColor: 'var(--theme-border)' }}>
+                        <div key={rowIndex} className="flex-1 grid grid-cols-[30px_repeat(12,minmax(38px,1fr))] sm:grid-cols-[40px_repeat(12,minmax(0,1fr))] items-center min-h-0 relative z-10">
+                          {/* The row's guide: dashed, through the dots' centres (it
+                              used to be a border along the row's bottom edge, which
+                              bounded the dots instead). Starts after the weekday
+                              label, and sits under the dots. */}
+                          <div className="absolute right-0 top-1/2 left-[30px] sm:left-[40px] border-t border-dashed pointer-events-none" style={{ borderColor: 'var(--theme-border)' }} />
                           <div className="h-full flex items-center justify-center">
                              <div className={`w-full text-[8px] sm:text-[9px] font-black tracking-tight py-0.5 text-center rounded ${isWeekendRow ? 'font-bold' : 'opacity-40'}`} style={{ color: isWeekendRow ? 'var(--theme-primary)' : undefined }}>
                                {weekdayStr.slice(0, 2)}
@@ -4827,20 +4943,10 @@ function App() {
                             const targetDayNum = rowIndex - startOffsetColumn + 1;
                             const isValidCalendarDay = targetDayNum > 0 && targetDayNum <= daysInMonth;
 
-                            const isHoveredWeekCell = hoveredWeek?.mIdx === mIdx && hoveredWeek?.weekIndex === weekIndex;
-
-                            let weekHighlightStyle = '';
-                            if (isHoveredWeekCell) {
-                              const bgStyle = 'bg-amber-500/20 border-amber-500 z-20';
-                              weekHighlightStyle = isStartOfWeek
-                                ? `${bgStyle} border-x border-t rounded-t-full`
-                                : isEndOfWeek
-                                ? `${bgStyle} border-x border-b rounded-b-full`
-                                : `${bgStyle} border-x border-y-0`;
-                            }
+                            const isHoveredWeekCell = highlightedWeekStarts.has(new Date(year, mIdx, rowIndex - startOffsetColumn + 1 - (rowIndex % 7)).getTime());
 
                             if (!isValidCalendarDay) {
-                              return <div key={mIdx} onClick={() => handleWeekClick(mIdx, weekIndex)} onMouseEnter={() => setHoveredWeek({ mIdx, weekIndex })} onMouseLeave={() => setHoveredWeek(null)} className={`h-full w-full flex items-center justify-center transition-colors cursor-pointer py-1 px-0.5 ${weekHighlightStyle}`} />;
+                              return <div key={mIdx} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => setHoveredWeek({ mIdx, weekIndex })} onMouseLeave={() => setHoveredWeek(null)} className="h-full w-full flex items-center justify-center transition-colors cursor-pointer px-0.5" />;
                             }
 
                             const targetDate = new Date(year, mIdx, targetDayNum);
@@ -4858,9 +4964,14 @@ function App() {
                             const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
 
                             return (
-                              <div key={mIdx} onClick={() => handleWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className={`h-full w-full flex items-center justify-center relative cursor-pointer group/node transition-colors py-1 px-0.5 ${weekHighlightStyle}`}>
-                                <div 
-                                  onClick={(e) => { e.stopPropagation(); setSelectedLogModal({ dateObj: targetDate, logs }); }} 
+                              <div key={mIdx} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className="h-full w-full flex items-center justify-center relative cursor-pointer group/node transition-colors px-0.5">
+                                {isHoveredWeekCell && renderWeekBand({
+                                  vertical: true,
+                                  isFirst: rowIndex % 7 === 0 || targetDayNum === 1,
+                                  isLast: rowIndex % 7 === 6 || targetDayNum === daysInMonth || rowIndex === 36,
+                                })}
+                                <div
+                                  onClick={(e) => { e.stopPropagation(); setSelectedLogModal({ dateObj: targetDate, logs }); }}  
                                   style={{ 
                                     width: `${yearDotPx}px`,
                                     height: `${yearDotPx}px`,
@@ -4911,27 +5022,36 @@ function App() {
                     </div>
                   </div>
                   
-                  <div className="flex-1 flex flex-col justify-between min-h-0 min-w-[568px] sm:min-w-0">
+                  <div className="flex-1 flex flex-col justify-between min-h-0 min-w-[568px] sm:min-w-0 relative">
+                    {/* Day-of-week guides: a dashed vertical line through the centre
+                        of each of the 37 day columns, behind the dots -- the
+                        counterpart of the portrait layout's month columns. Starts
+                        after the month-button column, and sits under the rows. */}
+                    <div className="absolute inset-0 grid grid-cols-[50px_1fr] sm:grid-cols-[65px_1fr] pointer-events-none z-0" aria-hidden="true">
+                      <div />
+                      <div className="grid h-full min-w-0" style={{ gridTemplateColumns: 'repeat(37, minmax(14px, 1fr))' }}>
+                        {Array.from({ length: 37 }).map((_, colIndex) => (
+                          <div key={colIndex} className="relative h-full">
+                            <div className="absolute left-1/2 top-0 bottom-0 border-l border-dashed" style={{ borderColor: 'var(--theme-border)' }} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
                     {MONTH_NAMES.map((monthLabel, mIdx) => {
                       const firstDayOfMonthObj = new Date(year, mIdx, 1);
                       const startOffsetColumn = firstDayOfMonthObj.getDay(); 
                       const daysInMonth = new Date(year, mIdx + 1, 0).getDate();
-                      const isMonthHovered = hoveredMonthButtonIndex === mIdx;
+                      const isMonthHovered = hoveredMonthButtonIndex === mIdx || (pinnedYearFilter?.kind === 'month' && pinnedYearFilter.mIdx === mIdx);
 
                       return (
-                        <div 
-                          key={monthLabel} 
-                          style={{ 
-                            backgroundColor: isMonthHovered ? 'var(--theme-primary-10, rgba(244, 63, 94, 0.12))' : undefined,
-                            borderColor: isMonthHovered ? 'var(--theme-primary)' : 'var(--theme-border)'
-                          }}
-                          className={`grid grid-cols-[50px_1fr] sm:grid-cols-[65px_1fr] items-center h-full min-h-0 min-w-0 relative rounded-lg transition-all border ${
-                            isMonthHovered ? 'ring-1 ring-[var(--theme-primary)] shadow-xs' : 'border-dashed border-x-0 border-t-0'
-                          }`}
+                        <div
+                          key={monthLabel}
+                          className="grid grid-cols-[50px_1fr] sm:grid-cols-[65px_1fr] items-center h-full min-h-0 min-w-0 relative"
                         >
                           {/* MONTH BUTTON ON LEFT TRIGGER */}
                           <div 
-                            onClick={() => { setCurrentDate(new Date(year, mIdx, 1)); setViewMode('month'); }} 
+                            onClick={() => handleYearMonthClick(mIdx)} 
                             onMouseEnter={() => setHoveredMonthButtonIndex(mIdx)}
                             onMouseLeave={() => setHoveredMonthButtonIndex(null)}
                             style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }} 
@@ -4943,27 +5063,35 @@ function App() {
                           <div className="grid items-center relative h-full min-w-0" style={{ gridTemplateColumns: 'repeat(37, minmax(14px, 1fr))' }}>
                             <div className="absolute left-2 right-2 top-1/2 -translate-y-1/2 h-[1.5px] z-0 pointer-events-none" style={{ backgroundColor: 'var(--theme-border)' }} />
 
+                            {isMonthHovered && (
+                              // From the month button (one buffer left of it) to this
+                              // month's last day (one buffer past its dot) -- not the
+                              // blank columns after it. Placed by grid column so its
+                              // right edge follows the dots, whatever the width.
+                              <span
+                                aria-hidden="true"
+                                className="absolute pointer-events-none border border-amber-500 bg-amber-500/20"
+                                style={{
+                                  gridColumn: `1 / ${startOffsetColumn + daysInMonth + 1}`,
+                                  gridRow: 1,
+                                  top: '50%',
+                                  transform: 'translateY(-50%)',
+                                  height: yearMonthBandHeight,
+                                  left: `calc(-65px + 4px - ${YEAR_HIGHLIGHT_BUFFER}px)`,
+                                  right: `calc(${50 / (startOffsetColumn + daysInMonth)}% - ${yearBandThickness / 2}px)`,
+                                  borderRadius: 8,
+                                }}
+                              />
+                            )}
+
                             {Array.from({ length: 37 }).map((_, colIndex) => {
                               const weekIndex = Math.floor(colIndex / 7);
-                              const isHoveredWeekCell = hoveredWeek?.mIdx === mIdx && hoveredWeek?.weekIndex === weekIndex;
+                              const isHoveredWeekCell = highlightedWeekStarts.has(new Date(year, mIdx, colIndex - startOffsetColumn + 1 - (colIndex % 7)).getTime());
                               const targetDayNum = colIndex - startOffsetColumn + 1;
                               const isValidCalendarDay = targetDayNum > 0 && targetDayNum <= daysInMonth;
 
-                              const isStartOfWeek = colIndex % 7 === 0;
-                              const isEndOfWeek = colIndex % 7 === 6 || colIndex === 36;
-
-                              let weekHighlightStyle = '';
-                              if (isHoveredWeekCell) {
-                                const bgStyle = 'bg-amber-500/20 border-amber-500 z-20';
-                                weekHighlightStyle = isStartOfWeek
-                                  ? `${bgStyle} border-y border-l rounded-l-full`
-                                  : isEndOfWeek
-                                  ? `${bgStyle} border-y border-r rounded-r-full`
-                                  : `${bgStyle} border-y border-x-0`;
-                              }
-
                               if (!isValidCalendarDay) {
-                                return <div key={colIndex} onClick={() => handleWeekClick(mIdx, weekIndex)} onMouseEnter={() => setHoveredWeek({ mIdx, weekIndex })} onMouseLeave={() => setHoveredWeek(null)} className={`h-full flex items-center justify-center transition-colors cursor-pointer py-1 px-0.5 ${weekHighlightStyle}`} />;
+                                return <div key={colIndex} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => setHoveredWeek({ mIdx, weekIndex })} onMouseLeave={() => setHoveredWeek(null)} className="h-full flex items-center justify-center transition-colors cursor-pointer px-0.5" />;
                               }
                               
                               const targetDate = new Date(year, mIdx, targetDayNum);
@@ -4981,9 +5109,14 @@ function App() {
                               const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
                               
                               return (
-                                <div key={colIndex} onClick={() => handleWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className={`h-full flex items-center justify-center relative cursor-pointer group/node transition-colors py-1 px-0.5 ${weekHighlightStyle}`}>
-                                  <div 
-                                    onClick={(e) => { e.stopPropagation(); setSelectedLogModal({ dateObj: targetDate, logs }); }} 
+                                <div key={colIndex} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className="h-full flex items-center justify-center relative cursor-pointer group/node transition-colors px-0.5">
+                                  {isHoveredWeekCell && renderWeekBand({
+                                    vertical: false,
+                                    isFirst: colIndex % 7 === 0 || targetDayNum === 1,
+                                    isLast: colIndex % 7 === 6 || targetDayNum === daysInMonth,
+                                  })}
+                                  <div
+                                    onClick={(e) => { e.stopPropagation(); setSelectedLogModal({ dateObj: targetDate, logs }); }}  
                                     style={{ 
                                       width: `${yearDotPx}px`,
                                       height: `${yearDotPx}px`,
@@ -5021,6 +5154,46 @@ function App() {
             </div>
           )}
         </main>
+
+        {/* YEAR GALLERY TAB -- desktop Year view only: the year's photos in a
+            panel on the right, the counterpart of the project list on the
+            left (same edge tab, same drag-to-resize). It filters to whichever
+            month or week is hovered in the grid, and flips between oldest
+            and newest first. */}
+        {viewMode === 'year' && !isMobile && (() => {
+          const activeGalleryFilter = heldGalleryFilter ?? pinnedYearFilter;
+          const { start, end, label } = yearGalleryRange(year, activeGalleryFilter);
+          const photos = isYearGalleryOpen ? collectYearPhotos(getLogsForDate, start, end, yearGalleryNewestFirst) : [];
+          return (
+            <>
+              <button
+                onClick={() => setIsYearGalleryOpen((prev) => !prev)}
+                title={isYearGalleryOpen ? 'Hide Gallery' : 'Show Gallery'}
+                style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-primary)' }}
+                className="shrink-0 self-start mt-4 -mx-6 z-20 w-4 h-14 rounded-md border flex items-center justify-center cursor-pointer hover:w-5 hover:border-[var(--theme-primary)] transition-all shadow-sm"
+              >
+                <span className="text-[10px] font-bold leading-none">{isYearGalleryOpen ? '›' : '‹'}</span>
+              </button>
+              {isYearGalleryOpen && (
+                <YearGalleryPanel
+                  photos={photos}
+                  rangeLabel={label}
+                  filtered={Boolean(activeGalleryFilter)}
+                  pinned={Boolean(pinnedYearFilter)}
+                  onClearFilter={() => setPinnedYearFilter(null)}
+                  newestFirst={yearGalleryNewestFirst}
+                  onToggleOrder={() => setYearGalleryNewestFirst((prev) => !prev)}
+                  onOpenDay={(dateObj) => setSelectedLogModal({ dateObj, logs: getLogsForDate(dateObj) })}
+                  width={Math.min(yearGalleryWidth, maxYearGalleryWidth())}
+                  radius={panelRadius}
+                  onResizeStart={handleMouseDownYearGalleryResize}
+                  onPointerEnter={() => { yearGalleryPointerInside.current = true; }}
+                  onPointerLeave={() => { yearGalleryPointerInside.current = false; setHeldGalleryFilter(null); }}
+                />
+              )}
+            </>
+          );
+        })()}
       </div>
 
       {/* SETTINGS MODAL */}
