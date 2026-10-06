@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { yearGalleryRange, collectYearPhotos, weekStartFor, weekStartOf } from '../../src/yearGallery.js';
+import { yearGalleryRange, collectYearPhotos, groupYearPhotos, weekStartFor, weekStartOf } from '../../src/yearGallery.js';
 
 const ymd = (d) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 const week = (y, m, d) => ({ kind: 'week', weekStart: new Date(y, m, d).getTime() });
@@ -97,4 +97,68 @@ test('collectYearPhotos hands back each photo with its own date', () => {
   const getLogsForDate = (d) => (ymd(d) === '2026-6-14' ? [{ id: 'x', imageUrl: 'x.jpg' }] : []);
   const [photo] = collectYearPhotos(getLogsForDate, new Date(2026, 0, 1), new Date(2026, 11, 31), false);
   assert.equal(ymd(photo.dateObj), '2026-6-14');
+});
+
+// A few photos spread over March-April 2026 (Mar 29 2026 is a Sunday).
+const photosOn = (...days) => {
+  const logsByDay = {};
+  days.forEach(([m, d], i) => { logsByDay[`2026-${m}-${d}`] = [{ id: `p${i}`, imageUrl: `p${i}.jpg` }]; });
+  return (dateObj) => logsByDay[ymd(dateObj)] || [];
+};
+const idsOf = (groups) => groups.map((g) => [g.label, g.photos.map((p) => p.log.id)]);
+
+test('the whole year is grouped by month, skipping months with no photos', () => {
+  const getLogs = photosOn([1, 5], [1, 20], [3, 2], [3, 31], [11, 9]);
+  const range = yearGalleryRange(2026, null);
+  const photos = collectYearPhotos(getLogs, range.start, range.end, false);
+  assert.deepEqual(idsOf(groupYearPhotos(photos, null, range)), [
+    ['January', ['p0', 'p1']],
+    ['March', ['p2', 'p3']],
+    ['November', ['p4']],
+  ]);
+  // Newest first reverses the months as well as the days inside them.
+  const newest = collectYearPhotos(getLogs, range.start, range.end, true);
+  assert.deepEqual(idsOf(groupYearPhotos(newest, null, range)), [
+    ['November', ['p4']],
+    ['March', ['p3', 'p2']],
+    ['January', ['p1', 'p0']],
+  ]);
+});
+
+test('a month is grouped by calendar week, cut at the month\'s edges', () => {
+  // March 2026: Sun Mar 1 starts a week; Mar 29-31 is the month's last (partial) week.
+  const getLogs = photosOn([3, 1], [3, 4], [3, 8], [3, 30], [4, 1]);
+  const filter = { kind: 'month', mIdx: 2 };
+  const range = yearGalleryRange(2026, filter);
+  const photos = collectYearPhotos(getLogs, range.start, range.end, false);
+  assert.deepEqual(idsOf(groupYearPhotos(photos, filter, range)), [
+    ['Mar 1–7', ['p0', 'p1']],
+    ['Mar 8–14', ['p2']],
+    ['Mar 29–31', ['p3']],
+  ]);
+});
+
+test('a month\'s first week is cut short too', () => {
+  // April 2026 starts on a Wednesday: its first week is Apr 1-4.
+  const getLogs = photosOn([4, 2], [4, 6]);
+  const filter = { kind: 'month', mIdx: 3 };
+  const range = yearGalleryRange(2026, filter);
+  const photos = collectYearPhotos(getLogs, range.start, range.end, false);
+  assert.deepEqual(idsOf(groupYearPhotos(photos, filter, range)), [
+    ['Apr 1–4', ['p0']],
+    ['Apr 5–11', ['p1']],
+  ]);
+});
+
+test('a single week is one section with no heading, and nothing gives none', () => {
+  const getLogs = photosOn([3, 30], [4, 2]);
+  const filter = { kind: 'week', weekStart: new Date(2026, 2, 29).getTime() };
+  const range = yearGalleryRange(2026, filter);
+  const photos = collectYearPhotos(getLogs, range.start, range.end, false);
+  const groups = groupYearPhotos(photos, filter, range);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].label, null);
+  assert.deepEqual(groups[0].photos.map((p) => p.log.id), ['p0', 'p1']);
+  assert.deepEqual(groupYearPhotos([], filter, range), []);
+  assert.deepEqual(groupYearPhotos([], null, yearGalleryRange(2026, null)), []);
 });

@@ -40,14 +40,16 @@ export function yearGalleryRange(year, filter) {
   const yearEnd = new Date(year, 11, 31);
   const start = weekStart < yearStart ? yearStart : weekStart;
   const end = weekEnd > yearEnd ? yearEnd : weekEnd;
-  let label;
+  return { start, end, label: formatDayRange(start, end) };
+}
+
+// "Mar 8–14", "Mar 29–Apr 4", or "Mar 8" for a single day.
+function formatDayRange(start, end) {
   if (start.getMonth() !== end.getMonth()) {
-    label = `${MONTH_SHORT[start.getMonth()]} ${start.getDate()}–${MONTH_SHORT[end.getMonth()]} ${end.getDate()}`;
-  } else {
-    const days = start.getDate() === end.getDate() ? `${start.getDate()}` : `${start.getDate()}–${end.getDate()}`;
-    label = `${MONTH_SHORT[start.getMonth()]} ${days}`;
+    return `${MONTH_SHORT[start.getMonth()]} ${start.getDate()}–${MONTH_SHORT[end.getMonth()]} ${end.getDate()}`;
   }
-  return { start, end, label };
+  const days = start.getDate() === end.getDate() ? `${start.getDate()}` : `${start.getDate()}–${end.getDate()}`;
+  return `${MONTH_SHORT[start.getMonth()]} ${days}`;
 }
 
 // Every entry with a photo between start and end (inclusive), as
@@ -63,4 +65,31 @@ export function collectYearPhotos(getLogsForDate, start, end, newestFirst) {
   }
   if (newestFirst) days.reverse();
   return days.flat();
+}
+
+// Splits the photos (as collectYearPhotos returns them, in either order) into
+// the sections the gallery shows, each { key, label, photos }, in the order
+// they appear: the whole year is grouped by month ("March"), a month by
+// calendar week ("Mar 8–14", cut at the month's edges so a week that runs into
+// the next month reads "Mar 29–31"), and a single week isn't grouped at all
+// (one section with no label). Months and weeks with no photos are left out.
+// `range` is the { start, end } the photos were collected for.
+export function groupYearPhotos(photos, filter, range) {
+  if (filter?.kind === 'week') return photos.length ? [{ key: 'week', label: null, photos }] : [];
+  const keyOf = filter ? (d) => weekStartOf(d).getTime() : (d) => d.getMonth();
+  const labelOf = filter
+    ? (d) => {
+        const weekStart = weekStartOf(d);
+        const weekEnd = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 6);
+        return formatDayRange(weekStart < range.start ? range.start : weekStart, weekEnd > range.end ? range.end : weekEnd);
+      }
+    : (d) => MONTH_LONG[d.getMonth()];
+  const groups = [];
+  for (const photo of photos) {
+    const key = keyOf(photo.dateObj);
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) last.photos.push(photo);
+    else groups.push({ key, label: labelOf(photo.dateObj), photos: [photo] });
+  }
+  return groups;
 }

@@ -21,7 +21,7 @@ import FacetedSidebarGroup from './FacetedSidebarGroup.jsx';
 import GalleryMiniCalendar from './GalleryMiniCalendar.jsx';
 import WeekSummary from './WeekSummary.jsx';
 import YearGalleryPanel from './YearGalleryPanel.jsx';
-import { collectYearPhotos, weekStartFor, yearGalleryRange } from './yearGallery.js';
+import { collectYearPhotos, groupYearPhotos, weekStartFor, yearGalleryRange } from './yearGallery.js';
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
@@ -988,6 +988,14 @@ const MOBILE_BREAKPOINT = 640;
 // 44px a month column -- and the least the gallery tab can be squeezed to.
 const YEAR_GRID_MIN_WIDTH = 600;
 const YEAR_GALLERY_MIN_WIDTH = 220;
+// The gallery's photo frames: their smallest width, set with its size slider.
+const YEAR_GALLERY_THUMB_MIN = 64;
+const YEAR_GALLERY_THUMB_MAX = 240;
+const YEAR_GALLERY_THUMB_DEFAULT = 104;
+// How long the pointer must rest on a month or week before the Year view's
+// gallery follows it -- long enough that crossing cells on the way to the
+// gallery doesn't count, short enough to feel like a quick look.
+const YEAR_HOVER_DWELL_MS = 150;
 // Set once a browser has been through the move to the Life Log default look.
 const DESIGN_REFRESH_KEY = 'notionWidgetDesignRefresh';
 const DESIGN_REFRESH_VALUE = 'life-log-v1';
@@ -1305,6 +1313,10 @@ function App() {
   // the project list, or a smaller window, would leave the Year grid less
   // than YEAR_GRID_MIN_WIDTH, so the dot grid is never squished.
   const [yearGalleryWidth, setYearGalleryWidth] = useState(() => Number(localStorage.getItem('notionWidgetYearGalleryWidth')) || 300);
+  const [yearGalleryThumbSize, setYearGalleryThumbSize] = useState(() => {
+    const saved = Number(localStorage.getItem('notionWidgetYearGalleryThumbSize'));
+    return saved >= YEAR_GALLERY_THUMB_MIN && saved <= YEAR_GALLERY_THUMB_MAX ? saved : YEAR_GALLERY_THUMB_DEFAULT;
+  });
   const [yearGalleryNewestFirst, setYearGalleryNewestFirst] = useState(() => localStorage.getItem('notionWidgetYearGalleryNewestFirst') === 'true');
   const [isResizingYearGallery, setIsResizingYearGallery] = useState(false);
   const yearGalleryDragStartX = useRef(0);
@@ -1314,6 +1326,7 @@ function App() {
 
   useEffect(() => { localStorage.setItem('notionWidgetYearGalleryWidth', yearGalleryWidth); }, [yearGalleryWidth]);
   useEffect(() => { localStorage.setItem('notionWidgetYearGalleryNewestFirst', String(yearGalleryNewestFirst)); }, [yearGalleryNewestFirst]);
+  useEffect(() => { localStorage.setItem('notionWidgetYearGalleryThumbSize', String(yearGalleryThumbSize)); }, [yearGalleryThumbSize]);
 
   const handleMouseDownYearGalleryResize = (e) => {
     e.preventDefault();
@@ -1353,10 +1366,11 @@ function App() {
   }, [isResizingYearGallery]);
 
   // The gallery follows the month button or week being hovered in the year
-  // grid. Pointing at the gallery to reach a photo ends that hover, so the
-  // filter is held for a moment after it -- and for as long as the pointer is
-  // over the gallery itself -- or the photos you were filtering to would
-  // vanish before you could click one.
+  // grid (once the pointer has rested on it, see YEAR_HOVER_DWELL_MS).
+  // Pointing at the gallery to reach a photo ends that hover, so the filter
+  // is held for a moment after it -- and for as long as the pointer is over
+  // the gallery itself -- or the photos you were filtering to would vanish
+  // before you could click one.
   const hoverGalleryFilter = hoveredWeek
     ? { kind: 'week', weekStart: weekStartFor(currentDate.getFullYear(), hoveredWeek.mIdx, hoveredWeek.weekIndex).getTime() }
     : hoveredMonthButtonIndex !== null
@@ -1385,17 +1399,45 @@ function App() {
     setHoveredWeek(null);
     setHoveredMonthButtonIndex(null);
     setHeldGalleryFilter(null);
+    setSidebarHoverProject(null);
   }, [viewMode, currentDate.getFullYear()]);
-  const yearGalleryPointerInside = useRef(false);
+  // True while the pointer is over a panel that shows the selected range (the
+  // gallery, or the project list), so a quick look is kept while you use it.
+  const yearFilterPanelPointerInside = useRef(false);
+  // The month or week the Year view's panels follow -- the gallery and the
+  // project list: the one being rested on (or just left for a panel), else the
+  // pinned one; null is the whole year.
+  const activeYearFilter = viewMode === 'year' && !isMobile ? (heldGalleryFilter ?? pinnedYearFilter) : null;
+  // The project row the pointer is on in the project list, and the project the
+  // gallery is previewing: the row once the pointer has rested on it (or left
+  // it for a moment), so running the pointer down the list doesn't churn the
+  // gallery. Clicking the row applies it as a filter (selectedProjectFilters);
+  // the preview is the same filter before the click -- what's applied plus
+  // this project -- shown in the gallery only.
+  const [sidebarHoverProject, setSidebarHoverProject] = useState(null);
+  const [previewProject, setPreviewProject] = useState(null);
+  useEffect(() => {
+    const id = setTimeout(() => setPreviewProject(sidebarHoverProject), YEAR_HOVER_DWELL_MS);
+    return () => clearTimeout(id);
+  }, [sidebarHoverProject]);
+  const previewProjectFilters = previewProject && viewMode === 'year' && !isMobile && !selectedProjectFilters.includes(previewProject)
+    ? [...selectedProjectFilters, previewProject]
+    : null;
   useEffect(() => {
     if (hoverGalleryKey) {
-      setHeldGalleryFilter(hoverGalleryFilter);
-      return undefined;
+      // Only a hover that is rested on counts. The pointer crosses many
+      // months and weeks on its way to the gallery; if each of those took
+      // over the gallery, the last one crossed would be showing on arrival
+      // (and would beat the pinned month or week), so a hover must last
+      // YEAR_HOVER_DWELL_MS before the gallery follows it. The grid's own
+      // highlight still follows the pointer at once.
+      const id = setTimeout(() => setHeldGalleryFilter(hoverGalleryFilter), YEAR_HOVER_DWELL_MS);
+      return () => clearTimeout(id);
     }
     // Checked when the delay is up, not when it starts: the pointer is
     // usually still on its way to the gallery at the moment the hover ends.
     const id = setTimeout(() => {
-      if (!yearGalleryPointerInside.current) setHeldGalleryFilter(null);
+      if (!yearFilterPanelPointerInside.current) setHeldGalleryFilter(null);
     }, 400);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2131,7 +2173,7 @@ function App() {
   // map lookup instead of an O(total logs) scan, and the index itself only
   // rebuilds when the underlying data or filters actually change -- not on
   // every hover-driven re-render.
-  const logsByDateKey = useMemo(() => {
+  const buildLogsByDateKey = (projectFilters) => {
     const map = new Map();
     if (!Array.isArray(timelineLogs)) return map;
     for (const log of timelineLogs) {
@@ -2158,7 +2200,7 @@ function App() {
         } else {
           const type = log.projectType || 'General';
           if (hiddenTypes[`${source}::${type}`]) continue;
-          if (selectedProjectFilters.length > 0 && !selectedProjectFilters.includes(log.Projects)) continue;
+          if (projectFilters.length > 0 && !projectFilters.includes(log.Projects)) continue;
         }
       }
       const key = `${Number(log.year)}-${Number(log.monthNumber)}-${Number(log.dayNumber)}`;
@@ -2167,12 +2209,27 @@ function App() {
       else map.set(key, [log]);
     }
     return map;
-  }, [timelineLogs, selectedProjectFilters, hiddenSources, hiddenTypes, facetSchemas, hiddenFacetValues, selectedFacetFilters, isolatedTarget]);
+  };
+  const logsByDateKeyDeps = [timelineLogs, hiddenSources, hiddenTypes, facetSchemas, hiddenFacetValues, selectedFacetFilters, isolatedTarget];
+  const logsByDateKey = useMemo(() => buildLogsByDateKey(selectedProjectFilters), [selectedProjectFilters, ...logsByDateKeyDeps]);
+  // The same index with the previewed project added (see previewProject), for
+  // the Year view's gallery; null when nothing is being previewed.
+  const previewLogsByDateKey = useMemo(
+    () => (previewProjectFilters ? buildLogsByDateKey(previewProjectFilters) : null),
+    [previewProjectFilters ? previewProjectFilters.join('\u0001') : '', ...logsByDateKeyDeps]
+  );
 
   const getLogsForDate = (dateObj) => {
     if (!dateObj) return [];
     const key = `${dateObj.getFullYear()}-${dateObj.getMonth() + 1}-${dateObj.getDate()}`;
     return logsByDateKey.get(key) || [];
+  };
+  // What the Year view's gallery lists for a day: getLogsForDate, plus the
+  // project being previewed from the project list (if any).
+  const getGalleryLogsForDate = (dateObj) => {
+    if (!previewLogsByDateKey) return getLogsForDate(dateObj);
+    const key = `${dateObj.getFullYear()}-${dateObj.getMonth() + 1}-${dateObj.getDate()}`;
+    return previewLogsByDateKey.get(key) || [];
   };
 
   const getThumbnailLogForDate = (dateObj, logs) => {
@@ -2247,6 +2304,14 @@ function App() {
   // log.year/currentDate's year as strings) keeps a week that crosses a
   // month or year boundary (e.g. Dec 29 - Jan 4) correct.
   const activeViewRange = (() => {
+    // Year view: a month or week picked in the grid (hovered, or pinned with a
+    // click) narrows the list; nothing picked is the whole year. This is a
+    // selection, not the opt-in setting below, so it applies regardless.
+    if (viewMode === 'year') {
+      if (!activeYearFilter) return null;
+      const { start, end } = yearGalleryRange(year, activeYearFilter);
+      return { start, end };
+    }
     if (!sidebarFilterToVisible) return null;
     if (viewMode === 'day') {
       return { start: currentDate, end: currentDate };
@@ -2281,7 +2346,7 @@ function App() {
   // toggle decides which total a row leads with (the range being viewed
   // when it's on, all time otherwise); the tooltip always gives both.
   const projectTimeTotals = sumProjectMinutes(timelineLogs, activeViewRange);
-  const timerRangeLabel = viewMode === 'month' ? 'This month' : viewMode === 'week' ? 'This week' : 'This day';
+  const timerRangeLabel = viewMode === 'year' ? (activeYearFilter ? yearGalleryRange(year, activeYearFilter).label : String(year)) : viewMode === 'month' ? 'This month' : viewMode === 'week' ? 'This week' : 'This day';
   const getProjectTimeLabel = (source, title) => {
     const key = projectTimerKey(source, title);
     const minutes = projectTimeTotals.inRange ? projectTimeTotals.inRange.get(key) : projectTimeTotals.all.get(key);
@@ -3439,6 +3504,8 @@ function App() {
                 ? 'fixed inset-y-0 left-0 z-50 w-[88vw] max-w-sm h-full flex flex-col p-4 border-r shadow-xl'
                 : 'shrink-0 h-full flex flex-col p-4 rounded-xl border shadow-sm relative'
             }
+            onMouseEnter={() => { yearFilterPanelPointerInside.current = true; }}
+            onMouseLeave={() => { yearFilterPanelPointerInside.current = false; setSidebarHoverProject(null); if (viewMode === 'year') setHeldGalleryFilter(null); }}
           >
             {isMobile && (
               <button
@@ -3497,6 +3564,23 @@ function App() {
                   and Week, the two views activeViewRange (below) actually
                   narrows for, so this doesn't sit around meaninglessly on
                   Year/Day where it'd have nothing to do. */}
+              {viewMode === 'year' && !isMobile && (
+                <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b" style={{ borderColor: 'var(--theme-border)' }}>
+                  <span className="text-[10px] font-semibold truncate" style={{ color: activeYearFilter ? 'var(--theme-primary)' : undefined, opacity: activeYearFilter ? 1 : 0.7 }} title="Point at a month or week in the grid to see just its projects, click to pin it">
+                    {activeYearFilter ? yearGalleryRange(year, activeYearFilter).label : `All of ${year}`}
+                  </span>
+                  {pinnedYearFilter && (
+                    <button
+                      onClick={() => setPinnedYearFilter(null)}
+                      title="Unpin -- show the whole year"
+                      aria-label="Unpin the month or week and show the whole year"
+                      className="shrink-0 text-[11px] leading-none px-1 cursor-pointer opacity-60 hover:opacity-100"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              )}
               {(viewMode === 'month' || viewMode === 'week') && (
                 <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b" style={{ borderColor: 'var(--theme-border)' }}>
                   <span className="text-[10px] font-semibold opacity-70">
@@ -3613,8 +3697,8 @@ function App() {
                                     <div
                                       key={i}
                                       onClick={() => toggleProjectFilter(p.title)}
-                                      onMouseEnter={() => setHoveredProjectTitle(p.title)}
-                                      onMouseLeave={() => setHoveredProjectTitle(null)}
+                                      onMouseEnter={() => { setHoveredProjectTitle(p.title); setSidebarHoverProject(p.title); }}
+                                      onMouseLeave={() => { setHoveredProjectTitle(null); setSidebarHoverProject(null); }}
                                       style={{
                                         backgroundColor: 'var(--theme-bg)',
                                         borderColor: isHovered || isSelected ? 'var(--theme-secondary)' : 'var(--theme-border)',
@@ -4979,26 +5063,32 @@ function App() {
             whichever month or week is hovered or pinned in the grid, and
             flips between oldest and newest first. */}
         {viewMode === 'year' && !isMobile && (() => {
-          const activeGalleryFilter = heldGalleryFilter ?? pinnedYearFilter;
-          const { start, end, label } = yearGalleryRange(year, activeGalleryFilter);
-          const photos = collectYearPhotos(getLogsForDate, start, end, yearGalleryNewestFirst);
+          const range = yearGalleryRange(year, activeYearFilter);
+          const photos = collectYearPhotos(getGalleryLogsForDate, range.start, range.end, yearGalleryNewestFirst);
+          // The year is grouped by month, a month by week, a week not at all.
+          const groups = groupYearPhotos(photos, activeYearFilter, range);
           return (
             <YearGalleryPanel
               panelRef={yearGalleryRef}
               photos={photos}
-              rangeLabel={label}
-              filtered={Boolean(activeGalleryFilter)}
+              groups={groups}
+              rangeLabel={range.label}
+              filtered={Boolean(activeYearFilter)}
               pinned={Boolean(pinnedYearFilter)}
               onClearFilter={() => setPinnedYearFilter(null)}
               newestFirst={yearGalleryNewestFirst}
               onToggleOrder={() => setYearGalleryNewestFirst((prev) => !prev)}
               onOpenDay={(dateObj) => setSelectedLogModal({ dateObj, logs: getLogsForDate(dateObj) })}
+              thumbSize={yearGalleryThumbSize}
+              minThumbSize={YEAR_GALLERY_THUMB_MIN}
+              maxThumbSize={YEAR_GALLERY_THUMB_MAX}
+              onThumbSizeChange={setYearGalleryThumbSize}
               width={Math.max(yearGalleryWidth, YEAR_GALLERY_MIN_WIDTH)}
               minWidth={YEAR_GALLERY_MIN_WIDTH}
               radius={panelRadius}
               onResizeStart={handleMouseDownYearGalleryResize}
-              onPointerEnter={() => { yearGalleryPointerInside.current = true; }}
-              onPointerLeave={() => { yearGalleryPointerInside.current = false; setHeldGalleryFilter(null); }}
+              onPointerEnter={() => { yearFilterPanelPointerInside.current = true; }}
+              onPointerLeave={() => { yearFilterPanelPointerInside.current = false; setHeldGalleryFilter(null); }}
             />
           );
         })()}

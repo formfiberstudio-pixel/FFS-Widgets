@@ -4,7 +4,9 @@
 // pins it (the ✕ here, or leaving the view, lets go), and clicking the pinned
 // one again opens it (see yearGalleryRange). The order toggles between oldest
 // and newest first. Sized by dragging its left edge, like the project list.
-// Clicking a photo opens that day.
+// Clicking a photo opens that day. `photos` is every photo shown (for the
+// count); `groups` is the same photos in the sections to draw -- the year by
+// month, a month by week, a week as one (see groupYearPhotos).
 //
 // `width` is the width asked for. The panel is a flex item that may shrink
 // (down to `minWidth`) so the year grid beside it keeps its own minimum when
@@ -13,6 +15,7 @@
 export default function YearGalleryPanel({
   panelRef,
   photos,
+  groups,
   rangeLabel,
   filtered,
   pinned,
@@ -20,6 +23,10 @@ export default function YearGalleryPanel({
   newestFirst,
   onToggleOrder,
   onOpenDay,
+  thumbSize,
+  minThumbSize,
+  maxThumbSize,
+  onThumbSizeChange,
   width,
   minWidth,
   radius,
@@ -45,9 +52,22 @@ export default function YearGalleryPanel({
       </div>
 
       <div className="mb-3 shrink-0">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center justify-between gap-3 mb-2">
           <h2 className="text-sm font-bold">Gallery</h2>
-          <span className="text-xs opacity-60 tabular-nums">{photos.length} photo{photos.length === 1 ? '' : 's'}</span>
+          {/* Photo size: the width of each frame (never wider than the panel). */}
+          <input
+            type="range"
+            min={minThumbSize}
+            max={maxThumbSize}
+            step={8}
+            value={thumbSize}
+            onChange={(e) => onThumbSizeChange(Number(e.target.value))}
+            title="Photo size"
+            aria-label="Photo size"
+            className="min-w-0 flex-1 max-w-24 h-1 cursor-pointer"
+            style={{ accentColor: 'var(--theme-primary)' }}
+          />
+          <span className="text-xs opacity-60 tabular-nums shrink-0">{photos.length} photo{photos.length === 1 ? '' : 's'}</span>
         </div>
         <div className="flex items-center justify-between gap-2 pb-2 border-b" style={{ borderColor: 'var(--theme-border)' }}>
           <span className="flex items-center gap-1 min-w-0">
@@ -82,25 +102,43 @@ export default function YearGalleryPanel({
             {filtered ? 'No photos in this period.' : 'No photos this year yet.'}
           </div>
         ) : (
-          <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(104px, 1fr))' }}>
-            {photos.map(({ log, dateObj }) => (
-              <button
-                key={log.id}
-                onClick={() => onOpenDay(dateObj)}
-                title={`${log.title || 'Untitled'} -- open this day`}
-                className="group flex flex-col text-left cursor-pointer min-w-0"
-              >
-                <span
-                  className="block aspect-square w-full overflow-hidden border lf-frame"
-                  style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)', borderRadius: `${radius}px` }}
-                >
-                  <img src={log.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
-                </span>
-                <span className="mt-1 text-[10px] font-bold opacity-60 tabular-nums">
-                  {dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                </span>
-                <span className="text-[11px] font-semibold truncate">{log.title || 'Untitled'}</span>
-              </button>
+          <div className="flex flex-col gap-4">
+            {groups.map((group) => (
+              <section key={group.key}>
+                {/* The group's heading (a month, or a week) -- stays at the top
+                    of the scroll area while its photos go past. A single
+                    week has no heading. */}
+                {group.label && (
+                  <h3
+                    className="sticky top-0 z-10 -mt-1 mb-1.5 pt-1 pb-1 flex items-baseline justify-between text-[11px] font-bold uppercase tracking-wide"
+                    style={{ backgroundColor: 'var(--theme-card)' }}
+                  >
+                    <span className="opacity-70">{group.label}</span>
+                    <span className="text-[10px] font-semibold normal-case opacity-50 tabular-nums">{group.photos.length}</span>
+                  </h3>
+                )}
+                <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(auto-fill, min(${thumbSize}px, 100%))` }}>
+                  {group.photos.map(({ log, dateObj }) => (
+                    <button
+                      key={log.id}
+                      onClick={() => onOpenDay(dateObj)}
+                      title={`${log.title || 'Untitled'} -- open this day`}
+                      className="group flex flex-col text-left cursor-pointer min-w-0"
+                    >
+                      <span
+                        className="block aspect-square w-full overflow-hidden border lf-frame"
+                        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)', borderRadius: `${radius}px` }}
+                      >
+                        <img src={log.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
+                      </span>
+                      <span className="mt-1 text-[10px] font-bold opacity-60 tabular-nums">
+                        {dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      </span>
+                      <span className="text-[11px] font-semibold truncate">{log.title || 'Untitled'}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
             ))}
           </div>
         )}
