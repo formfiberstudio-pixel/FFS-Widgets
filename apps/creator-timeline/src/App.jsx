@@ -26,6 +26,7 @@ import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
 import RemoveEntryButton from './RemoveEntryButton.jsx';
+import { isLongBreak, shouldAutoSync } from './autoSync.js';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -1682,6 +1683,17 @@ function App() {
   const [timelineLogs, setTimelineLogs] = useState([]);
   const [specialDays, setSpecialDays] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  // For the automatic sync below: when the widget was last seen in use, whether
+  // a sync is owed after a long break, when one was last tried, and whether one
+  // is running now. lastSyncedAtRef moves whenever a sync succeeds, which is how
+  // an attempt is known to have worked.
+  const lastSyncedAtRef = useRef(0);
+  const lastActiveAtRef = useRef(Date.now());
+  const autoSyncOwedRef = useRef(false);
+  const lastAutoSyncAttemptRef = useRef(0);
+  const [isBackgroundSyncing, setIsBackgroundSyncing] = useState(false);
+  const fetchLogsRef = useRef(null);
+  const autoSyncFactsRef = useRef({});
   const [fetchError, setFetchError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   // The Notion token and database list are now configured server-side per
@@ -1942,10 +1954,13 @@ function App() {
     }
   }, [customCategoryColors, customProjectColors, activeThemeId, isDarkMode, facetSchemas]);
 
+  // `quiet` is for the automatic sync when the widget is shown again: if it
+  // fails (the device just woke up with no connection), the calendar stays as
+  // it was and no error is shown -- the person didn't ask for this sync.
   const fetchLogsFromNotion = async (tenant, sourcesFilterArg, options = {}) => {
-    const { silent = false } = options;
+    const { silent = false, quiet = false } = options;
     if (!silent) setIsLoading(true);
-    setFetchError(null);
+    if (!quiet) setFetchError(null);
     try {
       const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -1961,6 +1976,7 @@ function App() {
 
       const result = await response.json();
       if (result.success) {
+        lastSyncedAtRef.current = Date.now();
         setTimelineLogs(result.data || []);
         setSpecialDays(result.specialDays || []);
         setSavedViews(result.savedViews || []);
@@ -1981,14 +1997,77 @@ function App() {
           // Cache write can fail (e.g. storage quota) -- non-fatal, just skip caching.
         }
       } else {
-        setFetchError(result.error || 'Failed to sync with Notion.');
+        if (!quiet) setFetchError(result.error || 'Failed to sync with Notion.');
       }
     } catch (err) {
-      setFetchError('Network error occurred while fetching logs.');
+      if (!quiet) setFetchError('Network error occurred while fetching logs.');
     } finally {
       setIsLoading(false);
     }
   };
+
+  // Syncing by itself when the widget is picked up again after a LONG BREAK (see
+  // autoSync.js): a tab left open overnight, the phone or tablet app brought
+  // back the next day. Without it the calendar would stay as it was when the
+  // person left, since the cache-first load above only runs once -- and the
+  // pictures' Notion links would have lapsed. It is about the BREAK, not the
+  // clock: there is no sync on a timer, so someone using the widget for hours is
+  // never interrupted, and stepping away for a minute doesn't sync either.
+  //
+  // The widget counts as in use while it is shown and focused (checked every few
+  // seconds) and whenever it is touched, clicked, typed in or scrolled. A device
+  // asleep, a hidden tab or a window left alone stop that, so the gap shows when
+  // the next sign of life arrives -- a return event, or the check running again.
+  // The sync is quiet -- no "Syncing..." overlay, no error banner if it fails --
+  // and the header's sync icon turns while it works. A failed one stays owed and
+  // is tried again at the next return.
+  fetchLogsRef.current = fetchLogsFromNotion;
+  autoSyncFactsRef.current = { tenantId, sourceFilter, viewMode, isDemoMode, busy: isLoading || isBackgroundSyncing };
+  useEffect(() => {
+    const markActive = () => { lastActiveAtRef.current = Date.now(); };
+
+    // Shown (or checked while shown): was the break just ended a long one? If so a
+    // sync is owed, and runs now if nothing stands in its way.
+    const pickedUp = async () => {
+      if (document.hidden) return;
+      const now = Date.now();
+      if (isLongBreak({ now, lastActiveAt: lastActiveAtRef.current })) autoSyncOwedRef.current = true;
+      lastActiveAtRef.current = now;
+      const facts = autoSyncFactsRef.current;
+      if (!shouldAutoSync({ now, owed: autoSyncOwedRef.current, lastAttemptAt: lastAutoSyncAttemptRef.current, hidden: false, ...facts })) return;
+      lastAutoSyncAttemptRef.current = now;
+      setIsBackgroundSyncing(true);
+      const syncedBefore = lastSyncedAtRef.current;
+      try {
+        await fetchLogsRef.current(facts.tenantId, facts.sourceFilter, { silent: true, quiet: true });
+        if (lastSyncedAtRef.current !== syncedBefore) autoSyncOwedRef.current = false;
+      } finally {
+        setIsBackgroundSyncing(false);
+      }
+    };
+
+    // visibilitychange covers a tab or a phone app coming to the front; focus
+    // and pageshow cover a window being clicked back into, and Safari's
+    // back-forward cache restoring the page.
+    document.addEventListener('visibilitychange', pickedUp);
+    window.addEventListener('focus', pickedUp);
+    window.addEventListener('pageshow', pickedUp);
+    // Touch, click, key and scroll all count as use (passive: they only note the time).
+    const useEvents = ['pointerdown', 'keydown', 'touchstart', 'wheel'];
+    useEvents.forEach((name) => window.addEventListener(name, markActive, { passive: true }));
+    // Shown and focused counts as in use; a device waking from sleep with the page
+    // still in front shows up here, as a check that comes long after the last one.
+    const heartbeat = setInterval(() => {
+      if (!document.hidden && document.hasFocus()) pickedUp();
+    }, 15000);
+    return () => {
+      document.removeEventListener('visibilitychange', pickedUp);
+      window.removeEventListener('focus', pickedUp);
+      window.removeEventListener('pageshow', pickedUp);
+      useEvents.forEach((name) => window.removeEventListener(name, markActive));
+      clearInterval(heartbeat);
+    };
+  }, []);
 
   // Keeps a note edit visible everywhere that log shows up (not just the
   // modal it was typed in) without forcing a full resync just to pick up
@@ -3481,7 +3560,7 @@ function App() {
                 style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
                 className="w-7 h-7 rounded-full border flex items-center justify-center cursor-pointer disabled:opacity-50 disabled:cursor-default"
               >
-                <span className={isLoading ? 'animate-spin' : ''}><IconSync /></span>
+                <span className={isLoading || isBackgroundSyncing ? 'animate-spin' : ''}><IconSync /></span>
               </button>
               <button
                 onClick={() => setShowMobileMenu((v) => !v)}
