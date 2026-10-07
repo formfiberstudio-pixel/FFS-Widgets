@@ -2923,12 +2923,12 @@ function App() {
     ? { fontFamily: 'var(--theme-font-serif)', fontWeight: 400, textTransform: 'none', letterSpacing: 0, lineHeight: 1.1 }
     : null;
   const titleGallerySize = isMobile ? '1.25rem' : '1.6rem';
-  // The tallest title block the calendar views have (Week / Day: the year, then
-  // two lines under it, each as tall as its line-height). Desktop reserves
-  // this much in Year / Month / Week / Day alike, so the header is one height
-  // and the frames below it start at the same place in every view instead of
-  // stepping down as the title grows.
-  const titleBlockMinHeight = `calc(${titleBigSize} + 2px + 2 * ${activeTheme.design ? 1.1 : 1} * ${titleSubSize})`;
+  // The web header's date title is ONE row -- "2026  October  4-10" -- so the
+  // header is only as tall as the controls beside it (the same in Year / Month /
+  // Week / Day), and the frames below start at the same place in every view.
+  // The phone keeps the title stacked.
+  const titleRowClass = isMobile ? 'leading-none' : 'leading-none flex items-baseline gap-x-4 flex-wrap';
+  const titleSubGap = isMobile ? ' mt-0.5' : '';
   const isCalendarView = viewMode === 'year' || viewMode === 'month' || viewMode === 'week' || viewMode === 'day';
 
   // -------------------------------------------------------------
@@ -3264,7 +3264,7 @@ function App() {
         style={{ backgroundColor: 'var(--theme-bg)' }}
         className={`sticky top-0 z-30 shrink-0 flex justify-between gap-2 ${isMobile ? 'items-start flex-nowrap mb-2' : `${isCalendarView ? 'items-start' : 'items-center'} flex-wrap gap-3 mb-5`}`}
       >
-        <div className="min-w-0 shrink" style={!isMobile && isCalendarView ? { minHeight: titleBlockMinHeight } : undefined}>
+        <div className="min-w-0 shrink">
           {viewMode === 'gallery' ? (
             <div className="leading-none">
               <button
@@ -3333,7 +3333,7 @@ function App() {
             // currentDate -- the list is continuous, so there's no single
             // "current" month otherwise, and the 4 visible rows often
             // straddle two.
-            <div className="leading-none">
+            <div className={titleRowClass}>
               {(() => {
                 const { year: mYear, label: mLabel } = isMobile
                   ? getMobileMonthHeaderLabel(mobileMonthVisibleStartIdx)
@@ -3348,7 +3348,7 @@ function App() {
                     >
                       {mYear}
                     </button>
-                    <div className="font-black uppercase tracking-wide mt-0.5" style={{ fontSize: titleSubSize, ...serifSubFace }}>
+                    <div className={`font-black uppercase tracking-wide${titleSubGap}`} style={{ fontSize: titleSubSize, ...serifSubFace }}>
                       {mLabel}
                     </div>
                   </>
@@ -3356,7 +3356,7 @@ function App() {
               })()}
             </div>
           ) : viewMode === 'day' ? (
-            <div className="leading-none">
+            <div className={titleRowClass}>
               <button
                 onClick={() => setViewMode('year')}
                 title="Jump to Year view"
@@ -3368,7 +3368,7 @@ function App() {
               <button
                 onClick={() => setViewMode('month')}
                 title="Jump to Month view"
-                className="block font-black uppercase tracking-wide mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
+                className={`block font-black uppercase tracking-wide${titleSubGap} cursor-pointer hover:opacity-80 transition-opacity`}
                 style={{ fontSize: titleSubSize, ...serifSubFace }}
               >
                 {currentDate.toLocaleDateString('en-US', { month: 'long' })}
@@ -3378,7 +3378,7 @@ function App() {
               </div>
             </div>
           ) : viewMode === 'week' ? (
-            <div className="leading-none">
+            <div className={titleRowClass}>
               <button
                 onClick={() => setViewMode('year')}
                 title="Jump to Year view"
@@ -3390,7 +3390,7 @@ function App() {
               <button
                 onClick={() => setViewMode('month')}
                 title="Jump to Month view"
-                className="block font-black uppercase tracking-wide mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
+                className={`block font-black uppercase tracking-wide${titleSubGap} cursor-pointer hover:opacity-80 transition-opacity`}
                 style={{ fontSize: titleSubSize, ...serifSubFace }}
               >
                 {startOfWeek?.getMonth() === endOfWeek?.getMonth()
