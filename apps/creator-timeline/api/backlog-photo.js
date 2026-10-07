@@ -16,6 +16,7 @@ import {
   releaseSavedSession,
   saveActiveTimer,
 } from './_lib/timerStore.js';
+import { findProjectTypePropName, projectTypeValue, resolveSourceTaxonomy, taxonomyProperties, valueForProperty } from './_lib/entryTaxonomy.js';
 import { buildSessionChildren, buildSessionNote, buildSessionProperties, buildSessionTitle, sanitizeSessionNotes, validPhotoUploadIds } from './_lib/timeTracking.js';
 
 // Needs the newer version for file_uploads (see notionUpload.js) -- used
@@ -81,10 +82,15 @@ async function uploadBase64Photo(imageBase64, notionToken) {
   return uploadImageToNotion(buffer, contentType, filename, notionToken, NOTION_VERSION);
 }
 
+// The tenant's configured source (database) with this label -- its topic /
+// type overrides say how its entries carry them (see _lib/entryTaxonomy.js).
+const findSource = (tenant, label) =>
+  (tenant.sources || []).find((source) => (source.label || 'Activity Log') === (label || 'Activity Log')) || null;
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds, op, timerPhotoId, sessionStartedAt } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds, op, timerPhotoId, sessionStartedAt, sourceLabel, topicName, typeName, projectType } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
 
@@ -97,6 +103,8 @@ export default async function handler(req, res) {
   } else if (action === 'createProject') {
     if (!referenceLogId) return res.status(400).json({ error: 'Missing referenceLogId' });
     if (typeof newProjectTitle !== 'string' || !newProjectTitle.trim()) return res.status(400).json({ error: 'Project name cannot be empty' });
+    if (projectType !== undefined && typeof projectType !== 'string') return res.status(400).json({ error: 'Invalid type' });
+    if (sourceLabel !== undefined && typeof sourceLabel !== 'string') return res.status(400).json({ error: 'Invalid source' });
   } else if (action === 'logTime') {
     if (!referenceLogId) return res.status(400).json({ error: 'Missing referenceLogId' });
     // 24h cap: a timer left running overnight shouldn't silently log days.
@@ -118,6 +126,9 @@ export default async function handler(req, res) {
     if (!pageId) {
       if (!referenceLogId) return res.status(400).json({ error: 'Missing referenceLogId' });
       if (!dateTaken || isNaN(new Date(dateTaken).getTime())) return res.status(400).json({ error: 'Missing or invalid dateTaken' });
+    }
+    for (const [name, value] of [['source', sourceLabel], ['topic', topicName], ['type', typeName]]) {
+      if (value !== undefined && typeof value !== 'string') return res.status(400).json({ error: `Invalid ${name}` });
     }
   }
 
@@ -285,9 +296,20 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: errData.message || 'Could not read the reference log entry.' });
       }
       const refPage = await refRes.json();
+      const source = findSource(tenant, sourceLabel);
+      const taxonomy = resolveSourceTaxonomy(refPage.properties || {}, source);
+
+      // A select-style source keeps its topic (and type) on the entry itself, so a
+      // new project has no page to create: it comes into being the first time an
+      // entry uses it (the topic / type are written then -- see the create path
+      // below), and Notion adds the select option on the spot.
+      if (taxonomy.topicProp && valueForProperty(taxonomy.topicProp.type, 'x')) {
+        return res.status(200).json({ success: true, virtual: true });
+      }
+
       const relationEntry = Object.entries(refPage.properties || {}).find(([, v]) => v.type === 'relation' && v.relation?.length > 0);
       if (!relationEntry) return res.status(400).json({ error: 'Could not find a project relation on this database.' });
-      const [, relationVal] = relationEntry;
+      const [relationPropName, relationVal] = relationEntry;
 
       const linkedRes = await notionFetch(`https://api.notion.com/v1/pages/${relationVal.relation[0].id}`, { method: 'GET', headers });
       if (!linkedRes.ok) {
@@ -324,18 +346,46 @@ export default async function handler(req, res) {
       const targetTitlePropName = Object.entries(dataSource.properties || {}).find(([, v]) => v.type === 'title')?.[0];
       if (!targetTitlePropName) return res.status(400).json({ error: 'The projects database has no title property.' });
 
+      const newProjectProperties = { [targetTitlePropName]: { title: [{ text: { content: newProjectTitle.trim() } }] } };
+
+      // The logs database shows a project's type as a rollup of a property on the
+      // project's own page, so a new project's type is set on that property.
+      // Whatever can't be set (an unreadable schema, a computed or status
+      // property) doesn't stop the project being created -- it is made without
+      // the type and the caller is told.
+      const wantedType = typeof projectType === 'string' ? projectType.trim() : '';
+      let typeSet = false;
+      let warning = null;
+      if (wantedType) {
+        try {
+          const logsDatabaseId = refPage.parent?.database_id;
+          const typePropName = logsDatabaseId
+            ? await findProjectTypePropName(logsDatabaseId, relationPropName, taxonomy.typeProp?.name, headers)
+            : null;
+          const typeProp = typePropName ? dataSource.properties?.[typePropName] : null;
+          const typeValue = typeProp ? await projectTypeValue(typeProp, wantedType, headers) : null;
+          if (typeValue) {
+            newProjectProperties[typePropName] = typeValue;
+            typeSet = true;
+          }
+        } catch (err) {
+          console.error('[backlog-photo] setting the new project\'s type failed:', err.message);
+        }
+        if (!typeSet) warning = `The project was added, but its type "${wantedType}" could not be set -- set it in Notion.`;
+      }
+
       const createRes = await notionFetch('https://api.notion.com/v1/pages', {
         method: 'POST',
         headers,
         body: JSON.stringify({
           parent: { database_id: targetDatabaseId },
-          properties: { [targetTitlePropName]: { title: [{ text: { content: newProjectTitle.trim() } }] } },
+          properties: newProjectProperties,
         }),
       });
       const createData = await createRes.json();
       if (createData.object === 'error') return res.status(400).json({ error: createData.message });
 
-      return res.status(200).json({ success: true, projectPageId: createData.id });
+      return res.status(200).json({ success: true, projectPageId: createData.id, ...(wantedType ? { typeSet, warning } : {}) });
     } catch (err) {
       console.error('[backlog-photo] createProject failed:', err.message);
       return res.status(500).json({ error: err.message });
@@ -492,6 +542,13 @@ export default async function handler(req, res) {
           ? { relation: [{ id: projectPageId }] }
           : { relation: propVal.relation.map((r) => ({ id: r.id })) };
       }
+    }
+
+    // A select-style source carries its topic and type on the entry itself, so
+    // they are written here (a new name becomes a new select option).
+    if (sourceLabel !== undefined && (topicName || typeName)) {
+      const taxonomy = resolveSourceTaxonomy(refPage.properties || {}, findSource(tenant, sourceLabel));
+      Object.assign(properties, taxonomyProperties(taxonomy, { topicName, typeName }));
     }
 
     const createRes = await notionFetch('https://api.notion.com/v1/pages', {

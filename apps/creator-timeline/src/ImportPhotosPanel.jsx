@@ -22,37 +22,49 @@ const projectKeyOf = (p) => `${p.source}::${p.title}`;
 // used elsewhere for the same narrow/wide split.
 const MOBILE_BREAKPOINT = 640;
 
-// A "+ Add Project" row shown at the bottom of one source's project list
-// in the mobile tap-to-assign step -- desktop's review grid uses a more
-// compact inline form instead (no per-source grouped list there to hang
-// a row off of), but both end up calling the same submitAddProject.
-// Collapses to a single dashed button until tapped, then swaps to a
-// plain inline text input, matching LogTitleEditor's click-to-edit
-// pattern elsewhere in this app.
-function AddProjectRow({ isActive, draft, onDraftChange, onActivate, onCancel, onSubmit, submitting, error }) {
-  if (!isActive) {
-    return (
-      <button
-        onClick={onActivate}
-        style={{ borderColor: 'var(--theme-border)' }}
-        className="w-full text-left p-3 rounded-lg lf-frame border border-dashed cursor-pointer transition-colors hover:border-[var(--theme-primary)] text-sm font-semibold opacity-60 hover:opacity-100"
-      >
-        + Add Project
-      </button>
-    );
-  }
+// What the add form's `type` is while it is adding a brand-new type (with its
+// first project) rather than a project to an existing type.
+const NEW_TYPE = '\u0000new-type';
+
+// The project a photo is for, if it has none, defaults to "General" (see
+// getAllTreeProjects) -- which is a stand-in for "no type", never a type to write.
+const FALLBACK_TYPE = 'General';
+
+// A dashed "+ Add ..." button that opens an inline form.
+function AddRow({ label, onActivate }) {
+  return (
+    <button
+      onClick={onActivate}
+      style={{ borderColor: 'var(--theme-border)' }}
+      className="w-full text-left p-3 rounded-lg lf-frame border border-dashed cursor-pointer transition-colors hover:border-[var(--theme-primary)] text-sm font-semibold opacity-60 hover:opacity-100"
+    >
+      {label}
+    </button>
+  );
+}
+
+// The inline form for adding a project to a type -- or, with `withType`, a new
+// type together with its first project (a type only exists in Notion as the
+// type of some project). Enter submits, Escape cancels, as in
+// LogTitleEditor's click-to-edit pattern elsewhere in this app.
+function AddProjectForm({ withType, typeDraft, onTypeDraftChange, draft, onDraftChange, onCancel, onSubmit, submitting, error }) {
+  const canSubmit = !submitting && draft.trim() && (!withType || typeDraft.trim());
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter' && canSubmit) onSubmit();
+    if (e.key === 'Escape') onCancel();
+  };
+  const inputProps = {
+    type: 'text',
+    onKeyDown,
+    style: { borderColor: 'var(--theme-border)', color: 'var(--theme-text)', backgroundColor: 'var(--theme-card)' },
+    className: 'w-full text-sm px-2 py-1.5 rounded border outline-none',
+  };
   return (
     <div onClick={(e) => e.stopPropagation()} style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-primary)' }} className="p-3 rounded-lg lf-frame border space-y-2">
-      <input
-        autoFocus
-        type="text"
-        value={draft}
-        onChange={(e) => onDraftChange(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') onSubmit(); if (e.key === 'Escape') onCancel(); }}
-        placeholder="New project name"
-        style={{ borderColor: 'var(--theme-border)', color: 'var(--theme-text)', backgroundColor: 'var(--theme-card)' }}
-        className="w-full text-sm px-2 py-1.5 rounded border outline-none"
-      />
+      {withType && (
+        <input {...inputProps} autoFocus value={typeDraft} onChange={(e) => onTypeDraftChange(e.target.value)} placeholder="New type name" aria-label="New type name" />
+      )}
+      <input {...inputProps} autoFocus={!withType} value={draft} onChange={(e) => onDraftChange(e.target.value)} placeholder={withType ? 'First project in it' : 'New project name'} aria-label={withType ? 'First project in the new type' : 'New project name'} />
       {error && <div className="text-[10px]" style={{ color: 'var(--theme-secondary)' }}>{error}</div>}
       <div className="flex items-center justify-end gap-1.5">
         <button onClick={onCancel} className="text-xs font-semibold px-2 py-1 rounded cursor-pointer opacity-60 hover:opacity-100 transition-opacity">
@@ -60,45 +72,57 @@ function AddProjectRow({ isActive, draft, onDraftChange, onActivate, onCancel, o
         </button>
         <button
           onClick={onSubmit}
-          disabled={submitting || !draft.trim()}
+          disabled={!canSubmit}
           style={{ backgroundColor: 'var(--theme-primary)' }}
           className="text-xs font-bold text-white px-2.5 py-1 rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
         >
-          {submitting ? 'Adding…' : 'Add'}
+          {submitting ? 'Adding…' : withType ? 'Add type' : 'Add'}
         </button>
       </div>
     </div>
   );
 }
 
-// The grouped-by-source, tap-to-assign project list -- shared between
-// mobile's step (below its horizontal photo strip) and desktop's (in its
-// own left-hand column), since the interaction itself (click a project
-// to arm it and assign photos one at a time, or batch-assign whatever's
-// already selected) is identical either way, only the surrounding layout
-// differs.
+// The grouped, tap-to-assign project list -- shared between mobile's step
+// (below its horizontal photo strip) and desktop's (in its own left-hand
+// column), since the interaction itself (click a project to arm it and assign
+// photos one at a time, or batch-assign whatever's already selected) is
+// identical either way, only the surrounding layout differs.
 //
-// Styled to match the app's own Categories sidebar (source header
-// typography, the colored-dot project row) rather than its own bespoke
-// look, so Import Photos' project list reads as the same list, not a
-// different-looking one -- the one deliberate difference is the
-// "+ Add Project" row at the bottom of each source, which the sidebar
-// itself has no equivalent for. projectColorMap mirrors the sidebar's
-// own per-project color overrides; a project with no override there
-// falls back to the theme's primary color rather than the sidebar's own
-// per-CATEGORY fallback (baseTypeHex), since this list has no "type"
-// grouping level to pull one from.
+// Grouped like the app's own Categories sidebar -- database (source), then
+// type, then project -- and styled to match it. The deliberate difference is
+// the add rows the sidebar has no equivalent for: "+ Add Project" at the end
+// of each type (a new topic in that type) and "+ Add Type" at the end of each
+// database (a new type, with its first project). `addTarget` is which add form
+// is open, { source, type } (type is NEW_TYPE for the add-a-type form) --
+// only one at a time. projectColorMap mirrors the sidebar's own per-project
+// color overrides; a project with no override falls back to the theme's
+// primary color.
 function ProjectAssignList({
   bySource, armedProjectKey, onProjectTap, countByProjectKey, projectColorMap,
   collapsedSources, onToggleSource,
-  addProjectSource, newProjectDraft, onNewProjectDraftChange, onAddProjectActivate, onAddProjectCancel, onAddProjectSubmit, creatingProject, createProjectError,
+  addTarget, newProjectDraft, newTypeDraft, onNewProjectDraftChange, onNewTypeDraftChange,
+  onAddActivate, onAddCancel, onAddSubmit, creatingProject, createProjectError, createProjectNotice,
   isEmpty,
 }) {
+  const isOpen = (source, type) => addTarget?.source === source && addTarget?.type === type;
   return (
     <>
+      {createProjectNotice && (
+        <div role="status" className="text-xs p-2 rounded-lg border" style={{ borderColor: 'var(--theme-secondary)', color: 'var(--theme-secondary)' }}>
+          {createProjectNotice}
+        </div>
+      )}
       {Object.entries(bySource).map(([source, projs]) => {
         const isCollapsed = collapsedSources.has(source);
         const sourceCount = projs.reduce((sum, p) => sum + (countByProjectKey[projectKeyOf(p)] || 0), 0);
+        // This database's types, in order, each with its projects.
+        const byType = new Map();
+        projs.forEach((p) => {
+          const type = p.projectType || FALLBACK_TYPE;
+          if (!byType.has(type)) byType.set(type, []);
+          byType.get(type).push(p);
+        });
         return (
           <div key={source}>
             <div
@@ -119,47 +143,69 @@ function ProjectAssignList({
               </div>
             </div>
             {!isCollapsed && (
-              <div className="space-y-1.5">
-                {projs.map((p) => {
-                  const key = projectKeyOf(p);
-                  const isArmed = armedProjectKey === key;
-                  const count = countByProjectKey[key] || 0;
-                  const dotHex = projectColorMap?.[p.title] || 'var(--theme-primary)';
-                  return (
-                    <div
-                      key={key}
-                      onClick={() => onProjectTap(key)}
-                      style={{
-                        backgroundColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-bg)',
-                        borderColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-border)',
-                        color: isArmed ? '#fff' : 'var(--theme-text)',
-                        fontSize: '12px',
-                      }}
-                      className={`p-2.5 rounded lf-frame border transition-all cursor-pointer flex items-center gap-2 ${isArmed ? 'font-bold' : ''}`}
-                    >
-                      <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20 shadow-sm" style={{ backgroundColor: dotHex }} />
-                      <span className="truncate flex-1">{p.title}</span>
-                      {count > 0 && (
-                        <span
-                          className="text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0"
-                          style={{ backgroundColor: isArmed ? 'rgba(255,255,255,0.25)' : 'var(--theme-primary)', color: '#fff' }}
+              <div className="space-y-3">
+                {Array.from(byType, ([type, typeProjects]) => (
+                  <div key={type} className="space-y-1.5">
+                    <div className="px-0.5 text-[10px] font-bold uppercase tracking-wider opacity-60">{type}</div>
+                    {typeProjects.map((p) => {
+                      const key = projectKeyOf(p);
+                      const isArmed = armedProjectKey === key;
+                      const count = countByProjectKey[key] || 0;
+                      const dotHex = projectColorMap?.[p.title] || 'var(--theme-primary)';
+                      return (
+                        <div
+                          key={key}
+                          onClick={() => onProjectTap(key)}
+                          style={{
+                            backgroundColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-bg)',
+                            borderColor: isArmed ? 'var(--theme-primary)' : 'var(--theme-border)',
+                            color: isArmed ? '#fff' : 'var(--theme-text)',
+                            fontSize: '12px',
+                          }}
+                          className={`p-2.5 rounded lf-frame border transition-all cursor-pointer flex items-center gap-2 ${isArmed ? 'font-bold' : ''}`}
                         >
-                          {count}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-                <AddProjectRow
-                  isActive={addProjectSource === source}
-                  draft={newProjectDraft}
-                  onDraftChange={onNewProjectDraftChange}
-                  onActivate={() => onAddProjectActivate(source)}
-                  onCancel={onAddProjectCancel}
-                  onSubmit={() => onAddProjectSubmit(source)}
-                  submitting={creatingProject}
-                  error={addProjectSource === source ? createProjectError : null}
-                />
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20 shadow-sm" style={{ backgroundColor: dotHex }} />
+                          <span className="truncate flex-1">{p.title}</span>
+                          {count > 0 && (
+                            <span
+                              className="text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0"
+                              style={{ backgroundColor: isArmed ? 'rgba(255,255,255,0.25)' : 'var(--theme-primary)', color: '#fff' }}
+                            >
+                              {count}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {isOpen(source, type) ? (
+                      <AddProjectForm
+                        draft={newProjectDraft}
+                        onDraftChange={onNewProjectDraftChange}
+                        onCancel={onAddCancel}
+                        onSubmit={() => onAddSubmit(source, type)}
+                        submitting={creatingProject}
+                        error={createProjectError}
+                      />
+                    ) : (
+                      <AddRow label="+ Add Project" onActivate={() => onAddActivate(source, type)} />
+                    )}
+                  </div>
+                ))}
+                {isOpen(source, NEW_TYPE) ? (
+                  <AddProjectForm
+                    withType
+                    typeDraft={newTypeDraft}
+                    onTypeDraftChange={onNewTypeDraftChange}
+                    draft={newProjectDraft}
+                    onDraftChange={onNewProjectDraftChange}
+                    onCancel={onAddCancel}
+                    onSubmit={() => onAddSubmit(source, NEW_TYPE)}
+                    submitting={creatingProject}
+                    error={createProjectError}
+                  />
+                ) : (
+                  <AddRow label="+ Add Type" onActivate={() => onAddActivate(source, NEW_TYPE)} />
+                )}
               </div>
             )}
           </div>
@@ -253,7 +299,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     });
   };
 
-  // Projects created THIS session via "+ Add Project" (see AddProjectRow)
+  // Projects created THIS session via "+ Add Project" / "+ Add Type" (see AddProjectForm)
   // -- allProjects only ever lists projects that already have at least
   // one synced log entry, so a brand-new one has nowhere else to live
   // until the user eventually logs something under it and re-syncs.
@@ -261,18 +307,31 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   // own project lookup right alongside allProjects.
   const [newlyCreatedProjects, setNewlyCreatedProjects] = useState([]);
   const effectiveProjects = [...allProjects, ...newlyCreatedProjects];
-  // Which source's inline "+ Add Project" input is currently open --
-  // only one at a time, mirroring armedProjectKey's single-active-mode
-  // pattern above.
-  const [addProjectSource, setAddProjectSource] = useState(null);
+  // Which inline add form is open -- "+ Add Project" under a type, or "+ Add
+  // Type" under a database -- as { source, type } (type is NEW_TYPE for the
+  // latter). Only one at a time, mirroring armedProjectKey's single-active-
+  // mode pattern above.
+  const [addTarget, setAddTarget] = useState(null);
   const [newProjectDraft, setNewProjectDraft] = useState('');
+  const [newTypeDraft, setNewTypeDraft] = useState('');
   const [creatingProject, setCreatingProject] = useState(false);
   const [createProjectError, setCreateProjectError] = useState(null);
+  // A project was added but something it asked for couldn't be done (its
+  // type, in Notion): shown until the next add is started.
+  const [createProjectNotice, setCreateProjectNotice] = useState('');
 
   const cancelAddProject = () => {
-    setAddProjectSource(null);
+    setAddTarget(null);
     setNewProjectDraft('');
+    setNewTypeDraft('');
     setCreateProjectError(null);
+  };
+  const startAddProject = (source, type) => {
+    setAddTarget({ source, type });
+    setNewProjectDraft('');
+    setNewTypeDraft('');
+    setCreateProjectError(null);
+    setCreateProjectNotice('');
   };
 
   // referenceLogId is only ever used structurally (which property is the
@@ -280,25 +339,64 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   // the same source works, including one added earlier this same session,
   // so a database with zero synced projects is the only case with truly
   // nothing to bootstrap a new one from.
-  const submitAddProject = async (source) => {
+  //
+  // `type` is the existing type the project goes under, or NEW_TYPE when the
+  // form is adding a type (named in newTypeDraft) along with its first
+  // project. The server writes the type where this database keeps it -- on
+  // the new project's page, or (for a select-style database) later on each
+  // entry, see backlog-photo.js -- so a project/type made here exists in
+  // Notion once something is uploaded to it (or, for a page-backed project,
+  // straight away).
+  const submitAddProject = async (source, type) => {
+    const isNewType = type === NEW_TYPE;
     const title = newProjectDraft.trim();
-    if (!title) return;
+    if (!title || (isNewType && !newTypeDraft.trim())) return;
     const reference = effectiveProjects.find((p) => p.source === source);
     if (!reference) {
       setCreateProjectError('Need at least one existing project in this database first.');
       return;
     }
+    // A name already in use in this database would collide with it (projects
+    // are keyed by database + name).
+    if (effectiveProjects.some((p) => p.source === source && p.title.toLowerCase() === title.toLowerCase())) {
+      setCreateProjectError('A project with that name already exists in this database.');
+      return;
+    }
+    // A typed type that matches an existing one (ignoring case) is that type.
+    const existingTypes = effectiveProjects.filter((p) => p.source === source).map((p) => p.projectType || FALLBACK_TYPE);
+    const typedType = newTypeDraft.trim();
+    const typeName = isNewType
+      ? existingTypes.find((t) => t.toLowerCase() === typedType.toLowerCase()) || typedType
+      : type;
     setCreatingProject(true);
     setCreateProjectError(null);
     try {
       const response = await fetch('/api/backlog-photo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenantId, action: 'createProject', referenceLogId: reference.referenceLogId, newProjectTitle: title }),
+        body: JSON.stringify({
+          tenantId,
+          action: 'createProject',
+          referenceLogId: reference.referenceLogId,
+          newProjectTitle: title,
+          sourceLabel: source,
+          // The "General" group is where projects with no type land: there is
+          // no type to set on one added to it.
+          ...(typeName !== FALLBACK_TYPE ? { projectType: typeName } : {}),
+        }),
       });
       const result = await response.json();
       if (!result.success) throw new Error(result.error || 'Could not create project');
-      setNewlyCreatedProjects((prev) => [...prev, { title, source, referenceLogId: reference.referenceLogId, projectPageId: result.projectPageId }]);
+      setNewlyCreatedProjects((prev) => [...prev, {
+        title,
+        source,
+        projectType: typeName,
+        referenceLogId: reference.referenceLogId,
+        // A page-backed project has a page to link entries to; a select-style
+        // one (virtual) is just a name that gets written on each entry.
+        projectPageId: result.projectPageId,
+      }]);
+      if (result.warning) setCreateProjectNotice(result.warning);
       cancelAddProject();
     } catch (err) {
       setCreateProjectError(err.message);
@@ -785,6 +883,12 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                 // entry to the newly-created project page instead of
                 // copying referenceLogId's own (unrelated) project.
                 ...(groupProject.projectPageId ? { projectPageId: groupProject.projectPageId } : {}),
+                // A select-style database keeps its topic and type on the entry
+                // itself, so they are sent for the server to write (it ignores
+                // them for a database that links its project by relation).
+                sourceLabel: groupProject.source,
+                topicName: groupProject.title,
+                ...(groupProject.projectType && groupProject.projectType !== FALLBACK_TYPE ? { typeName: groupProject.projectType } : {}),
               };
 
           const response = await fetch('/api/backlog-photo', {
@@ -1075,14 +1179,17 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
             projectColorMap={projectColorMap}
             collapsedSources={collapsedSources}
             onToggleSource={toggleSourceCollapse}
-            addProjectSource={addProjectSource}
+            addTarget={addTarget}
             newProjectDraft={newProjectDraft}
+            newTypeDraft={newTypeDraft}
             onNewProjectDraftChange={setNewProjectDraft}
-            onAddProjectActivate={(source) => { setAddProjectSource(source); setNewProjectDraft(''); setCreateProjectError(null); }}
-            onAddProjectCancel={cancelAddProject}
-            onAddProjectSubmit={submitAddProject}
+            onNewTypeDraftChange={setNewTypeDraft}
+            onAddActivate={startAddProject}
+            onAddCancel={cancelAddProject}
+            onAddSubmit={submitAddProject}
             creatingProject={creatingProject}
             createProjectError={createProjectError}
+            createProjectNotice={createProjectNotice}
             isEmpty={effectiveProjects.length === 0}
           />
         </div>
@@ -1160,14 +1267,17 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                 projectColorMap={projectColorMap}
                 collapsedSources={collapsedSources}
                 onToggleSource={toggleSourceCollapse}
-                addProjectSource={addProjectSource}
+                addTarget={addTarget}
                 newProjectDraft={newProjectDraft}
+                newTypeDraft={newTypeDraft}
                 onNewProjectDraftChange={setNewProjectDraft}
-                onAddProjectActivate={(source) => { setAddProjectSource(source); setNewProjectDraft(''); setCreateProjectError(null); }}
-                onAddProjectCancel={cancelAddProject}
-                onAddProjectSubmit={submitAddProject}
+                onNewTypeDraftChange={setNewTypeDraft}
+                onAddActivate={startAddProject}
+                onAddCancel={cancelAddProject}
+                onAddSubmit={submitAddProject}
                 creatingProject={creatingProject}
                 createProjectError={createProjectError}
+                createProjectNotice={createProjectNotice}
                 isEmpty={effectiveProjects.length === 0}
               />
             </div>

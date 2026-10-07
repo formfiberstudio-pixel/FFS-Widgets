@@ -2468,9 +2468,11 @@ function App() {
       const title = log.Projects || 'Untitled Project';
       const source = log.source || 'Activity Log';
       const key = source + '::' + title;
-      if (!seen.has(key)) seen.set(key, { title, source, referenceLogId: log.id });
+      // The project's type too (the sidebar's category), so Import Photos can
+      // group projects by it and add new ones to a type.
+      if (!seen.has(key)) seen.set(key, { title, source, referenceLogId: log.id, projectType: log.projectType || 'General', projectTypeColor: log.projectTypeColor });
     });
-    return Array.from(seen.values()).sort((a, b) => a.source.localeCompare(b.source) || a.title.localeCompare(b.title));
+    return Array.from(seen.values()).sort((a, b) => a.source.localeCompare(b.source) || a.projectType.localeCompare(b.projectType) || a.title.localeCompare(b.title));
   };
 
   // Sidebar hierarchy is Database (source) > Category (type) > Project, one
