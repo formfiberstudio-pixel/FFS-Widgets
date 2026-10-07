@@ -58,6 +58,11 @@ const NOTION_VERSION = '2026-03-11';
 // which returns a file_upload id), then attached by logTime as the page's
 // first blocks and its cover, ahead of the notes. See _lib/timeTracking.js.
 //
+// And action: 'archiveEntry' / 'restoreEntry' -- removing an entry from the
+// calendar by moving its Notion page to the trash (where Notion keeps it for
+// about 30 days, so it can be put back), and putting it back. Only a page that
+// lives in one of the tenant's own configured databases can be touched.
+//
 // And action: 'timer' -- the RUNNING timer, held here (in Redis) rather than
 // in one browser so every device sees it and can add notes and photos to it:
 // get / start / adopt / pause / resume / addNote / removeNote / addPhoto /
@@ -121,6 +126,11 @@ export default async function handler(req, res) {
     if (timerPhotoId === undefined && (typeof imageBase64 !== 'string' || !imageBase64)) return res.status(400).json({ error: 'Missing imageBase64' });
   } else if (action === 'timer') {
     if (typeof op !== 'string') return res.status(400).json({ error: 'Missing operation' });
+  } else if (action === 'archiveEntry' || action === 'restoreEntry') {
+    // A Notion page id: 32 hex digits, with or without dashes.
+    if (typeof pageId !== 'string' || !/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(pageId)) {
+      return res.status(400).json({ error: 'Missing or invalid pageId' });
+    }
   } else {
     if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
     if (!pageId) {
@@ -172,6 +182,40 @@ export default async function handler(req, res) {
     'Notion-Version': NOTION_VERSION,
     'Content-Type': 'application/json',
   };
+
+  if (action === 'archiveEntry' || action === 'restoreEntry') {
+    try {
+      const pageRes = await notionFetch(`https://api.notion.com/v1/pages/${pageId}`, { method: 'GET', headers });
+      if (!pageRes.ok) {
+        const errData = await pageRes.json().catch(() => ({}));
+        return res.status(400).json({ error: errData.message || 'Could not read this entry.' });
+      }
+      const page = await pageRes.json();
+      // The integration can see more than the calendar's entries (project pages,
+      // other databases it was shared with): only a page in one of THIS tenant's
+      // own databases may be removed or restored here.
+      const normalizeId = (id) => String(id || '').replace(/-/g, '').toLowerCase();
+      const parentDatabase = normalizeId(page.parent?.database_id);
+      const isCalendarEntry = parentDatabase && (tenant.sources || []).some((source) => normalizeId(source.databaseId) === parentDatabase);
+      if (!isCalendarEntry) return res.status(403).json({ error: 'That page is not an entry in your calendar.' });
+
+      const trash = action === 'archiveEntry';
+      if (Boolean(page.in_trash ?? page.archived) === trash) return res.status(200).json({ success: true });
+      const send = (body) => notionFetch(`https://api.notion.com/v1/pages/${pageId}`, { method: 'PATCH', headers, body: JSON.stringify(body) });
+      let patchRes = await send({ in_trash: trash });
+      let patchData = await patchRes.json().catch(() => ({}));
+      // An older API shape names it `archived`.
+      if (patchData.object === 'error' && patchData.code === 'validation_error') {
+        patchRes = await send({ archived: trash });
+        patchData = await patchRes.json().catch(() => ({}));
+      }
+      if (patchData.object === 'error') return res.status(400).json({ error: patchData.message || 'Notion would not change this entry.' });
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      console.error(`[backlog-photo] ${action} failed:`, err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
 
   if (action === 'timer') {
     try {

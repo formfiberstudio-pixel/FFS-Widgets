@@ -25,6 +25,7 @@ import { collectYearPhotos, groupYearPhotos, weekStartFor, yearGalleryRange } fr
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
+import RemoveEntryButton from './RemoveEntryButton.jsx';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -2005,6 +2006,66 @@ function App() {
     setTimelineLogs(prev => prev.map(l => (l.id === logId ? { ...l, title: newTitle } : l)));
   };
 
+  // Removing an entry from the Day page: its Notion page goes to the Notion
+  // trash (recoverable there for about 30 days -- see backlog-photo.js's
+  // archiveEntry), and it leaves the widget at once without waiting for a
+  // sync. A short message offers Undo, which restores the page.
+  const [entryToast, setEntryToast] = useState(null); // { message, removed?: the log, isError? }
+  useEffect(() => {
+    if (!entryToast) return undefined;
+    const id = setTimeout(() => setEntryToast(null), entryToast.removed ? 10000 : 5000);
+    return () => clearTimeout(id);
+  }, [entryToast]);
+
+  // The cached copy of the calendar (see the cache-first load) also has to
+  // change, or a reload within its ten minutes would bring the entry back.
+  const updateCachedLogs = (mutate) => {
+    try {
+      const cacheKey = `${NOTION_CACHE_KEY}:${tenantId}:${sourceFilter ? sourceFilter.join(',') : 'all'}`;
+      const raw = localStorage.getItem(cacheKey);
+      if (!raw) return;
+      const cached = JSON.parse(raw);
+      if (!Array.isArray(cached.data)) return;
+      localStorage.setItem(cacheKey, JSON.stringify({ ...cached, data: mutate(cached.data) }));
+    } catch { /* the cache is only a convenience */ }
+  };
+
+  const callEntryAction = async (action, pageId) => {
+    const response = await fetch('/api/backlog-photo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenantId, action, pageId }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.success) throw new Error(result.error || 'Notion did not accept that change.');
+  };
+
+  const handleRemoveEntry = async (log) => {
+    try {
+      await callEntryAction('archiveEntry', log.id);
+      setTimelineLogs((prev) => prev.filter((l) => l.id !== log.id));
+      // The phone's full-screen day holds its own copy of the day's entries.
+      setMobileLogModal((prev) => (prev ? { ...prev, logs: prev.logs.filter((l) => l.id !== log.id) } : prev));
+      updateCachedLogs((data) => data.filter((l) => l.id !== log.id));
+      setEntryToast({ message: `Removed “${log.title || 'Untitled'}” — it’s in your Notion trash.`, removed: log });
+    } catch (err) {
+      setEntryToast({ message: err.message || 'Could not remove that entry.', isError: true });
+    }
+  };
+
+  const handleUndoRemove = async (log) => {
+    try {
+      await callEntryAction('restoreEntry', log.id);
+      setTimelineLogs((prev) => (prev.some((l) => l.id === log.id) ? prev : [...prev, log]));
+      updateCachedLogs((data) => (data.some((l) => l.id === log.id) ? data : [...data, log]));
+      setEntryToast({ message: 'Entry restored.' });
+      // Back in its own place: the sync returns the entries in order.
+      fetchLogsFromNotion(tenantId, sourceFilter, { silent: true });
+    } catch (err) {
+      setEntryToast({ message: err.message || 'Could not restore that entry.', isError: true });
+    }
+  };
+
   // Deleting a saved view only prunes a label/bookmark over already-visible
   // config -- it can't grant or reveal access -- so unlike reconfiguring the
   // Notion connection itself, this doesn't require the license key (see
@@ -3128,18 +3189,21 @@ function App() {
 
                   <div className="flex items-center justify-between gap-2">
                     <LogTitleEditor log={log} tenantId={tenantId} onSaved={handleTitleSaved} className="text-base font-bold" />
-                    <a
-                      href={notionPageUrl} 
-                      target="_blank" 
-                      rel="noopener noreferrer" 
-                      onClick={(e) => e.stopPropagation()}
-                      style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-primary)' }}
-                      className="text-xs font-semibold px-2.5 py-1 rounded border shrink-0 flex items-center gap-1 transition-colors hover:border-[var(--theme-primary)]"
-                      title="Open in Notion Center Peek"
-                    >
-                      <span>Open in Notion</span>
-                      <span className="text-[10px]">↗</span>
-                    </a>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {tenantId && <RemoveEntryButton onRemove={() => handleRemoveEntry(log)} />}
+                      <a
+                        href={notionPageUrl} 
+                        target="_blank" 
+                        rel="noopener noreferrer" 
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-primary)' }}
+                        className="text-xs font-semibold px-2.5 py-1 rounded border shrink-0 flex items-center gap-1 transition-colors hover:border-[var(--theme-primary)]"
+                        title="Open in Notion Center Peek"
+                      >
+                        <span>Open in Notion</span>
+                        <span className="text-[10px]">↗</span>
+                      </a>
+                    </div>
                   </div>
 
                   <LogNoteEditor
@@ -4727,9 +4791,12 @@ function App() {
                               <span className="inline-flex items-center max-w-[70%] font-bold text-white px-2.5 py-0.5 rounded-full leading-none" style={{ background: pillBackground, fontSize: '11px' }}>
                                 <span className="block truncate">{getPillLabel(log)}</span>
                               </span>
-                              <a href={notionPageUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-bold shrink-0" style={{ color: 'var(--theme-primary)' }}>
-                                Open in Notion ↗
-                              </a>
+                              <div className="flex items-center gap-2 shrink-0">
+                                {tenantId && <RemoveEntryButton onRemove={() => handleRemoveEntry(log)} />}
+                                <a href={notionPageUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-bold shrink-0" style={{ color: 'var(--theme-primary)' }}>
+                                  Open in Notion ↗
+                                </a>
+                              </div>
                             </div>
                             <LogTitleEditor log={log} tenantId={tenantId} onSaved={handleTitleSaved} className="text-sm font-semibold" />
                             <LogNoteEditor
@@ -5168,6 +5235,28 @@ function App() {
           );
         })()}
       </div>
+
+      {/* ENTRY REMOVED / RESTORED -- a short message at the bottom, with Undo
+          while the removed entry can still be put straight back. */}
+      {entryToast && (
+        <div
+          role="status"
+          style={{ backgroundColor: 'var(--theme-card)', borderColor: entryToast.isError ? '#e11d48' : 'var(--theme-primary)', color: 'var(--theme-text)' }}
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] flex items-center gap-3 px-4 py-2.5 rounded-lg border shadow-xl text-sm"
+        >
+          <span className="min-w-0 break-words">{entryToast.message}</span>
+          {entryToast.removed && (
+            <button
+              onClick={() => handleUndoRemove(entryToast.removed)}
+              style={{ color: 'var(--theme-primary)' }}
+              className="shrink-0 font-bold cursor-pointer hover:opacity-80"
+            >
+              Undo
+            </button>
+          )}
+          <button onClick={() => setEntryToast(null)} aria-label="Dismiss" className="shrink-0 opacity-50 hover:opacity-100 cursor-pointer">✕</button>
+        </div>
+      )}
 
       {/* SETTINGS MODAL */}
       {showSettings && (
