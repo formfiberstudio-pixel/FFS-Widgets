@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import exifr from 'exifr';
 import { resizeImageForUpload } from './imageResize.js';
 import { isNativePhotoPickerSupported, queryPhotosByDateRange, getPhotoThumbnail, getPhotoData } from './nativePhotoPicker.js';
+import { canReadClipboardImages, imageFilesFromClipboardData, readClipboardImageFiles } from './clipboardImages.js';
 
 function toDateInputValue(date) {
   const d = new Date(date);
@@ -458,7 +459,9 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     setStep('review');
   };
 
-  const photoFromFile = async (file, exifOverrideDate) => {
+  // `pasted` marks an image that came off the clipboard (a screenshot, a
+  // copied picture): it has no capture date of its own, but it is from now.
+  const photoFromFile = async (file, exifOverrideDate, { pasted = false } = {}) => {
     const previewUrl = URL.createObjectURL(file);
     let date = new Date();
     let hasReliableDate = false;
@@ -514,8 +517,10 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         // above could read) -- can't judge whether it belongs here, so
         // instead of rejecting it outright it defaults into the requested
         // window: the single day for Day view, the first day of the week
-        // for Week view.
-        dateStr = fixedDateRange.start;
+        // for Week view. A pasted image is dated today instead when today is
+        // inside that window.
+        const today = toDateInputValue(new Date());
+        dateStr = pasted && today >= fixedDateRange.start && today <= fixedDateRange.end ? today : fixedDateRange.start;
       }
     }
 
@@ -529,12 +534,46 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     };
   };
 
-  const handleFiles = async (fileList) => {
+  const handleFiles = async (fileList, options) => {
     const files = Array.from(fileList).filter((f) => f.type.startsWith('image/'));
-    const results = await Promise.all(files.map((file) => photoFromFile(file)));
+    const results = await Promise.all(files.map((file) => photoFromFile(file, undefined, options)));
     const newPhotos = results.filter(Boolean);
     if (fixedDateRange) setSkippedOutOfRangeCount((prev) => prev + (results.length - newPhotos.length));
     setPhotos((prev) => [...prev, ...newPhotos]);
+  };
+
+  // Pasting a copied image (Ctrl/Cmd+V) adds it as a photo, like picking a
+  // file does -- while photos can be added (the review step), wherever
+  // focus is. A paste of text is left alone, so typing a new project's
+  // name still pastes normally. handleFilesRef always points at the
+  // current render's handleFiles, so the listener never uses a stale date range.
+  const handleFilesRef = useRef(handleFiles);
+  handleFilesRef.current = handleFiles;
+  useEffect(() => {
+    if (step !== 'review') return undefined;
+    const onPaste = (e) => {
+      const files = imageFilesFromClipboardData(e.clipboardData);
+      if (!files.length) return;
+      e.preventDefault();
+      setPasteHint('');
+      handleFilesRef.current(files, { pasted: true });
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [step]);
+
+  // The Paste button: the same, from the async Clipboard API (not every
+  // browser has it, and it needs permission), with a hint when it can't.
+  const [pasteHint, setPasteHint] = useState('');
+  const pasteFromClipboard = async () => {
+    setPasteHint('');
+    try {
+      const files = await readClipboardImageFiles();
+      if (files.length === 0) { setPasteHint('There’s no image on the clipboard — copy one first.'); return; }
+      await handleFiles(files, { pasted: true });
+    } catch {
+      setPasteHint('Couldn’t read the clipboard here — press Ctrl/⌘+V to paste instead.');
+    }
   };
 
   // Photos that arrived via the Android share-target landing (App.jsx) are
@@ -908,16 +947,28 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         />
 
         <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
-          <button
-            onClick={() => {
-              if (isNativePhotoPickerSupported() && fixedDateRange) openNativePicker();
-              else fileInputRef.current?.click();
-            }}
-            style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
-            className="text-xs font-semibold px-3 py-2 rounded-lg border cursor-pointer shrink-0"
-          >
-            + Add Photos
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => {
+                if (isNativePhotoPickerSupported() && fixedDateRange) openNativePicker();
+                else fileInputRef.current?.click();
+              }}
+              style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
+              className="text-xs font-semibold px-3 py-2 rounded-lg border cursor-pointer shrink-0"
+            >
+              + Add Photos
+            </button>
+            {canReadClipboardImages() && (
+              <button
+                onClick={pasteFromClipboard}
+                title="Add the image you have copied (or press Ctrl/⌘+V)"
+                style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
+                className="text-xs font-semibold px-3 py-2 rounded-lg border cursor-pointer shrink-0"
+              >
+                Paste
+              </button>
+            )}
+          </div>
           <button
             onClick={startUpload}
             disabled={photos.length === 0 || unassignedCount > 0}
@@ -928,6 +979,10 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
             Upload {photos.length}
           </button>
         </div>
+
+        {pasteHint && (
+          <div role="status" className="shrink-0 mb-2 text-xs" style={{ color: 'var(--theme-secondary)' }}>{pasteHint}</div>
+        )}
 
         {skippedOutOfRangeCount > 0 && (
           <div className="shrink-0 mb-2 text-xs italic opacity-60">
@@ -1135,7 +1190,19 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
               className="shrink-0 mb-3 border-2 border-dashed rounded-lg lf-frame p-4 text-center cursor-pointer transition-colors"
             >
               <div className="text-sm font-semibold opacity-70">+ Add Photos</div>
-              <div className="text-xs opacity-50 mt-1">Click to browse, or drag and drop -- dates are read from each photo automatically</div>
+              <div className="text-xs opacity-50 mt-1">Click to browse, drag and drop, or paste an image (Ctrl/⌘+V) -- dates are read from each photo automatically</div>
+              {canReadClipboardImages() && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); pasteFromClipboard(); }}
+                  title="Add the image you have copied (or press Ctrl/⌘+V)"
+                  style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }}
+                  className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-lg border cursor-pointer"
+                >
+                  Paste image
+                </button>
+              )}
+              {pasteHint && <div role="status" className="text-xs mt-2" style={{ color: 'var(--theme-secondary)' }}>{pasteHint}</div>}
             </div>
 
             <div onMouseDown={handleGridMouseDown} className="flex-1 overflow-y-auto min-h-0 pr-1">

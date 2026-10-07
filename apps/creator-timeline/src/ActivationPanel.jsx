@@ -557,17 +557,6 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                             <div className="space-y-1">
                               <div className="flex items-center gap-1.5 min-w-0">
                                 <select
-                                  value={source.topicFacetKey}
-                                  onChange={(e) => updateSource(source.id, 'topicFacetKey', e.target.value)}
-                                  className="flex-1 min-w-0 px-2 py-1 rounded border text-[11px] outline-none"
-                                  style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.text }}
-                                >
-                                  <option value="">Topic: Auto (recommended)</option>
-                                  {facetCandidates[source.label].map(f => (
-                                    <option key={f.key} value={f.key}>Topic: {f.label} ({f.type})</option>
-                                  ))}
-                                </select>
-                                <select
                                   value={source.typeFacetKey}
                                   onChange={(e) => updateSource(source.id, 'typeFacetKey', e.target.value)}
                                   className="flex-1 min-w-0 px-2 py-1 rounded border text-[11px] outline-none"
@@ -578,13 +567,24 @@ export default function ActivationPanel({ embedded = false, onActivated, onConti
                                     <option key={f.key} value={f.key}>Type: {f.label} ({f.type})</option>
                                   ))}
                                 </select>
+                                <select
+                                  value={source.topicFacetKey}
+                                  onChange={(e) => updateSource(source.id, 'topicFacetKey', e.target.value)}
+                                  className="flex-1 min-w-0 px-2 py-1 rounded border text-[11px] outline-none"
+                                  style={{ backgroundColor: colors.bg, borderColor: colors.border, color: colors.text }}
+                                >
+                                  <option value="">Topic: Auto (recommended)</option>
+                                  {facetCandidates[source.label].map(f => (
+                                    <option key={f.key} value={f.key}>Topic: {f.label} ({f.type})</option>
+                                  ))}
+                                </select>
                               </div>
                               <p className="text-[10px]" style={{ color: colors.faint }}>
                                 Overrides automatic detection for this database. Leave both on Auto to keep the current behavior.
                               </p>
                             </div>
                           ) : (
-                            <p className="text-[10px]" style={{ color: colors.faint }}>Sync at least once to enable manual topic/type selection here.</p>
+                            <p className="text-[10px]" style={{ color: colors.faint }}>Sync at least once to enable manual type/topic selection here.</p>
                           )
                         )}
                       </div>
