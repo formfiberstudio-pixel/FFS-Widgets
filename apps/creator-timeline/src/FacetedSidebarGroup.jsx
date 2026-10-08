@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { getYearFacetGroups, cycleVisibility, isIsolateTarget, isDimmedByOtherIsolate } from './facets.js';
+import { filterFacetGroups } from './projectSearch.js';
 
 const IconEye = () => (
   <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -48,10 +49,13 @@ export default function FacetedSidebarGroup({
   isolatedTarget,
   setIsolatedTarget,
   isLogInActiveView,
+  searchTerm = '',
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState({}); // key: `${source}::${facetKey}`
 
-  const groups = getYearFacetGroups(year, timelineLogs, facetSchemas, isLogInActiveView);
+  // With a search going, only the values that match it (see projectSearch.js).
+  const allGroups = getYearFacetGroups(year, timelineLogs, facetSchemas, isLogInActiveView);
+  const groups = filterFacetGroups(allGroups, searchTerm);
   const sources = Object.keys(groups);
   if (sources.length === 0) return null;
 
@@ -70,7 +74,9 @@ export default function FacetedSidebarGroup({
     });
   };
 
-  const showSourceHeaders = sources.length > 1;
+  // Whether to name each database depends on how many there are, not on how
+  // many a search left.
+  const showSourceHeaders = Object.keys(allGroups).length > 1;
 
   return (
     <>
@@ -103,7 +109,8 @@ export default function FacetedSidebarGroup({
             )}
             {!isSourceHidden && Object.entries(facetGroupsForSource).map(([facetKey, { label, values }]) => {
               const groupKey = `${source}::${facetKey}`;
-              const isCollapsed = collapsedGroups[groupKey] === true;
+              // A search shows what it found, whatever was folded away.
+              const isCollapsed = collapsedGroups[groupKey] === true && !searchTerm;
               const activeSelections = selectedFacetFilters[source]?.[facetKey] || [];
               const sortedValues = [...values.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 

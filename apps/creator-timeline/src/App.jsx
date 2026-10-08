@@ -27,6 +27,7 @@ import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
 import RemoveEntryButton from './RemoveEntryButton.jsx';
 import { isLongBreak, shouldAutoSync } from './autoSync.js';
+import { filterFacetGroups, filterProjectTree, normalizeSearch } from './projectSearch.js';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -170,6 +171,13 @@ const IconTheme = () => (
 );
 
 const IconScale = () => (
+  <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="11" cy="11" r="8"/>
+    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+  </svg>
+);
+
+const IconSearch = () => (
   <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="11" cy="11" r="8"/>
     <line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -782,7 +790,6 @@ function WeekDayColumn({
   weekCardHeight,
   cardRadius,
   hoveredProjectTitle,
-  setHoveredProjectTitle,
   setSelectedLogModal,
   getDotColor,
   getPillBackground,
@@ -890,9 +897,12 @@ function WeekDayColumn({
               <div 
                 key={log.id} 
                 onClick={() => setSelectedLogModal({ dateObj: slot.dateObj, logs })}
-                onMouseEnter={() => setHoveredProjectTitle(log.Projects || 'Untitled Project')}
-                onMouseLeave={() => setHoveredProjectTitle(null)}
-                style={{ 
+                // No hover highlight here: scrolling through the days moves
+                // cards under a resting pointer, and each one dimming the
+                // rest and swelling made that hard to follow. A project is
+                // still highlighted deliberately -- from the summary below
+                // or the project list.
+                style={{
                   height: `${weekCardHeight}px`,
                   backgroundColor: 'var(--theme-bg)',
                   borderColor: isHoveredProject ? 'var(--theme-secondary)' : 'var(--theme-border)'
@@ -998,6 +1008,12 @@ const YEAR_GALLERY_THUMB_DEFAULT = 104;
 const YEAR_GALLERY_FRAME_MIN = 56;
 const YEAR_GALLERY_FRAME_MAX = 320;
 const YEAR_GALLERY_FRAME_DEFAULT = 104;
+// The Day page's entry cards wrap into as many columns as fit; this is the
+// narrowest a card may be (set with the size slider in the page's header). The
+// photo frame inside scales with it, from the default.
+const DAY_CARD_WIDTH_MIN = 240;
+const DAY_CARD_WIDTH_MAX = 720;
+const DAY_CARD_WIDTH_DEFAULT = 340;
 // How long the pointer must rest on a month or week before the Year view's
 // gallery follows it -- long enough that crossing cells on the way to the
 // gallery doesn't count, short enough to feel like a quick look.
@@ -1057,6 +1073,11 @@ function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= MOBILE_BREAKPOINT);
+  // What is typed in the project list's search box. It only narrows what the
+  // list shows (see projectSearch.js) -- not the calendar, and not which
+  // projects are selected -- and starts empty each visit.
+  const [projectSearch, setProjectSearch] = useState('');
+  const searchTerm = normalizeSearch(projectSearch);
   // The header's "more" button holds Settings / Import Photos (and Projects on
   // a phone) in a small dropdown, on phone and desktop alike. Sync stays out
   // of it, beside the Today dot, since it's used constantly.
@@ -1638,17 +1659,27 @@ function App() {
   const [isResizingDayModalHeight, setIsResizingDayModalHeight] = useState(false);
   const dayModalDragStartY = useRef(0);
   const dayModalDragStartHeight = useRef(210);
+  // On the Day page the frame also grows and shrinks with the card (see
+  // dayCardWidth): the saved height is the one at the default card width, and
+  // a drag is measured against the scaled frame the pointer is actually on.
+  const dayModalDragScale = useRef(1);
+  const [dayCardWidth, setDayCardWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('notionWidgetDayCardWidth'));
+    return saved >= DAY_CARD_WIDTH_MIN && saved <= DAY_CARD_WIDTH_MAX ? saved : DAY_CARD_WIDTH_DEFAULT;
+  });
 
   useEffect(() => {
     localStorage.setItem('notionWidgetDayModalImageHeight', dayModalImageHeight);
   }, [dayModalImageHeight]);
+  useEffect(() => { localStorage.setItem('notionWidgetDayCardWidth', String(dayCardWidth)); }, [dayCardWidth]);
 
-  const handleMouseDownDayModalResize = (e) => {
+  const handleMouseDownDayModalResize = (e, scale = 1) => {
     e.preventDefault();
     e.stopPropagation(); // the card itself is clickable (sets the thumbnail) -- dragging the handle shouldn't trigger that
     setIsResizingDayModalHeight(true);
     dayModalDragStartY.current = e.clientY;
     dayModalDragStartHeight.current = dayModalImageHeight;
+    dayModalDragScale.current = scale;
     document.body.style.cursor = 'ns-resize';
     document.body.style.userSelect = 'none';
   };
@@ -1656,7 +1687,7 @@ function App() {
   useEffect(() => {
     const handleMouseMove = (e) => {
       if (!isResizingDayModalHeight) return;
-      const deltaY = e.clientY - dayModalDragStartY.current;
+      const deltaY = (e.clientY - dayModalDragStartY.current) / dayModalDragScale.current;
       const newHeight = Math.min(Math.max(dayModalDragStartHeight.current + deltaY, 70), 400);
       setDayModalImageHeight(newHeight);
     };
@@ -2237,6 +2268,11 @@ function App() {
     if (projectColorMap[projName]) {
       return projectColorMap[projName];
     }
+    // Not in the colour map: the category's own custom colour, the same
+    // fallback the project list's dots use, before Notion's colour for it.
+    if (log.projectType && customCategoryColors[log.projectType]) {
+      return customCategoryColors[log.projectType];
+    }
     if (log.projectTypeColor && NOTION_COLOR_MAP[log.projectTypeColor]) {
       return NOTION_COLOR_MAP[log.projectTypeColor];
     }
@@ -2294,10 +2330,19 @@ function App() {
     return log?.Projects;
   };
 
+  // The day's log that belongs to one of these projects. A tagged (faceted)
+  // entry can carry the same name in its synthesized Projects field -- a
+  // doodle tagged with a knitting project, say -- but its colour is its own
+  // tag's, not the project's, so a project's own entry is preferred.
+  const findProjectLog = (logs, titles) => {
+    const named = (l) => titles.includes(l.Projects || 'Untitled Project');
+    return logs.find((l) => !l.facets && named(l)) || logs.find(named);
+  };
+
   const getDisplayDotColor = (logs, dateObj) => {
     if (!logs || logs.length === 0) return currentThemeColors.border;
     if (hoveredProjectTitle) {
-      const matchingLog = logs.find(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
+      const matchingLog = findProjectLog(logs, [hoveredProjectTitle]);
       if (matchingLog) {
         return getDotColor(matchingLog);
       }
@@ -2393,7 +2438,7 @@ function App() {
     const defaultLog = logs.find((l) => !(l.minutes > 0) || l.imageUrl) || logs[0];
 
     if (hoveredProjectTitle) {
-      const matchingProjectLog = logs.find(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
+      const matchingProjectLog = findProjectLog(logs, [hoveredProjectTitle]);
       if (matchingProjectLog) {
         return { primaryLog: matchingProjectLog, isHalftoned: false };
       } else {
@@ -2403,8 +2448,13 @@ function App() {
       }
     }
 
+    // With projects selected, the day stands for them (their colour, their
+    // photo) rather than for whichever entry happens to come first -- an
+    // entry from a tagged source ignores the selection, so it can share a day.
+    const selectedLog = selectedProjectFilters.length > 0 ? findProjectLog(logs, selectedProjectFilters) : null;
     const overrideId = thumbnailOverrides[dateKey];
-    const primaryLog = overrideId ? logs.find(l => l.id === overrideId) || defaultLog : defaultLog;
+    const overrideLog = overrideId ? logs.find(l => l.id === overrideId) : null;
+    const primaryLog = overrideLog || selectedLog || defaultLog;
     return { primaryLog, isHalftoned: false };
   };
 
@@ -3125,6 +3175,11 @@ function App() {
     const currentThumbId = thumbnailOverrides[dateKey] || (logs[0]?.id);
     const specDay = getSpecialDayForDate(dateObj, specialDays);
 
+    // The Day page wraps its entries over the page, sized with the slider in
+    // its header; the phone's takeover keeps one card at a time to swipe.
+    const dayImageScale = asPage ? dayCardWidth / DAY_CARD_WIDTH_DEFAULT : 1;
+    const dayImageHeight = dayModalImageHeight * dayImageScale;
+
     const scrollCarousel = (direction) => {
       if (!modalCarouselRef.current) return;
       const firstChild = modalCarouselRef.current.firstElementChild;
@@ -3153,11 +3208,31 @@ function App() {
             </span>
           )}
         </div>
-        {trailing}
+        {asPage ? (
+          <div className="flex items-center gap-3 shrink-0">
+            {logs.length > 0 && (
+              // Card size: how wide the entries are -- and so how many fit
+              // across -- like the Year gallery's photo size.
+              <input
+                type="range"
+                min={DAY_CARD_WIDTH_MIN}
+                max={DAY_CARD_WIDTH_MAX}
+                step={20}
+                value={dayCardWidth}
+                onChange={(e) => setDayCardWidth(Number(e.target.value))}
+                title="Entry card size"
+                aria-label="Entry card size"
+                className="w-24 h-1 cursor-pointer"
+                style={{ accentColor: 'var(--theme-primary)' }}
+              />
+            )}
+            {trailing}
+          </div>
+        ) : trailing}
       </div>
-      
-      <div className={`relative flex-1 flex p-6 sm:p-8 ${asPage ? 'items-start overflow-y-auto' : 'items-center overflow-hidden'}`}>
-        {logs.length > 1 && (
+
+      <div className={`relative flex-1 min-h-0 flex p-6 sm:p-8 ${asPage ? 'items-start overflow-y-auto' : 'items-center overflow-hidden'}`}>
+        {!asPage && logs.length > 1 && (
           <button 
             onClick={() => scrollCarousel('left')}
             style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
@@ -3170,10 +3245,12 @@ function App() {
           </button>
         )}
 
-        <div 
-          ref={modalCarouselRef} 
-          className={`w-full flex gap-6 overflow-x-auto scroll-smooth snap-x snap-mandatory select-none ${asPage ? 'items-start' : 'h-full items-stretch'}`}
-          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        <div
+          ref={modalCarouselRef}
+          className={asPage ? 'w-full grid gap-6 items-start content-start select-none' : 'w-full flex gap-6 overflow-x-auto scroll-smooth snap-x snap-mandatory select-none h-full items-stretch'}
+          style={asPage
+            ? { gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${dayCardWidth}px), 1fr))` }
+            : { scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
           {logs.length > 0 ? (
             logs.map((log) => {
@@ -3191,11 +3268,11 @@ function App() {
                     backgroundColor: 'var(--theme-bg)',
                     borderColor: isThumbnail ? 'var(--theme-secondary)' : 'var(--theme-border)'
                   }}
-                  className={`shrink-0 w-full sm:w-[calc((100%-24px)/2)] lg:w-[calc((100%-48px)/3)] snap-start ${asPage ? 'h-auto' : 'h-full my-auto'} flex flex-col p-5 sm:p-6 border rounded-xl lf-frame gap-4 shadow-sm cursor-pointer transition-all ${
+                  className={`${asPage ? 'min-w-0 h-auto' : 'shrink-0 w-full sm:w-[calc((100%-24px)/2)] lg:w-[calc((100%-48px)/3)] snap-start h-full my-auto'} flex flex-col p-5 sm:p-6 border rounded-xl lf-frame gap-4 shadow-sm cursor-pointer transition-all ${
                     isThumbnail ? 'ring-2 ring-[var(--theme-secondary)]' : ''
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     {log.facets ? (
                       <div className="flex flex-wrap items-center gap-1 min-w-0">
                         {Object.values(log.facets).flat().map((v, i) => (
@@ -3216,7 +3293,7 @@ function App() {
                     </span>
                   </div>
 
-                  <div className="relative shrink-0" style={{ height: `${dayModalImageHeight}px` }}>
+                  <div className="relative shrink-0" style={{ height: `${dayImageHeight}px` }}>
                     {log.imageUrl ? (
                       <img
                         src={log.imageUrl}
@@ -3236,7 +3313,7 @@ function App() {
                     )}
 
                     <div
-                      onMouseDown={handleMouseDownDayModalResize}
+                      onMouseDown={(e) => handleMouseDownDayModalResize(e, dayImageScale)}
                       onClick={(e) => e.stopPropagation()}
                       className={`group/handle absolute left-0 right-0 bottom-0 translate-y-1/2 z-30 h-6 flex items-center justify-between cursor-ns-resize transition-opacity duration-150 ${
                         isResizingDayModalHeight ? 'opacity-100' : 'opacity-0 hover:opacity-100'
@@ -3254,7 +3331,7 @@ function App() {
                       }`} style={{ backgroundColor: 'var(--theme-primary)' }}>
                         <div className="text-[9px] font-black px-3 py-0.5 rounded-full shadow-lg flex items-center gap-1.5 transition-transform" style={{ backgroundColor: 'var(--theme-primary)', color: 'var(--theme-on-primary)' }}>
                           <span>↕ PULL TO RESIZE</span>
-                          <span className="font-mono">({Math.round(dayModalImageHeight)}px)</span>
+                          <span className="font-mono">({Math.round(dayImageHeight)}px)</span>
                         </div>
                       </div>
 
@@ -3295,14 +3372,14 @@ function App() {
               );
             })
           ) : (
-            <div className="flex items-center justify-center text-center py-12 w-full italic text-sm opacity-50">
+            <div className="flex items-center justify-center text-center py-12 w-full col-span-full italic text-sm opacity-50">
               No logged actions for this target date.
             </div>
           )}
         </div>
 
-        {logs.length > 1 && (
-          <button 
+        {!asPage && logs.length > 1 && (
+          <button
             onClick={() => scrollCarousel('right')}
             style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}
             className={`absolute right-3 z-30 w-10 h-10 rounded-full flex items-center justify-center border shadow-md transition-all cursor-pointer hover:border-[var(--theme-primary)] ${asPage ? 'top-1/2 -translate-y-1/2' : ''}`}
@@ -3748,6 +3825,46 @@ function App() {
                 </button>
               </div>
 
+              {/* Search the list below by project, category or database name
+                  (every word has to match, in any order). Matches open their
+                  groups on their own while it is in use; clearing it puts the
+                  list back as it was. */}
+              <div className="relative mb-2">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 opacity-50 pointer-events-none"><IconSearch /></span>
+                <input
+                  type="text"
+                  inputMode="search"
+                  enterKeyHint="search"
+                  value={projectSearch}
+                  onChange={(e) => setProjectSearch(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Escape') setProjectSearch(''); }}
+                  placeholder="Search projects"
+                  aria-label="Search projects"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  style={{
+                    backgroundColor: 'var(--theme-bg)',
+                    borderColor: 'var(--theme-border)',
+                    color: 'var(--theme-text)',
+                    // 16px on a phone: smaller and iOS zooms the page in on focus.
+                    fontSize: isMobile ? '16px' : `${Math.round(12 * scaleFactor)}px`,
+                  }}
+                  className="w-full rounded border pl-8 pr-7 py-1.5 outline-none transition-colors focus:border-[var(--theme-primary)]"
+                />
+                {projectSearch && (
+                  <button
+                    onClick={() => setProjectSearch('')}
+                    title="Clear the search"
+                    aria-label="Clear the search"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded-full cursor-pointer text-[11px] leading-none opacity-60 hover:opacity-100"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
               {/* Quick access to the same toggle as Settings > View Scale's
                   "Filter Sidebar to Visible Range" -- only shown for Month
                   and Week, the two views activeViewRange (below) actually
@@ -3797,10 +3914,13 @@ function App() {
             
             <div className="flex-1 overflow-y-auto pr-1 space-y-4 min-h-0">
               {(() => {
-                const sourceEntries = Object.entries(groupedBySource);
-                const showSourceHeaders = sourceEntries.length > 1;
+                const sourceEntries = Object.entries(filterProjectTree(groupedBySource, searchTerm));
+                // Whether to name each database depends on how many there are,
+                // not on how many the search left.
+                const showSourceHeaders = Object.keys(groupedBySource).length > 1;
                 return sourceEntries.map(([source, typesForSource]) => {
-                  const isSourceHidden = showSourceHeaders && collapsedSources[source] === true;
+                  // A search shows what it found, whatever was folded away.
+                  const isSourceHidden = showSourceHeaders && collapsedSources[source] === true && !searchTerm;
                   const sourceTarget = { level: 'source', source };
                   const isSourceIsolated = isIsolateTarget(isolatedTarget, sourceTarget);
                   const sourceDimmedByIsolate = isDimmedByOtherIsolate(isolatedTarget, sourceTarget);
@@ -3835,7 +3955,7 @@ function App() {
                         </div>
                       )}
                       {!isSourceHidden && Object.entries(typesForSource).map(([type, projs]) => {
-                        const isHidden = collapsedTypes[`${source}::${type}`] === true;
+                        const isHidden = collapsedTypes[`${source}::${type}`] === true && !searchTerm;
                         const typeKey = `${source}::${type}`;
                         const typeTarget = { level: 'type', source, type };
                         const isTypeIsolated = isIsolateTarget(isolatedTarget, typeTarget);
@@ -3967,7 +4087,16 @@ function App() {
                 isolatedTarget={isolatedTarget}
                 setIsolatedTarget={setIsolatedTarget}
                 isLogInActiveView={isLogInActiveView}
+                searchTerm={searchTerm}
               />
+              {searchTerm
+                && Object.keys(filterProjectTree(groupedBySource, searchTerm)).length === 0
+                && Object.keys(filterFacetGroups(getYearFacetGroups(year, timelineLogs, facetSchemas, isLogInActiveView), searchTerm)).length === 0
+                && (
+                <div className="py-6 text-center text-xs italic opacity-50">
+                  No projects match &ldquo;{projectSearch.trim()}&rdquo;.
+                </div>
+              )}
             </div>
           </aside>
         )}
@@ -4767,7 +4896,6 @@ function App() {
                       weekCardHeight={weekCardHeight}
                       cardRadius={cardRadius}
                       hoveredProjectTitle={hoveredProjectTitle}
-                      setHoveredProjectTitle={setHoveredProjectTitle}
                       setSelectedLogModal={setSelectedLogModal}
                       getDotColor={getDotColor}
                       getPillBackground={getPillBackground}
