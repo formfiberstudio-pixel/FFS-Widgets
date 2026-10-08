@@ -55,7 +55,7 @@ test('pausing a paused timer, or resuming a running one, changes nothing', () =>
 });
 
 test('an operation that needs a timer finds none: the answer is no timer, not an error', () => {
-  for (const op of ['pause', 'resume', 'addNote', 'removeNote', 'addPhoto', 'removePhoto']) {
+  for (const op of ['pause', 'resume', 'addNote', 'editNote', 'removeNote', 'addPhoto', 'removePhoto']) {
     assert.deepEqual(applyTimerOp(null, op, { text: 'x', id: photoId(1), at: 1 }, T0), { timer: null }, op);
   }
   assert.deepEqual(applyTimerOp(null, 'get', {}, T0), { timer: null });
@@ -82,6 +82,39 @@ test('removing a note matches on its time and text', () => {
   timer = applyTimerOp(timer, 'addNote', { text: 'drop' }, T0 + 2000).timer;
   assert.deepEqual(applyTimerOp(timer, 'removeNote', { at: T0 + 2000, text: 'drop' }, T0 + 3000).timer.notes.map((n) => n.text), ['keep']);
   assert.equal(applyTimerOp(timer, 'removeNote', { at: T0 + 2000, text: 'wrong text' }, T0 + 3000).timer, timer);
+});
+
+test('editing a note rewrites its words and keeps when it was written', () => {
+  let timer = started();
+  timer = applyTimerOp(timer, 'addNote', { text: 'first draft' }, T0 + 1000).timer;
+  timer = applyTimerOp(timer, 'addNote', { text: 'second' }, T0 + 2000).timer;
+  const edited = applyTimerOp(timer, 'editNote', { at: T0 + 1000, text: 'first draft', newText: '  final\n wording ' }, T0 + 3000).timer;
+  assert.deepEqual(edited.notes, [{ at: T0 + 1000, text: 'final wording' }, { at: T0 + 2000, text: 'second' }]);
+  assert.equal(edited.version, timer.version + 1);
+  assert.equal(edited.updatedAt, T0 + 3000);
+});
+
+test('an edit that changes nothing, or whose note is gone, leaves the timer as it was', () => {
+  let timer = started();
+  timer = applyTimerOp(timer, 'addNote', { text: 'same' }, T0 + 1000).timer;
+  assert.equal(applyTimerOp(timer, 'editNote', { at: T0 + 1000, text: 'same', newText: ' same ' }, T0 + 2000).timer, timer);
+  // the note was already changed or removed on another device
+  assert.equal(applyTimerOp(timer, 'editNote', { at: T0 + 1000, text: 'older wording', newText: 'x' }, T0 + 2000).timer, timer);
+  assert.equal(applyTimerOp(timer, 'editNote', { at: T0 + 999, text: 'same', newText: 'x' }, T0 + 2000).timer, timer);
+});
+
+test('a note can\'t be edited to nothing', () => {
+  let timer = started();
+  timer = applyTimerOp(timer, 'addNote', { text: 'keep me' }, T0 + 1000).timer;
+  assert.throws(() => applyTimerOp(timer, 'editNote', { at: T0 + 1000, text: 'keep me', newText: '   ' }, T0 + 2000), TimerOpError);
+  assert.throws(() => applyTimerOp(timer, 'editNote', { at: T0 + 1000, text: 'keep me', newText: 7 }, T0 + 2000), TimerOpError);
+});
+
+test('an edited note is cut to the length limit, as a new one is', () => {
+  let timer = started();
+  timer = applyTimerOp(timer, 'addNote', { text: 'short' }, T0 + 1000).timer;
+  const edited = applyTimerOp(timer, 'editNote', { at: T0 + 1000, text: 'short', newText: 'x'.repeat(2000) }, T0 + 2000).timer;
+  assert.equal(edited.notes[0].text.length, 500);
 });
 
 test('photos are listed by id, once each, up to the limit', () => {

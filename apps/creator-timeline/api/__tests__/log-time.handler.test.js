@@ -280,6 +280,25 @@ test('timer: start, note, pause and resume are held on the server, and a second 
   assert.equal(storedTimer().version, 4); // start, note, pause, resume (looking changes nothing)
 });
 
+test('timer: a note can be reworded from any device, and the stored timer follows', async () => {
+  reset();
+  await timerCall('start', { project: PROJECT });
+  const noted = await timerCall('addNote', { text: 'first draft' });
+  const { at, text } = noted.body.timer.notes[0];
+
+  const edited = await timerCall('editNote', { at, text, newText: 'the final wording' });
+  assert.equal(edited.statusCode, 200, JSON.stringify(edited.body));
+  assert.deepEqual(edited.body.timer.notes, [{ at, text: 'the final wording' }]);
+  assert.deepEqual(storedTimer().notes, [{ at, text: 'the final wording' }]);
+
+  // an edit made from the old wording (another device got there first) changes nothing
+  const stale = await timerCall('editNote', { at, text, newText: 'too late' });
+  assert.deepEqual(stale.body.timer.notes, [{ at, text: 'the final wording' }]);
+
+  // and a note can't be reworded to nothing
+  assert.equal((await timerCall('editNote', { at, text: 'the final wording', newText: '  ' })).statusCode, 400);
+});
+
 test('timer: starting while one runs hands back the running timer', async () => {
   reset();
   const first = await timerCall('start', { project: PROJECT });

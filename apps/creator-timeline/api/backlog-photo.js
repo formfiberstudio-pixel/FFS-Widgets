@@ -65,7 +65,7 @@ const NOTION_VERSION = '2026-03-11';
 //
 // And action: 'timer' -- the RUNNING timer, held here (in Redis) rather than
 // in one browser so every device sees it and can add notes and photos to it:
-// get / start / adopt / pause / resume / addNote / removeNote / addPhoto /
+// get / start / adopt / pause / resume / addNote / editNote / removeNote / addPhoto /
 // getPhoto / removePhoto / clear (see _lib/timerState.js). Stopping saves it
 // with logTime, which also claims the session so two devices stopping at the
 // same moment make one entry, and clears the timer.

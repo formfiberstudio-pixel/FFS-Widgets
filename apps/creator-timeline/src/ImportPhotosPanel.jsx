@@ -3,6 +3,8 @@ import exifr from 'exifr';
 import { resizeImageForUpload } from './imageResize.js';
 import { isNativePhotoPickerSupported, queryPhotosByDateRange, getPhotoThumbnail, getPhotoData } from './nativePhotoPicker.js';
 import { canReadClipboardImages, imageFilesFromClipboardData, readClipboardImageFiles } from './clipboardImages.js';
+import { edgeScrollSpeed, idsBetween, idsInBox, shiftRange } from './dragSelect.js';
+import { freshSharedRecords, sharedPhotoFromRecord } from './sharedPhotos.js';
 
 function toDateInputValue(date) {
   const d = new Date(date);
@@ -239,7 +241,7 @@ function useTouchReviewLayout() {
   return touch;
 }
 
-export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, fixedDateRange, projectColorMap, onStepChange }) {
+export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, sharedNativePhotos, onConsumedSharedNativePhotos, fixedDateRange, projectColorMap, onStepChange }) {
   // The phone's review layout (a strip of the current date block's photos over
   // the project list) is used on a narrow window AND on a touch-first device
   // such as a tablet, whatever its width -- an iPad opens the web version, but
@@ -687,6 +689,42 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, sharedPhotos]);
 
+  // Photos shared to the Android app from the phone's gallery (Share > Creator
+  // Timeline, see SharedPhotosPlugin.java): added to the review list with the
+  // date each was taken -- read natively from the photo itself -- ready to be
+  // given a project, along with anything already in the list. They are handed
+  // over once; one that arrives while an upload runs waits for it to finish.
+  useEffect(() => {
+    if (!sharedNativePhotos || sharedNativePhotos.length === 0) return;
+    if (step === 'uploading') return;
+    const incoming = sharedNativePhotos;
+    onConsumedSharedNativePhotos?.();
+    const startingOver = step === 'done';
+    if (startingOver) resetToStart();
+    else if (step !== 'review') setStep('review');
+    const staged = startingOver ? [] : photos;
+    const added = freshSharedRecords(incoming, staged.map((p) => p.nativeUri).filter(Boolean))
+      .map((record) => sharedPhotoFromRecord(record, toDateInputValue));
+    if (added.length === 0) return;
+    setPhotos((prev) => [...(startingOver ? [] : prev), ...added]);
+
+    // Pictures are read a few at a time -- a big batch is not asked for all at once.
+    const queue = [...added];
+    const worker = async () => {
+      while (queue.length > 0) {
+        const next = queue.shift();
+        try {
+          const thumbnail = await getPhotoThumbnail(next.nativeUri);
+          setPhotos((prev) => prev.map((p) => (p.id === next.id ? { ...p, previewUrl: thumbnail } : p)));
+        } catch {
+          // The blank tile stays; the photo can still be given a project and uploaded.
+        }
+      }
+    };
+    Promise.all([worker(), worker(), worker(), worker()]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, sharedNativePhotos]);
+
   const updatePhotoDate = (id, newDate) => {
     setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, date: newDate, hasExif: false } : p)));
   };
@@ -697,6 +735,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
   // Mobile tap-to-assign -- see the state comment above for the model.
   const handlePhotoTap = (id) => {
+    if (Date.now() < suppressTapUntilRef.current) return; // the lift that ended a drag
     if (armedProjectKey) {
       updatePhotoProject(id, armedProjectKey);
       return;
@@ -717,18 +756,21 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     setArmedProjectKey((prev) => (prev === key ? null : key));
   };
 
-  // Desktop-only batch selection: shift+click a photo to select the
-  // whole range from the last plain click to it (standard file-manager
-  // behavior), or click-and-drag across empty grid space to draw a
-  // marquee and select whatever it touches. Neither has a mobile
-  // equivalent (no shift key, no mouse drag there) -- mobile keeps
-  // using handlePhotoTap directly.
+  // Selecting several photos at once -- on a computer: shift+click one to take
+  // everything from the last photo clicked to it, or press on the grid (on a
+  // photo or between them) and drag to draw a box around the ones to take;
+  // with a finger: touch and hold a photo, then drag across the others (see the
+  // touch effect below). With a project armed, the box and the finger assign
+  // it to everything they cross instead of selecting. Ctrl/Cmd/Shift held as a
+  // drag begins adds to the selection rather than starting it afresh.
   const lastClickedPhotoIndexRef = useRef(null);
+  // The click that ends a drag (mouse up over the photo it began on) is not a
+  // click on that photo.
+  const suppressTileClickRef = useRef(false);
   const handleDesktopPhotoClick = (photo, index, e) => {
-    if (e.shiftKey && lastClickedPhotoIndexRef.current !== null) {
-      const start = Math.min(lastClickedPhotoIndexRef.current, index);
-      const end = Math.max(lastClickedPhotoIndexRef.current, index);
-      const rangeIds = photos.slice(start, end + 1).map((p) => p.id);
+    if (suppressTileClickRef.current) return;
+    if (e.shiftKey) {
+      const rangeIds = shiftRange(photos.map((p) => p.id), lastClickedPhotoIndexRef.current, index);
       // Mirrors handlePhotoTap's own armed-vs-select branching, just
       // applied to the whole range instead of one photo -- the anchor
       // (lastClickedPhotoIndexRef) deliberately doesn't move on a
@@ -746,55 +788,228 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     handlePhotoTap(photo.id);
   };
 
-  // Marquee (click-and-drag) selection over empty grid space -- viewport
-  // (clientX/Y) coordinates throughout, compared directly against each
-  // tile's own getBoundingClientRect(), so none of this has to reason
-  // about the grid's own scroll offset.
+  // The drawn box -- viewport (clientX/Y) coordinates throughout, compared
+  // directly against each tile's own getBoundingClientRect().
   const [isDragSelecting, setIsDragSelecting] = useState(false);
   const [dragBox, setDragBox] = useState(null);
-  const dragStartRef = useRef({ x: 0, y: 0 });
   const photoTileRefs = useRef({});
+  const gridScrollRef = useRef(null);
+  // The armed project as the drag sees it now (the listeners outlive a render).
+  const armedKeyRef = useRef(null);
+  armedKeyRef.current = armedProjectKey;
+  const endMouseDragRef = useRef(null);
+  const DRAG_START_PX = 5;
 
   const handleGridMouseDown = (e) => {
     if (e.button !== 0) return; // left click/drag only
-    if (e.target.closest('[data-photo-tile]')) return; // a tile's own onClick handles that
-    dragStartRef.current = { x: e.clientX, y: e.clientY };
-    setArmedProjectKey(null); // a marquee always means "select", not "assign as you go"
-    setSelectedPhotoIds(new Set()); // a plain click on empty space starts a fresh selection
-    setIsDragSelecting(true);
-    setDragBox({ left: e.clientX, top: e.clientY, width: 0, height: 0 });
-  };
+    // A photo's ×, a date field: they have their own clicks.
+    if (e.target.closest('button, input, select, textarea, a')) return;
+    const onTile = Boolean(e.target.closest('[data-photo-tile]'));
+    // Shift+click on a photo is the range select (its click handler).
+    if (onTile && e.shiftKey) return;
 
+    const scroller = gridScrollRef.current;
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+    const base = additive ? new Set(selectedPhotoIds) : new Set();
+    const origin = { x: e.clientX, y: e.clientY };
+    // Where the box began, in the grid's own scrolled coordinates, so it stays
+    // on the same photos when the grid scrolls (by the wheel, or by the drag
+    // pushing against its top or bottom edge) -- not on the same pixels.
+    const startX = origin.x + (scroller?.scrollLeft || 0);
+    const startY = origin.y + (scroller?.scrollTop || 0);
+    let pointer = origin;
+    let dragging = false;
+    let scrollTimer = null;
+
+    const apply = () => {
+      const sx = startX - (scroller?.scrollLeft || 0);
+      const sy = startY - (scroller?.scrollTop || 0);
+      const box = { left: Math.min(sx, pointer.x), top: Math.min(sy, pointer.y), right: Math.max(sx, pointer.x), bottom: Math.max(sy, pointer.y) };
+      setDragBox({ left: box.left, top: box.top, width: box.right - box.left, height: box.bottom - box.top });
+      const tiles = Object.entries(photoTileRefs.current).map(([id, el]) => [id, el.getBoundingClientRect()]);
+      const inside = idsInBox(tiles, box);
+      const armedKey = armedKeyRef.current;
+      if (armedKey) {
+        // Paint-assign: whatever the box has crossed takes the project.
+        setPhotos((prev) => {
+          let changed = false;
+          const next = prev.map((p) => {
+            if (!inside.includes(p.id) || p.projectKey === armedKey) return p;
+            changed = true;
+            return { ...p, projectKey: armedKey };
+          });
+          return changed ? next : prev;
+        });
+      } else {
+        setSelectedPhotoIds(new Set([...base, ...inside]));
+      }
+    };
+
+    const onMove = (ev) => {
+      pointer = { x: ev.clientX, y: ev.clientY };
+      if (!dragging) {
+        if (Math.hypot(pointer.x - origin.x, pointer.y - origin.y) < DRAG_START_PX) return;
+        dragging = true;
+        setIsDragSelecting(true);
+        // Held against the top or bottom edge, the grid keeps scrolling.
+        scrollTimer = setInterval(() => {
+          if (!scroller) return;
+          const r = scroller.getBoundingClientRect();
+          const speed = edgeScrollSpeed(pointer.y, r.top, r.bottom);
+          if (speed) { scroller.scrollTop += speed; apply(); }
+        }, 16);
+      }
+      apply();
+    };
+
+    const finish = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      clearInterval(scrollTimer);
+      endMouseDragRef.current = null;
+      if (dragging) {
+        setIsDragSelecting(false);
+        setDragBox(null);
+        suppressTileClickRef.current = true;
+        setTimeout(() => { suppressTileClickRef.current = false; }, 0);
+      }
+    };
+    function onUp() {
+      finish();
+      // A plain click on the space around the photos clears the selection.
+      if (!dragging && !onTile && !additive) setSelectedPhotoIds(new Set());
+    }
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    endMouseDragRef.current = finish;
+  };
+  // Leaving mid-drag must not leave its listeners behind.
+  useEffect(() => () => endMouseDragRef.current?.(), []);
+
+  // Touch: the strip of photos scrolls sideways under a finger, so a drag has
+  // to be asked for -- touch and hold a photo (it buzzes), then drag across
+  // the others without lifting. Everything from the photo first touched to the
+  // one under the finger is selected (or, with a project armed, assigned to
+  // it); the strip scrolls itself when the finger reaches its ends. A finger
+  // that moves before the hold is up is just scrolling, as it always was.
+  // Uses native listeners: a React touchmove is passive, and cannot stop the
+  // strip scrolling under the drag.
+  const stripRef = useRef(null);
+  const touchPickRef = useRef({ visibleIds: [], armedProjectKey: null, selected: new Set() });
+  const suppressTapUntilRef = useRef(0);
   useEffect(() => {
-    if (!isDragSelecting) return;
-    const handleMove = (e) => {
-      const { x: startX, y: startY } = dragStartRef.current;
-      const left = Math.min(startX, e.clientX);
-      const top = Math.min(startY, e.clientY);
-      const width = Math.abs(e.clientX - startX);
-      const height = Math.abs(e.clientY - startY);
-      setDragBox({ left, top, width, height });
-      const right = left + width;
-      const bottom = top + height;
-      const idsInRect = Object.keys(photoTileRefs.current).filter((id) => {
-        const el = photoTileRefs.current[id];
-        if (!el) return false;
-        const r = el.getBoundingClientRect();
-        return r.left < right && r.right > left && r.top < bottom && r.bottom > top;
-      });
-      setSelectedPhotoIds(new Set(idsInRect));
+    if (step !== 'review' || !isMobile) return undefined;
+    const strip = stripRef.current;
+    if (!strip) return undefined;
+
+    const HOLD_MS = 260;
+    const SLOP_PX = 10;
+    let holdTimer = null;
+    let raf = 0;
+    let dragging = false;
+    let anchorId = null;
+    let base = new Set();
+    let covered = new Set();
+    let start = { x: 0, y: 0 };
+    let pointer = { x: 0, y: 0 };
+
+    const idAt = (x, y) => document.elementFromPoint(x, y)?.closest('[data-strip-photo]')?.getAttribute('data-strip-photo') || null;
+
+    const reach = (id) => {
+      const { visibleIds, armedProjectKey: armedKey } = touchPickRef.current;
+      const range = idsBetween(visibleIds, visibleIds.indexOf(anchorId), visibleIds.indexOf(id));
+      if (range.length === 0) return;
+      if (armedKey) {
+        range.forEach((rangeId) => covered.add(rangeId));
+        setPhotos((prev) => {
+          let changed = false;
+          const next = prev.map((p) => {
+            if (!covered.has(p.id) || p.projectKey === armedKey) return p;
+            changed = true;
+            return { ...p, projectKey: armedKey };
+          });
+          return changed ? next : prev;
+        });
+      } else {
+        setSelectedPhotoIds(new Set([...base, ...range]));
+      }
     };
-    const handleUp = () => {
-      setIsDragSelecting(false);
-      setDragBox(null);
+
+    const tick = () => {
+      if (!dragging) return;
+      const r = strip.getBoundingClientRect();
+      const speed = edgeScrollSpeed(pointer.x, r.left, r.right);
+      if (speed) {
+        strip.scrollLeft += speed;
+        const id = idAt(pointer.x, pointer.y);
+        if (id) reach(id);
+      }
+      raf = requestAnimationFrame(tick);
     };
-    window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleUp);
+
+    const begin = () => {
+      holdTimer = null;
+      dragging = true;
+      base = new Set(touchPickRef.current.selected);
+      covered = new Set();
+      navigator.vibrate?.(12);
+      reach(anchorId);
+      raf = requestAnimationFrame(tick);
+    };
+
+    const onStart = (e) => {
+      if (e.touches.length !== 1) return;
+      // A photo's × and its date field stay taps.
+      if (e.target.closest('button, input')) return;
+      const id = e.target.closest('[data-strip-photo]')?.getAttribute('data-strip-photo');
+      if (!id) return;
+      anchorId = id;
+      start = pointer = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      clearTimeout(holdTimer);
+      holdTimer = setTimeout(begin, HOLD_MS);
+    };
+
+    const onMove = (e) => {
+      const touch = e.touches[0];
+      if (!touch) return;
+      pointer = { x: touch.clientX, y: touch.clientY };
+      if (!dragging) {
+        if (holdTimer && Math.hypot(pointer.x - start.x, pointer.y - start.y) > SLOP_PX) {
+          clearTimeout(holdTimer);
+          holdTimer = null;
+        }
+        return;
+      }
+      e.preventDefault(); // the finger is selecting now, not scrolling
+      const id = idAt(pointer.x, pointer.y);
+      if (id) reach(id);
+    };
+
+    const onEnd = (e) => {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+      cancelAnimationFrame(raf);
+      if (!dragging) return;
+      dragging = false;
+      // The lift would otherwise count as a tap on the last photo.
+      if (e.cancelable) e.preventDefault();
+      suppressTapUntilRef.current = Date.now() + 400;
+    };
+
+    strip.addEventListener('touchstart', onStart, { passive: true });
+    strip.addEventListener('touchmove', onMove, { passive: false });
+    strip.addEventListener('touchend', onEnd);
+    strip.addEventListener('touchcancel', onEnd);
     return () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleUp);
+      clearTimeout(holdTimer);
+      cancelAnimationFrame(raf);
+      strip.removeEventListener('touchstart', onStart);
+      strip.removeEventListener('touchmove', onMove);
+      strip.removeEventListener('touchend', onEnd);
+      strip.removeEventListener('touchcancel', onEnd);
     };
-  }, [isDragSelecting]);
+  }, [step, isMobile]);
 
   const removePhoto = (id) => {
     setPhotos((prev) => {
@@ -1038,6 +1253,8 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     const visiblePhotos = fixedDateRange
       ? photos.filter((p) => p.date >= fixedDateRange.start && p.date <= fixedDateRange.end)
       : photos;
+    // What the hold-and-drag listeners (see the touch effect) read at each touch.
+    touchPickRef.current = { visibleIds: visiblePhotos.map((p) => p.id), armedProjectKey, selected: selectedPhotoIds };
 
     return (
       <div className="flex flex-col h-full w-full min-h-0">
@@ -1095,7 +1312,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         )}
 
         {/* Horizontal photo strip */}
-        <div className="shrink-0 mb-2 -mx-1 px-1 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+        <div ref={stripRef} onContextMenu={(e) => e.preventDefault()} className="shrink-0 mb-2 -mx-1 px-1 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch', WebkitTouchCallout: 'none', userSelect: 'none' }}>
           {visiblePhotos.length === 0 ? (
             <div className="text-xs italic opacity-50 py-8 text-center">
               {photos.length > 0
@@ -1110,6 +1327,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                 return (
                   <div key={photo.id} className="shrink-0" style={{ width: '92px' }}>
                     <div
+                      data-strip-photo={photo.id}
                       onClick={() => handlePhotoTap(photo.id)}
                       className="relative rounded-lg lf-frame overflow-hidden cursor-pointer"
                       style={{
@@ -1119,7 +1337,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                         border: isSelected ? '3px solid var(--theme-secondary)' : '1px solid var(--theme-border)',
                       }}
                     >
-                      <img src={photo.previewUrl} alt="" className="w-full h-full object-cover" />
+                      <img src={photo.previewUrl} alt="" draggable={false} className="w-full h-full object-cover" />
                       <button
                         onClick={(e) => { e.stopPropagation(); removePhoto(photo.id); }}
                         title="Remove"
@@ -1163,10 +1381,10 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
         <div className="text-xs opacity-60 mb-2 shrink-0">
           {armedProjectKey
-            ? `Assigning to "${effectiveProjects.find((p) => projectKeyOf(p) === armedProjectKey)?.title}" — tap photos, or tap the project again to stop.`
+            ? `Assigning to "${effectiveProjects.find((p) => projectKeyOf(p) === armedProjectKey)?.title}" — tap photos, or hold one and drag across several. Tap the project again to stop.`
             : selectedPhotoIds.size > 0
               ? `${selectedPhotoIds.size} photo${selectedPhotoIds.size === 1 ? '' : 's'} selected — tap a project below to assign.`
-              : 'Tap photos to select them, or tap a project to start assigning.'}
+              : 'Tap photos to select them, or hold one and drag across several. Or tap a project to start assigning.'}
         </div>
 
         {/* Vertical project list */}
@@ -1253,10 +1471,10 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           <div className="w-60 shrink-0 flex flex-col min-h-0">
             <div className="text-xs opacity-60 mb-2 shrink-0">
               {armedProjectKey
-                ? `Assigning to "${effectiveProjects.find((p) => projectKeyOf(p) === armedProjectKey)?.title}" — click photos, or click the project again to stop.`
+                ? `Assigning to "${effectiveProjects.find((p) => projectKeyOf(p) === armedProjectKey)?.title}" — click photos, or drag across several. Click the project again to stop.`
                 : selectedPhotoIds.size > 0
                   ? `${selectedPhotoIds.size} photo${selectedPhotoIds.size === 1 ? '' : 's'} selected — click a project to assign.`
-                  : 'Click photos to select them, or click a project to start assigning.'}
+                  : 'Click photos to select them — drag across several, or shift+click a range — or click a project to start assigning.'}
             </div>
             <div className="flex-1 overflow-y-auto min-h-0 space-y-3 pr-1">
               <ProjectAssignList
@@ -1315,7 +1533,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
               {pasteHint && <div role="status" className="text-xs mt-2" style={{ color: 'var(--theme-secondary)' }}>{pasteHint}</div>}
             </div>
 
-            <div onMouseDown={handleGridMouseDown} className="flex-1 overflow-y-auto min-h-0 pr-1">
+            <div ref={gridScrollRef} onMouseDown={handleGridMouseDown} className="flex-1 overflow-y-auto min-h-0 pr-1">
               {photos.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-sm italic opacity-50">
                   No photos added yet.
@@ -1337,7 +1555,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                             border: isSelected ? '3px solid var(--theme-secondary)' : '1px solid var(--theme-border)',
                           }}
                         >
-                          <img src={photo.previewUrl} alt="" className="w-full h-full object-cover" />
+                          <img src={photo.previewUrl} alt="" draggable={false} className="w-full h-full object-cover" />
                           <button
                             onClick={(e) => { e.stopPropagation(); removePhoto(photo.id); }}
                             title="Remove"

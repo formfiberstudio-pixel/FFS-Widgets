@@ -29,6 +29,7 @@ import LogTitleEditor from './LogTitleEditor.jsx';
 import RemoveEntryButton from './RemoveEntryButton.jsx';
 import { isLongBreak, shouldAutoSync } from './autoSync.js';
 import { filterFacetGroups, filterProjectTree, normalizeSearch } from './projectSearch.js';
+import { onSharedPhotosArrived, takeSharedPhotos } from './nativePhotoPicker.js';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -1183,6 +1184,9 @@ function App() {
   // Photos handed off by the Android share-target landing effect below,
   // waiting for the Import panel to pick them up once a project is chosen.
   const [pendingSharedPhotos, setPendingSharedPhotos] = useState(null);
+  // The same for photos shared from the phone's gallery to the Android app
+  // itself (see the native share landing below).
+  const [pendingSharedNativePhotos, setPendingSharedNativePhotos] = useState(null);
   // Set when sw.js's share_target interception failed partway through --
   // kept separate from fetchError since the normal sync effect
   // unconditionally clears that one on every load, which would stomp this
@@ -1916,6 +1920,36 @@ function App() {
         // Expired/already-consumed token, or a network hiccup -- the
         // Import panel still works fine via its normal file picker.
       });
+  }, []);
+
+  // -------------------------------------------------------------
+  // SHARE TO THE ANDROID APP
+  // -------------------------------------------------------------
+  // Photos picked in the phone's gallery and sent with Share > Creator Timeline
+  // land in the app's native shell (SharedPhotosPlugin.java), which holds them
+  // until this page asks -- on a cold start the page was not even running when
+  // they arrived -- and tells it when more arrive while it is open. Either way
+  // they open Import Photos with the photos in it, dated and ready to be given
+  // projects. Not for a date range: a share is whatever was picked.
+  const viewModeRef = useRef(viewMode);
+  viewModeRef.current = viewMode;
+  useEffect(() => {
+    if (isDemoMode) return undefined;
+    let alive = true;
+    const takeShared = async () => {
+      const photos = await takeSharedPhotos();
+      if (!alive || photos.length === 0) return;
+      setPendingSharedNativePhotos(photos);
+      setImportDateRange(null);
+      if (viewModeRef.current !== 'import') {
+        // Back from here goes to the page it landed on, or the gallery's own.
+        if (viewModeRef.current !== 'gallery') setPreGalleryViewMode(viewModeRef.current);
+        setViewMode('import');
+      }
+    };
+    takeShared();
+    const stopListening = onSharedPhotosArrived(takeShared);
+    return () => { alive = false; stopListening(); };
   }, []);
 
   // -------------------------------------------------------------
@@ -3823,6 +3857,7 @@ function App() {
                   onPause={projectTimer.pause}
                   onResume={projectTimer.resume}
                   onAddNote={projectTimer.addNote}
+                  onEditNote={projectTimer.editNote}
                   onRemoveNote={projectTimer.removeNote}
                   onAddPhotos={projectTimer.addPhotos}
                   onLoadPhoto={projectTimer.loadPhoto}
@@ -4179,6 +4214,8 @@ function App() {
               onUploaded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
               sharedPhotos={pendingSharedPhotos}
               onConsumedSharedPhotos={() => setPendingSharedPhotos(null)}
+              sharedNativePhotos={pendingSharedNativePhotos}
+              onConsumedSharedNativePhotos={() => setPendingSharedNativePhotos(null)}
               fixedDateRange={importDateRange}
               onStepChange={setImportPanelStep}
             />

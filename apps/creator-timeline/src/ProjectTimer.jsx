@@ -405,6 +405,22 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     return true;
   }, [remote, commit, flash, run]);
 
+  // Rewrites the words of note number `index`, keeping its time. True when it
+  // went through (or changed nothing); false for an empty note, which is not
+  // an edit -- removing a note has its own control.
+  const editNote = useCallback((index, text) => {
+    const current = timerRef.current;
+    const note = current?.notes?.[index];
+    if (!current || current.endedAt || !note) return false;
+    const clean = cleanNoteText(text);
+    if (!clean) return false;
+    if (clean === note.text) return true;
+    const next = { ...current, notes: current.notes.map((n, i) => (i === index ? { ...n, text: clean } : n)) };
+    if (remote) run('editNote', { at: note.at, text: note.text, newText: clean }, next);
+    else commit(next);
+    return true;
+  }, [remote, commit, run]);
+
   const removeNote = useCallback((index) => {
     const current = timerRef.current;
     const note = current?.notes?.[index];
@@ -483,7 +499,7 @@ export function useProjectTimer({ tenantId, isDemoMode, onSessionSaved }) {
     save({ project: current.project, startedAt: current.startedAt, pausedMs: current.pausedMs, notes: current.notes, photos: current.photos }, current.endedAt);
   }, [save]);
 
-  return { timer, saving, notice, start, stop, discard, retry, pause, resume, addNote, removeNote, addPhotos, removePhoto, loadPhoto };
+  return { timer, saving, notice, start, stop, discard, retry, pause, resume, addNote, editNote, removeNote, addPhotos, removePhoto, loadPhoto };
 }
 
 // Ticks once a second, only while `active`, and re-reads the clock when the
@@ -754,12 +770,35 @@ function TimerPhotos({ photos, readOnly, onAdd, onRemove, onLoadPhoto }) {
 // stay in the timer (so a reload keeps them) and are uploaded to Notion with
 // the session on Stop. Read-only once the session has ended (a failed save
 // waiting on Retry), so what's kept is still visible but can't change.
-function TimerNotes({ notes, readOnly, onAdd, onRemove }) {
+function TimerNotes({ notes, readOnly, onAdd, onEdit, onRemove }) {
   const [draft, setDraft] = useState('');
   const submit = (e) => {
     e.preventDefault();
     if (onAdd(draft)) setDraft('');
   };
+
+  // The note being reworded, if any: its position and the words so far. It is
+  // kept when you click away or press Enter, so a note edited just before
+  // Stop & save is saved as edited; Esc puts the old words back.
+  const [editing, setEditingState] = useState(null); // { index, text }
+  // The same, readable at once: a click-away, Enter and the ✕ below can follow
+  // each other before a re-render, and each edit must be applied only once --
+  // a late one could land on a different note after another was removed.
+  const editingRef = useRef(null);
+  const setEditing = (value) => { editingRef.current = value; setEditingState(value); };
+  const startEditing = (index) => {
+    if (readOnly) return;
+    if (editingRef.current) finishEditing();
+    setEditing({ index, text: notes[index].text });
+  };
+  const finishEditing = () => {
+    const current = editingRef.current;
+    setEditing(null);
+    if (!current) return;
+    // An emptied note is not an edit (✕ removes one): the old words stay.
+    onEdit(current.index, current.text);
+  };
+  const cancelEditing = () => setEditing(null);
   return (
     <div className="w-full mt-3 pt-3 border-t text-left" style={{ borderColor: 'var(--theme-border)' }}>
       <div className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-1.5">
@@ -791,9 +830,48 @@ function TimerNotes({ notes, readOnly, onAdd, onRemove }) {
           {notes.map((note, i) => (
             <li key={`${note.at}-${i}`} className="flex items-start gap-2 text-xs leading-snug">
               <span className="shrink-0 tabular-nums opacity-60">{clockLabel(new Date(note.at))}</span>
-              <span className="select-text min-w-0 flex-1 break-words">{note.text}</span>
+              {editing?.index === i ? (
+                <input
+                  autoFocus
+                  value={editing.text}
+                  onChange={(e) => setEditing({ index: i, text: e.target.value })}
+                  onBlur={finishEditing}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); finishEditing(); }
+                    else if (e.key === 'Escape') { e.preventDefault(); cancelEditing(); }
+                  }}
+                  maxLength={MAX_SESSION_NOTE_LENGTH}
+                  aria-label="Edit this note"
+                  className="select-text min-w-0 flex-1 rounded border px-2 py-0.5 text-xs outline-none focus:ring-2 focus:ring-[var(--theme-primary)]"
+                  style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-primary)', color: 'var(--theme-text)' }}
+                />
+              ) : (
+                <span
+                  onClick={() => startEditing(i)}
+                  title={readOnly ? undefined : 'Click to edit'}
+                  className={`select-text min-w-0 flex-1 break-words ${readOnly ? '' : 'cursor-text'}`}
+                >
+                  {note.text}
+                </span>
+              )}
+              {!readOnly && editing?.index !== i && (
+                <button onClick={() => startEditing(i)} aria-label="Edit this note" title="Edit" className="shrink-0 leading-none opacity-50 hover:opacity-100 cursor-pointer">✎</button>
+              )}
               {!readOnly && (
-                <button onClick={() => onRemove(i)} aria-label="Remove this note" className="shrink-0 leading-none opacity-50 hover:opacity-100 cursor-pointer">✕</button>
+                // onMouseDown keeps focus on a note being edited, so the click
+                // is not eaten by that note's own blur re-rendering the list.
+                <button
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    // Another note's unsaved wording is kept; this note's own is moot.
+                    if (editingRef.current && editingRef.current.index !== i) finishEditing(); else cancelEditing();
+                    onRemove(i);
+                  }}
+                  aria-label="Remove this note"
+                  className="shrink-0 leading-none opacity-50 hover:opacity-100 cursor-pointer"
+                >
+                  ✕
+                </button>
               )}
             </li>
           ))}
@@ -815,7 +893,7 @@ function TimerNotes({ notes, readOnly, onAdd, onRemove }) {
 // the card's width, so it follows the sidebar as it's dragged wider or
 // narrower (and fills the phone overlay). It's capped so a very wide
 // sidebar or a short window never lets it swallow the project list.
-export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry, onPause, onResume, onAddNote, onRemoveNote, onAddPhotos, onRemovePhoto, onLoadPhoto }) {
+export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, onDiscard, onRetry, onPause, onResume, onAddNote, onEditNote, onRemoveNote, onAddPhotos, onRemovePhoto, onLoadPhoto }) {
   const live = !timer.endedAt; // not finished (running or paused)
   const paused = live && !!timer.pausedAt;
   const now = useNow(live && !paused, timer.clockOffset);
@@ -922,7 +1000,7 @@ export function ActiveTimerCard({ timer, saving, notice, loggedMinutes, onStop, 
       </div>
 
       <TimerPhotos photos={timer.photos || []} readOnly={!live} onAdd={onAddPhotos} onRemove={onRemovePhoto} onLoadPhoto={onLoadPhoto} />
-      <TimerNotes notes={timer.notes || []} readOnly={!live} onAdd={onAddNote} onRemove={onRemoveNote} />
+      <TimerNotes notes={timer.notes || []} readOnly={!live} onAdd={onAddNote} onEdit={onEditNote} onRemove={onRemoveNote} />
 
       {notice && <div className="text-[11px] opacity-70 mt-1">{notice}</div>}
     </section>

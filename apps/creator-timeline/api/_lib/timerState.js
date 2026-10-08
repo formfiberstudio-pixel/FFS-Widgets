@@ -137,6 +137,19 @@ export function applyTimerOp(timer, op, payload = {}, now = Date.now()) {
       return { timer: touched(timer, { notes: timer.notes.filter((_, i) => i !== index) }, now) };
     }
 
+    // Rewrites a note's words, keeping when it was written. The note is found
+    // the way removeNote finds it (its time and its old text), so an edit made
+    // after the note was changed or removed elsewhere finds nothing and is left alone.
+    case 'editNote': {
+      if (!timer) return { timer: null };
+      const index = timer.notes.findIndex((note) => note.at === Number(payload.at) && note.text === payload.text);
+      if (index === -1) return { timer };
+      const text = cleanNote(payload.newText);
+      if (!text) throw new TimerOpError('A note can’t be empty');
+      if (text === timer.notes[index].text) return { timer };
+      return { timer: touched(timer, { notes: timer.notes.map((note, i) => (i === index ? { ...note, text } : note)) }, now) };
+    }
+
     case 'addPhoto': {
       if (!timer) return { timer: null };
       if (!validTimerPhotoId(payload.id)) throw new TimerOpError('Invalid photo');

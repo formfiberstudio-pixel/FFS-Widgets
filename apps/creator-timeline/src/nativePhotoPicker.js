@@ -34,3 +34,42 @@ export async function getPhotoData(uri) {
   const { base64 } = await DateFilteredPhotoPicker.getPhotoData({ uri });
   return base64;
 }
+
+// "Share to app" (Android only, see SharedPhotosPlugin.java): photos picked in
+// the gallery and sent with Share > Creator Timeline. The plugin holds them
+// until asked -- the page may not even have been running when they arrived --
+// and hands over each one's content:// uri, name, and capture date with how far
+// to trust it. The pictures themselves are then read with getPhotoThumbnail /
+// getPhotoData above, like any other native photo.
+const SharedPhotos = registerPlugin('SharedPhotos');
+
+// Everything shared and not yet taken, once. Empty on the web, and on an app
+// build from before this plugin existed (the call is refused there).
+export async function takeSharedPhotos() {
+  if (!isNativePhotoPickerSupported()) return [];
+  try {
+    const { photos } = await SharedPhotos.getSharedPhotos();
+    return Array.isArray(photos) ? photos : [];
+  } catch {
+    return [];
+  }
+}
+
+// Called when more photos are shared while the app is already open. Returns a
+// function that stops listening.
+export function onSharedPhotosArrived(callback) {
+  if (!isNativePhotoPickerSupported()) return () => {};
+  let handle = null;
+  let stopped = false;
+  try {
+    Promise.resolve(SharedPhotos.addListener('sharedPhotos', callback))
+      .then((added) => { if (stopped) added?.remove?.(); else handle = added; })
+      .catch(() => {});
+  } catch {
+    // An older app build without the plugin: nothing to listen to.
+  }
+  return () => {
+    stopped = true;
+    handle?.remove?.();
+  };
+}
