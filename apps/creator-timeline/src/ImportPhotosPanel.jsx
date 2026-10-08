@@ -274,7 +274,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     onStepChange?.(step);
   }, [step, onStepChange]);
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
-  const [uploadResults, setUploadResults] = useState({ byProject: [], failed: [] });
+  const [uploadResults, setUploadResults] = useState({ byProject: [], filed: [], datingProblems: [], failed: [] });
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -1030,6 +1030,10 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     setUploadProgress({ done: 0, total: photos.length });
     const failed = [];
     const succeededByProject = new Map(); // projectKey -> count
+    // What went where, so the result can say which date each project's photos
+    // were filed under, and anything that kept an entry from getting its date.
+    const filed = new Map(); // project + date -> { title, date, count }
+    const datingProblems = [];
     let doneCount = 0;
 
     // Photos backlogged for the same PROJECT and DATE land on ONE page
@@ -1113,8 +1117,16 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           });
           const result = await response.json();
           if (!result.success) throw new Error(result.error || 'Upload failed');
-          if (!pageId) pageId = result.pageId;
+          if (!pageId) {
+            pageId = result.pageId;
+            // The entry is made on its first photo: what the server says it did
+            // about the date is what is reported for the whole group.
+            if (result.dated === false) datingProblems.push({ title: groupProject.title, date, kind: 'no-date-property' });
+            else if (result.storedDate && result.storedDate.slice(0, 10) !== date) datingProblems.push({ title: groupProject.title, date, kind: 'other-date', stored: result.storedDate.slice(0, 10) });
+          }
           succeededByProject.set(groupProject.title, (succeededByProject.get(groupProject.title) || 0) + 1);
+          const filedKey = `${groupProject.title}\u0000${date}`;
+          filed.set(filedKey, { title: groupProject.title, date, count: (filed.get(filedKey)?.count || 0) + 1 });
         } catch (err) {
           failed.push({ name: photo.file?.name || photo.displayName || 'photo', error: err.message });
         }
@@ -1125,6 +1137,8 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
 
     setUploadResults({
       byProject: Array.from(succeededByProject, ([title, count]) => ({ title, count })),
+      filed: Array.from(filed.values()).sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)),
+      datingProblems,
       failed,
     });
     setStep('done');
@@ -1136,7 +1150,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     setPhotos([]);
     setSelectedPhotoIds(new Set());
     setArmedProjectKey(null);
-    setUploadResults({ byProject: [], failed: [] });
+    setUploadResults({ byProject: [], filed: [], datingProblems: [], failed: [] });
     setStep('review');
   };
 
@@ -1643,12 +1657,29 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
       <div className="text-lg font-bold">
         {totalSucceeded} photo{totalSucceeded === 1 ? '' : 's'} added
       </div>
-      {uploadResults.byProject.length > 0 && (
+      {uploadResults.filed.length > 0 && (
+        // One line per project and date: the date is the one each photo was
+        // filed under, so a wrong one is visible at a glance.
         <ul className="text-sm opacity-70 space-y-0.5">
-          {uploadResults.byProject.map(({ title, count }) => (
-            <li key={title}>{count} to {title}</li>
-          ))}
+          {uploadResults.filed.map(({ title, date, count }) => {
+            const [y, m, d] = date.split('-').map(Number);
+            const label = new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+            return <li key={`${title}-${date}`}>{count} to {title} · {label}</li>;
+          })}
         </ul>
+      )}
+      {uploadResults.datingProblems.length > 0 && (
+        <div role="alert" className="text-sm text-left w-full p-3 rounded-lg lf-frame border" style={{ borderColor: '#e11d48', backgroundColor: 'var(--theme-bg)' }}>
+          <div className="font-bold mb-1">Not filed under the photo’s date</div>
+          <p className="opacity-80">
+            {uploadResults.datingProblems.some((p) => p.kind === 'no-date-property')
+              ? 'Notion has no date property on this database to put the photo’s date in, so the calendar dates those entries by when they were made — today. Add a Date property to the database in Notion and the date will be set from the next import on.'
+              : 'Notion kept a different date than the photo’s.'}
+          </p>
+          <ul className="mt-1 space-y-0.5 opacity-70">
+            {uploadResults.datingProblems.map((p, i) => <li key={i}>• {p.title} ({p.date}{p.stored ? `, Notion kept ${p.stored}` : ''})</li>)}
+          </ul>
+        </div>
       )}
       {uploadResults.failed.length > 0 && (
         <div className="text-sm text-left w-full p-3 rounded-lg lf-frame border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>

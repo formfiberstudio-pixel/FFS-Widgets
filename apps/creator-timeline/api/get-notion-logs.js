@@ -755,7 +755,10 @@ export default async function handler(req, res) {
 
     console.log(`[Diagnostic] Successfully returning ${validLogs.length} valid logs to frontend across ${sources.length} database(s) for tenant ${tenantId}.`);
 
-    return res.status(200).json({ success: true, data: validLogs, savedViews: tenant.savedViews || [], facetSchemas, facetCandidates });
+    // projectOrder: the person's own order for the project list, kept on the
+    // tenant record (see backlog-photo.js's setProjectOrder) so it is the same on
+    // every device.
+    return res.status(200).json({ success: true, data: validLogs, savedViews: tenant.savedViews || [], facetSchemas, facetCandidates, projectOrder: tenant.projectOrder || {} });
 
   } catch (error) {
     console.error('[Diagnostic] Fatal API Error:', error.message);

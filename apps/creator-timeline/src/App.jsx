@@ -27,9 +27,11 @@ import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
 import RemoveEntryButton from './RemoveEntryButton.jsx';
+import ProjectPicker from './ProjectPicker.jsx';
 import { isLongBreak, shouldAutoSync } from './autoSync.js';
 import { filterFacetGroups, filterProjectTree, normalizeSearch } from './projectSearch.js';
 import { onSharedPhotosArrived, takeSharedPhotos } from './nativePhotoPicker.js';
+import { cleanOrder, moveAmong, moveRelative, orderProjectList, orderTree, projectsKey, sortByOrder, SOURCES_KEY, typesKey, withVisibleOrder } from './projectOrder.js';
 
 // Notion tag color palette lookup map
 const NOTION_COLOR_MAP = {
@@ -183,6 +185,14 @@ const IconSearch = () => (
   <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="11" cy="11" r="8"/>
     <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+  </svg>
+);
+
+// The thumbnail star: filled for the entry that stands for its day, an outline
+// for the others.
+const IconStar = ({ filled = false }) => (
+  <svg className="w-4 h-4" viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
   </svg>
 );
 
@@ -2000,6 +2010,7 @@ function App() {
           setSavedViews(cached.savedViews || []);
           setFacetSchemas(cached.facetSchemas || {});
           setFacetCandidates(cached.facetCandidates || {});
+          loadCachedProjectOrder(cached.projectOrder, urlTenantId);
           generateProjectColorMap(filterTreeLogs(cached.data, cached.facetSchemas || {}));
           paintedFromCache = true;
           hasFreshCache = typeof cached.cachedAt === 'number' && (Date.now() - cached.cachedAt) < CACHE_TTL_MS;
@@ -2048,6 +2059,7 @@ function App() {
         setSavedViews(result.savedViews || []);
         setFacetSchemas(result.facetSchemas || {});
         setFacetCandidates(result.facetCandidates || {});
+        adoptServerProjectOrder(result.projectOrder, tenant);
         generateProjectColorMap(filterTreeLogs(result.data || [], result.facetSchemas || {}));
         try {
           const cacheKey = `${NOTION_CACHE_KEY}:${tenant}:${sourcesFilterArg ? sourcesFilterArg.join(',') : 'all'}`;
@@ -2057,6 +2069,7 @@ function App() {
             savedViews: result.savedViews || [],
             facetSchemas: result.facetSchemas || {},
             facetCandidates: result.facetCandidates || {},
+            projectOrder: projectOrderRef.current,
             cachedAt: Date.now(),
           }));
         } catch (err) {
@@ -2155,10 +2168,10 @@ function App() {
   // trash (recoverable there for about 30 days -- see backlog-photo.js's
   // archiveEntry), and it leaves the widget at once without waiting for a
   // sync. A short message offers Undo, which restores the page.
-  const [entryToast, setEntryToast] = useState(null); // { message, removed?: the log, isError? }
+  const [entryToast, setEntryToast] = useState(null); // { message, removed?: the log, moved?: what undoing a move needs, isError? }
   useEffect(() => {
     if (!entryToast) return undefined;
-    const id = setTimeout(() => setEntryToast(null), entryToast.removed ? 10000 : 5000);
+    const id = setTimeout(() => setEntryToast(null), entryToast.removed || entryToast.moved ? 10000 : 5000);
     return () => clearTimeout(id);
   }, [entryToast]);
 
@@ -2208,6 +2221,154 @@ function App() {
       fetchLogsFromNotion(tenantId, sourceFilter, { silent: true });
     } catch (err) {
       setEntryToast({ message: err.message || 'Could not restore that entry.', isError: true });
+    }
+  };
+
+  // The person's own order for the project list -- the databases, the types in
+  // each, the projects in each type -- the same on every device (see
+  // projectOrder.js). It is kept on the server with the rest of their setup and
+  // comes back with each sync; a change is applied here at once and saved a
+  // moment later.
+  const [projectOrder, setProjectOrderState] = useState({});
+  const projectOrderRef = useRef({}); // the same, readable by the listeners below
+  // True from an edit until the server has it, so a sync that lands in between
+  // cannot put the older order back. Also kept in localStorage: a save that
+  // failed (offline) is still sent the next time, even after a reload.
+  const projectOrderUnsavedRef = useRef(false);
+  const projectOrderTimerRef = useRef(null);
+  const [reorderMode, setReorderMode] = useState(false);
+  const orderDragRef = useRef(null); // { listKey, name } of the row being dragged
+  const [orderDropHint, setOrderDropHint] = useState(null); // { listKey, name, placement }
+  const unsavedOrderKey = (tenant) => `notionWidgetProjectOrderUnsaved:${tenant}`;
+  const readUnsavedOrderFlag = (tenant) => {
+    try { return localStorage.getItem(unsavedOrderKey(tenant)) === '1'; } catch { return false; }
+  };
+
+  // The cached copy of the calendar (and so the order) is what a reload paints first.
+  const updateCachedFields = (fields) => {
+    try {
+      const cacheKey = `${NOTION_CACHE_KEY}:${tenantId}:${sourceFilter ? sourceFilter.join(',') : 'all'}`;
+      const raw = localStorage.getItem(cacheKey);
+      if (!raw) return;
+      localStorage.setItem(cacheKey, JSON.stringify({ ...JSON.parse(raw), ...fields }));
+    } catch { /* the cache is only a convenience */ }
+  };
+
+  const loadCachedProjectOrder = (cachedOrder, tenant) => {
+    const clean = cleanOrder(cachedOrder);
+    projectOrderRef.current = clean;
+    setProjectOrderState(clean);
+    // An order that never reached the server (a save that failed) is sent again now,
+    // not only at the next sync -- the cache may be fresh enough that there is none.
+    if (tenant && Object.keys(clean).length > 0 && readUnsavedOrderFlag(tenant)) {
+      projectOrderUnsavedRef.current = true;
+      saveProjectOrderNow(tenant);
+    }
+  };
+
+  const saveProjectOrderNow = async (tenant = tenantId) => {
+    if (!tenant || isDemoMode) return;
+    const sent = projectOrderRef.current;
+    try { localStorage.setItem(unsavedOrderKey(tenant), '1'); } catch { /* optional */ }
+    try {
+      const response = await fetch('/api/backlog-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId: tenant, action: 'setProjectOrder', order: sent }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) throw new Error(result.error || 'The order was not saved.');
+      // Rearranged again while this was on its way: that newer one is still to be sent.
+      if (projectOrderRef.current === sent) {
+        projectOrderUnsavedRef.current = false;
+        try { localStorage.removeItem(unsavedOrderKey(tenant)); } catch { /* optional */ }
+      }
+    } catch {
+      setEntryToast({ message: 'Couldn’t save the new order — it stays on this device and will be sent again.', isError: true });
+    }
+  };
+
+  // The order a sync brings. Adopted -- unless this device has one the server has
+  // not got yet (an edit still being saved, or a save that failed): then that one
+  // is sent instead of being overwritten.
+  const adoptServerProjectOrder = (serverOrder, tenant) => {
+    const unsaved = projectOrderUnsavedRef.current || readUnsavedOrderFlag(tenant);
+    if (unsaved && Object.keys(projectOrderRef.current).length > 0) {
+      projectOrderUnsavedRef.current = true;
+      saveProjectOrderNow(tenant);
+      return;
+    }
+    try { localStorage.removeItem(unsavedOrderKey(tenant)); } catch { /* optional */ }
+    projectOrderUnsavedRef.current = false;
+    const clean = cleanOrder(serverOrder);
+    projectOrderRef.current = clean;
+    setProjectOrderState(clean);
+  };
+
+  const commitProjectOrder = (next) => {
+    const clean = cleanOrder(next);
+    projectOrderRef.current = clean;
+    setProjectOrderState(clean);
+    projectOrderUnsavedRef.current = true;
+    updateCachedFields({ projectOrder: clean });
+    clearTimeout(projectOrderTimerRef.current);
+    projectOrderTimerRef.current = setTimeout(() => saveProjectOrderNow(), 600);
+  };
+
+  // Moving an entry to another project from the Day page: the same Notion page,
+  // with its project changed (see backlog-photo.js's recategorizeEntry) -- there
+  // first, then here, with Undo for a while. Only projects of the entry's own
+  // database are on offer (see the picker), and only an entry of a project can
+  // move (an entry of a tagged source has tags, not a project).
+  const [projectPickerLogId, setProjectPickerLogId] = useState(null);
+  const [movingEntry, setMovingEntry] = useState(false);
+
+  const callRecategorize = async (body) => {
+    const response = await fetch('/api/backlog-photo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenantId, action: 'recategorizeEntry', ...body }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.success) throw new Error(result.error || 'Notion did not accept that change.');
+    return result;
+  };
+
+  // Mirrors a move into what is on screen: the calendar, the phone's own copy
+  // of the day, and the cached copy a reload would otherwise bring back.
+  const applyProjectToLog = (logId, project) => {
+    const move = (l) => (l.id === logId ? { ...l, Projects: project.title, projectType: project.projectType, projectTypeColor: project.projectTypeColor } : l);
+    setTimelineLogs((prev) => prev.map(move));
+    setMobileLogModal((prev) => (prev ? { ...prev, logs: prev.logs.map(move) } : prev));
+    updateCachedLogs((data) => data.map(move));
+  };
+
+  const handleRecategorizeEntry = async (log, target) => {
+    setProjectPickerLogId(null);
+    if ((log.Projects || 'Untitled Project') === target.title) return;
+    const before = { title: log.Projects || 'Untitled Project', projectType: log.projectType, projectTypeColor: log.projectTypeColor };
+    setMovingEntry(true);
+    try {
+      const result = await callRecategorize({ pageId: log.id, referenceLogId: target.referenceLogId });
+      applyProjectToLog(log.id, target);
+      setEntryToast({
+        message: result.changed === false ? `Already in “${target.title}”.` : `Moved to “${target.title}”.`,
+        ...(result.changed === false ? {} : { moved: { logId: log.id, restore: result.previous, project: before } }),
+      });
+    } catch (err) {
+      setEntryToast({ message: err.message || 'Could not move that entry.', isError: true });
+    } finally {
+      setMovingEntry(false);
+    }
+  };
+
+  const handleUndoMove = async (moved) => {
+    try {
+      await callRecategorize({ pageId: moved.logId, restore: moved.restore });
+      applyProjectToLog(moved.logId, moved.project);
+      setEntryToast({ message: `Moved back to “${moved.project.title}”.` });
+    } catch (err) {
+      setEntryToast({ message: err.message || 'Could not move that entry back.', isError: true });
     }
   };
 
@@ -2729,7 +2890,8 @@ function App() {
       if (!grouped[source][type]) grouped[source][type] = [];
       grouped[source][type].push(proj);
     });
-    return grouped;
+    // In the person's own order, where they have set one.
+    return orderTree(grouped, projectOrder);
   })();
 
   // Flat Type > Project view (source-agnostic) for the color palette tab --
@@ -3326,25 +3488,67 @@ function App() {
                     isThumbnail ? 'ring-2 ring-[var(--theme-secondary)]' : ''
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    {isTaggedLog(log) ? (
-                      <div className="flex flex-wrap items-center gap-1 min-w-0">
-                        {Object.values(log.facets).flat().map((v, i) => (
-                          <span
-                            key={`${v.name}-${i}`}
-                            className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block"
-                            style={{ color: NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default, borderColor: NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default }}
+                  {/* The card's top line: its type (or tags), the star that makes it the
+                      day's thumbnail, and the project it belongs to -- with the bin for
+                      removing it in the corner. */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2 min-w-0">
+                      {isTaggedLog(log) ? (
+                        <div className="flex flex-wrap items-center gap-1 min-w-0">
+                          {Object.values(log.facets).flat().map((v, i) => (
+                            <span
+                              key={`${v.name}-${i}`}
+                              className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block"
+                              style={{ color: NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default, borderColor: NOTION_COLOR_MAP[v.color] || NOTION_COLOR_MAP.default }}
+                            >
+                              {v.name}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block" style={{ color: getDotColor(log), borderColor: getDotColor(log) }}>{log.projectType}</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setThumbnailOverrides((prev) => ({ ...prev, [dateKey]: log.id })); }}
+                        title={isThumbnail ? 'This entry is the day’s thumbnail' : 'Set as the day’s thumbnail'}
+                        aria-label={isThumbnail ? 'This entry is the day’s thumbnail' : 'Set as the day’s thumbnail'}
+                        aria-pressed={isThumbnail}
+                        style={{ color: isThumbnail ? 'var(--theme-secondary)' : 'inherit', opacity: isThumbnail ? 1 : 0.5 }}
+                        className="shrink-0 w-6 h-6 flex items-center justify-center rounded cursor-pointer hover:opacity-100 hover:scale-110 transition-all"
+                      >
+                        <IconStar filled={isThumbnail} />
+                      </button>
+                      {!isTaggedLog(log) && tenantId && (
+                        // The entry's project -- and the way to move it to another one.
+                        <div className="relative min-w-0">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setProjectPickerLogId((current) => (current === log.id ? null : log.id)); }}
+                            title="Move this entry to another project"
+                            aria-haspopup="dialog"
+                            aria-expanded={projectPickerLogId === log.id}
+                            style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-text)' }}
+                            className="max-w-full inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold cursor-pointer hover:border-[var(--theme-primary)] transition-colors"
                           >
-                            {v.name}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded inline-block" style={{ color: getDotColor(log), borderColor: getDotColor(log) }}>{log.projectType}</span>
-                    )}
-                    <span className={`text-xs font-bold px-2.5 py-1 rounded-full shrink-0 ${isThumbnail ? 'bg-[var(--theme-secondary)] text-[color:var(--theme-on-secondary)]' : 'opacity-60'}`}>
-                      {isThumbnail ? '★ Current Thumbnail' : 'Click to set as thumbnail'}
-                    </span>
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: getDotColor(log) }} />
+                            <span className="truncate">{log.Projects || 'Untitled Project'}</span>
+                            <span className="shrink-0 text-[9px] opacity-60">▾</span>
+                          </button>
+                          {projectPickerLogId === log.id && (
+                            <ProjectPicker
+                              projects={orderProjectList(getAllTreeProjects().filter((p) => p.source === (log.source || 'Activity Log')), projectOrder)}
+                              currentTitle={log.Projects || 'Untitled Project'}
+                              colorFor={(p) => projectColorMap[p.title] || NOTION_COLOR_MAP[p.projectTypeColor] || currentThemeColors.primary}
+                              busy={movingEntry}
+                              onPick={(target) => handleRecategorizeEntry(log, target)}
+                              onClose={() => setProjectPickerLogId(null)}
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {tenantId && <RemoveEntryButton onRemove={() => handleRemoveEntry(log)} />}
                   </div>
 
                   <div className="relative shrink-0" style={{ height: `${dayImageHeight}px` }}>
@@ -3397,24 +3601,7 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-2">
-                    <LogTitleEditor log={log} tenantId={tenantId} onSaved={handleTitleSaved} className="text-base font-bold" />
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {tenantId && <RemoveEntryButton onRemove={() => handleRemoveEntry(log)} />}
-                      <a
-                        href={notionPageUrl} 
-                        target="_blank" 
-                        rel="noopener noreferrer" 
-                        onClick={(e) => e.stopPropagation()}
-                        style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-primary)' }}
-                        className="text-xs font-semibold px-2.5 py-1 rounded border shrink-0 flex items-center gap-1 transition-colors hover:border-[var(--theme-primary)]"
-                        title="Open in Notion Center Peek"
-                      >
-                        <span>Open in Notion</span>
-                        <span className="text-[10px]">↗</span>
-                      </a>
-                    </div>
-                  </div>
+                  <LogTitleEditor log={log} tenantId={tenantId} onSaved={handleTitleSaved} className="text-base font-bold" />
 
                   <LogNoteEditor
                     log={log}
@@ -3422,6 +3609,19 @@ function App() {
                     onSaved={handleNoteSaved}
                     onPhotoAdded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
                   />
+
+                  <a
+                    href={notionPageUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)', color: 'var(--theme-primary)' }}
+                    className="self-start text-xs font-semibold px-2.5 py-1 rounded border shrink-0 flex items-center gap-1 transition-colors hover:border-[var(--theme-primary)]"
+                    title="Open in Notion Center Peek"
+                  >
+                    <span>Open in Notion</span>
+                    <span className="text-[10px]">↗</span>
+                  </a>
                 </div>
               );
             })
@@ -3963,8 +4163,22 @@ function App() {
               <div className="flex flex-wrap items-center gap-1.5 pb-2 border-b" style={{ borderColor: 'var(--theme-border)' }}>
                 <button onClick={handleExpandAllCategories} style={{ backgroundColor: 'var(--theme-bg)' }} className="text-[10px] font-bold px-2 py-1 rounded cursor-pointer transition-colors opacity-70 hover:opacity-100">Expand All</button>
                 <button onClick={handleCollapseAllCategories} style={{ backgroundColor: 'var(--theme-bg)' }} className="text-[10px] font-bold px-2 py-1 rounded cursor-pointer transition-colors opacity-70 hover:opacity-100">Collapse All</button>
+                <button
+                  onClick={() => setReorderMode((on) => !on)}
+                  aria-pressed={reorderMode}
+                  title={reorderMode ? 'Done arranging the list' : 'Arrange the list in your own order'}
+                  style={{ backgroundColor: reorderMode ? 'var(--theme-primary)' : 'var(--theme-bg)', color: reorderMode ? 'var(--theme-on-primary, #fff)' : undefined }}
+                  className={`text-[10px] font-bold px-2 py-1 rounded cursor-pointer transition-colors ${reorderMode ? '' : 'opacity-70 hover:opacity-100'}`}
+                >
+                  {reorderMode ? 'Done' : 'Reorder'}
+                </button>
                 <button onClick={handleShowAllFilters} style={{ color: 'var(--theme-primary)', backgroundColor: 'var(--theme-bg)' }} className="text-[10px] font-bold px-2 py-1 rounded cursor-pointer ml-auto transition-colors">Show All</button>
               </div>
+              {reorderMode && (
+                <p className="text-[10px] opacity-70 pt-2">
+                  Drag a row, or use ▲ ▼, to put the list in your order. It is saved for all your devices.
+                </p>
+              )}
             </div>
             
             <div className="flex-1 overflow-y-auto pr-1 space-y-4 min-h-0">
@@ -3973,6 +4187,91 @@ function App() {
                 // Whether to name each database depends on how many there are,
                 // not on how many the search left.
                 const showSourceHeaders = Object.keys(groupedBySource).length > 1;
+
+                // Arranging the list. Every name a list has ever had counts, not just
+                // those showing (this year, this month, what a search left), so a
+                // move keeps the others where they were; ▲ ▼ and a drop go by what
+                // is showing.
+                const allTree = reorderMode ? getAllTreeProjects() : [];
+                const allSources = [...new Set(allTree.map((p) => p.source))];
+                const allTypesOf = (source) => [...new Set(allTree.filter((p) => p.source === source).map((p) => p.projectType))];
+                const allTitlesOf = (source, type) => allTree.filter((p) => p.source === source && p.projectType === type).map((p) => p.title);
+                // The list as saved: the names showing take the order they now have,
+                // the ones not showing keep their places.
+                const rearranged = (listKey, allNames, nextVisible) => {
+                  const base = sortByOrder(allNames, projectOrderRef.current[listKey]);
+                  commitProjectOrder({ ...projectOrderRef.current, [listKey]: withVisibleOrder(base, nextVisible) });
+                };
+                const arrange = (listKey, allNames, visibleNames, name, direction) => {
+                  rearranged(listKey, allNames, moveAmong(visibleNames, name, direction));
+                };
+                const orderButtons = (listKey, allNames, visibleNames, name) => (
+                  <span className="shrink-0 inline-flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+                    {[-1, 1].map((direction) => {
+                      const at = visibleNames.indexOf(name);
+                      const blocked = direction < 0 ? at <= 0 : at === -1 || at >= visibleNames.length - 1;
+                      return (
+                        <button
+                          key={direction}
+                          type="button"
+                          disabled={blocked}
+                          onClick={(e) => { e.stopPropagation(); arrange(listKey, allNames, visibleNames, name, direction); }}
+                          aria-label={`Move ${name} ${direction < 0 ? 'up' : 'down'}`}
+                          title={direction < 0 ? 'Move up' : 'Move down'}
+                          className="w-5 h-5 flex items-center justify-center rounded text-[9px] leading-none cursor-pointer opacity-70 hover:opacity-100 disabled:opacity-20 disabled:cursor-default"
+                          style={{ backgroundColor: 'var(--theme-card)' }}
+                        >
+                          {direction < 0 ? '▲' : '▼'}
+                        </button>
+                      );
+                    })}
+                  </span>
+                );
+                // Dragging a row onto another of the same list: dropped on its upper
+                // half it goes before it, on its lower half after.
+                const reorderProps = (listKey, allNames, visibleNames, name) => {
+                  if (!reorderMode) return {};
+                  return {
+                    draggable: true,
+                    onDragStart: (e) => {
+                      e.stopPropagation();
+                      orderDragRef.current = { listKey, name };
+                      e.dataTransfer.effectAllowed = 'move';
+                      try { e.dataTransfer.setData('text/plain', name); } catch { /* optional */ }
+                    },
+                    onDragOver: (e) => {
+                      const drag = orderDragRef.current;
+                      if (!drag || drag.listKey !== listKey || drag.name === name) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const box = e.currentTarget.getBoundingClientRect();
+                      const placement = e.clientY < box.top + box.height / 2 ? 'before' : 'after';
+                      setOrderDropHint((hint) => (hint && hint.listKey === listKey && hint.name === name && hint.placement === placement ? hint : { listKey, name, placement }));
+                    },
+                    onDragLeave: (e) => {
+                      if (e.currentTarget.contains(e.relatedTarget)) return;
+                      setOrderDropHint((hint) => (hint && hint.listKey === listKey && hint.name === name ? null : hint));
+                    },
+                    onDrop: (e) => {
+                      const drag = orderDragRef.current;
+                      if (!drag || drag.listKey !== listKey) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      rearranged(listKey, allNames, moveRelative(visibleNames, drag.name, name, orderDropHint?.placement || 'before'));
+                      orderDragRef.current = null;
+                      setOrderDropHint(null);
+                    },
+                    onDragEnd: () => { orderDragRef.current = null; setOrderDropHint(null); },
+                  };
+                };
+                // The line that shows where a drop would land.
+                const dropLine = (listKey, name) => (
+                  orderDropHint && orderDropHint.listKey === listKey && orderDropHint.name === name
+                    ? { boxShadow: orderDropHint.placement === 'before' ? '0 -3px 0 0 var(--theme-primary)' : '0 3px 0 0 var(--theme-primary)' }
+                    : null
+                );
+                const visibleSources = sourceEntries.map(([name]) => name);
+
                 return sourceEntries.map(([source, typesForSource]) => {
                   // A search shows what it found, whatever was folded away.
                   const isSourceHidden = showSourceHeaders && collapsedSources[source] === true && !searchTerm;
@@ -3984,10 +4283,13 @@ function App() {
                       {showSourceHeaders && (
                         <div
                           onClick={() => toggleSourceAccordion(source)}
-                          className={`flex items-center justify-between px-0.5 cursor-pointer select-none ${(hiddenSources[source] || sourceDimmedByIsolate) ? 'opacity-40' : ''}`}
+                          {...reorderProps(SOURCES_KEY, allSources, visibleSources, source)}
+                          style={dropLine(SOURCES_KEY, source) || undefined}
+                          className={`flex items-center justify-between px-0.5 cursor-pointer select-none ${(hiddenSources[source] || sourceDimmedByIsolate) ? 'opacity-40' : ''} ${reorderMode ? 'cursor-grab' : ''}`}
                         >
                           <span className="font-black uppercase tracking-wider opacity-80" style={{ fontSize: `${Math.round(11 * scaleFactor)}px` }}>{source}</span>
                           <div className="flex items-center gap-2">
+                            {reorderMode && orderButtons(SOURCES_KEY, allSources, visibleSources, source)}
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -4026,9 +4328,15 @@ function App() {
                         // category's colour); the colour lives on the project dots.
                         return (
                           <div key={type} className={`border rounded-md lf-frame overflow-hidden shrink-0 shadow-sm ${(hiddenTypes[typeKey] || dimmedByIsolate) ? 'opacity-40' : ''}`} style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}>
-                            <div onClick={() => toggleTypeAccordion(source, type)} className="text-[10px] font-bold uppercase tracking-wider p-2.5 flex items-center justify-between cursor-pointer transition-colors hover:opacity-80">
+                            <div
+                              onClick={() => toggleTypeAccordion(source, type)}
+                              {...reorderProps(typesKey(source), allTypesOf(source), Object.keys(typesForSource), type)}
+                              style={dropLine(typesKey(source), type) || undefined}
+                              className={`text-[10px] font-bold uppercase tracking-wider p-2.5 flex items-center justify-between cursor-pointer transition-colors hover:opacity-80 ${reorderMode ? 'cursor-grab' : ''}`}
+                            >
                               <span className="tracking-wide font-black" style={{ fontSize: `${Math.round(10 * scaleFactor)}px` }}>{type}</span>
                               <div className="flex items-center gap-2">
+                                {reorderMode && orderButtons(typesKey(source), allTypesOf(source), Object.keys(typesForSource), type)}
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -4063,13 +4371,15 @@ function App() {
                                       onClick={() => toggleProjectFilter(p.title)}
                                       onMouseEnter={() => { setHoveredProjectTitle(p.title); setSidebarHoverProject(p.title); }}
                                       onMouseLeave={() => { setHoveredProjectTitle(null); setSidebarHoverProject(null); }}
+                                      {...reorderProps(projectsKey(source, type), allTitlesOf(source, type), projs.map((project) => project.title), p.title)}
                                       style={{
                                         backgroundColor: 'var(--theme-bg)',
                                         borderColor: isHovered || isSelected ? 'var(--theme-secondary)' : 'var(--theme-border)',
                                         opacity: dynamicFilterActive && !isSelected && !isHovered ? 0.35 : 1,
-                                        fontSize: `${Math.round(12 * scaleFactor)}px`
+                                        fontSize: `${Math.round(12 * scaleFactor)}px`,
+                                        ...(dropLine(projectsKey(source, type), p.title) || {}),
                                       }}
-                                      className={`p-2.5 rounded lf-frame border transition-all cursor-pointer flex items-center gap-2 ${
+                                      className={`p-2.5 rounded lf-frame border transition-all flex items-center gap-2 ${reorderMode ? 'cursor-grab' : 'cursor-pointer'} ${
                                         isHovered ? 'ring-1 ring-[var(--theme-secondary)] scale-[1.02] font-bold z-10 relative' : ''
                                       }`}
                                     >
@@ -4083,7 +4393,8 @@ function App() {
                                           {getProjectTimeLabel(source, p.title)}
                                         </span>
                                       )}
-                                      {(() => {
+                                      {reorderMode && orderButtons(projectsKey(source, type), allTitlesOf(source, type), projs.map((project) => project.title), p.title)}
+                                      {!reorderMode && (() => {
                                         const timing = isTimerRunningFor(source, p.title);
                                         return (
                                           <button
@@ -4100,6 +4411,7 @@ function App() {
                                           </button>
                                         );
                                       })()}
+                                      {!reorderMode && (
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
@@ -4115,6 +4427,7 @@ function App() {
                                       >
                                         <IconGallery />
                                       </button>
+                                      )}
                                     </div>
                                   );
                                 })}
@@ -4207,7 +4520,7 @@ function App() {
               "Import Photos" button. */}
           {viewMode === 'import' && (
             <ImportPhotosPanel
-              allProjects={getAllTreeProjects()}
+              allProjects={orderProjectList(getAllTreeProjects(), projectOrder)}
               projectColorMap={projectColorMap}
               tenantId={tenantId}
               onClose={() => { setViewMode(preGalleryViewMode); setImportDateRange(null); dismissBackEntry(); }}
@@ -5514,6 +5827,15 @@ function App() {
           {entryToast.removed && (
             <button
               onClick={() => handleUndoRemove(entryToast.removed)}
+              style={{ color: 'var(--theme-primary)' }}
+              className="shrink-0 font-bold cursor-pointer hover:opacity-80"
+            >
+              Undo
+            </button>
+          )}
+          {entryToast.moved && (
+            <button
+              onClick={() => handleUndoMove(entryToast.moved)}
               style={{ color: 'var(--theme-primary)' }}
               className="shrink-0 font-bold cursor-pointer hover:opacity-80"
             >

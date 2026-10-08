@@ -17,6 +17,8 @@ import {
   saveActiveTimer,
 } from './_lib/timerStore.js';
 import { findProjectTypePropName, projectTypeValue, resolveSourceTaxonomy, taxonomyProperties, valueForProperty } from './_lib/entryTaxonomy.js';
+import { assignmentFrom, currentValues, patchFromAssignment, ProjectChangeError, sameValues } from './_lib/entryProject.js';
+import { sanitizeProjectOrder } from './_lib/projectOrder.js';
 import { buildSessionChildren, buildSessionNote, buildSessionProperties, buildSessionTitle, sanitizeSessionNotes, validPhotoUploadIds } from './_lib/timeTracking.js';
 
 // Needs the newer version for file_uploads (see notionUpload.js) -- used
@@ -63,6 +65,16 @@ const NOTION_VERSION = '2026-03-11';
 // about 30 days, so it can be put back), and putting it back. Only a page that
 // lives in one of the tenant's own configured databases can be touched.
 //
+// And action: 'setProjectOrder' -- the person's own order for the project list
+// (`order`: name lists, see src/projectOrder.js), saved on the tenant record so
+// every device shows the same one; get-notion-logs.js returns it with each sync.
+//
+// And action: 'recategorizeEntry' -- moving an entry to another project (of the
+// same database): `pageId` is the entry, `referenceLogId` any entry of the
+// project it goes to (its project, and type where the entry carries one, are
+// copied -- see _lib/entryProject.js). The answer includes `previous`, what was
+// replaced; sending that back as `restore` (instead of a referenceLogId) undoes it.
+//
 // And action: 'timer' -- the RUNNING timer, held here (in Redis) rather than
 // in one browser so every device sees it and can add notes and photos to it:
 // get / start / adopt / pause / resume / addNote / editNote / removeNote / addPhoto /
@@ -95,7 +107,7 @@ const findSource = (tenant, label) =>
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds, op, timerPhotoId, sessionStartedAt, sourceLabel, topicName, typeName, projectType } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds, op, timerPhotoId, sessionStartedAt, sourceLabel, topicName, typeName, projectType, restore, order } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
 
@@ -130,6 +142,18 @@ export default async function handler(req, res) {
     // A Notion page id: 32 hex digits, with or without dashes.
     if (typeof pageId !== 'string' || !/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(pageId)) {
       return res.status(400).json({ error: 'Missing or invalid pageId' });
+    }
+  } else if (action === 'setProjectOrder') {
+    if (!order || typeof order !== 'object' || Array.isArray(order)) return res.status(400).json({ error: 'Invalid order' });
+  } else if (action === 'recategorizeEntry') {
+    const notionId = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
+    if (typeof pageId !== 'string' || !notionId.test(pageId)) return res.status(400).json({ error: 'Missing or invalid pageId' });
+    // Either an entry of the project to move to (its project is copied), or the
+    // values a move replaced (to put them back).
+    if (restore !== undefined) {
+      if (!restore || typeof restore !== 'object' || Array.isArray(restore)) return res.status(400).json({ error: 'Invalid restore' });
+    } else if (typeof referenceLogId !== 'string' || !notionId.test(referenceLogId)) {
+      return res.status(400).json({ error: 'Missing or invalid referenceLogId' });
     }
   } else {
     if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
@@ -166,6 +190,21 @@ export default async function handler(req, res) {
       await saveTenant(tenantId, tenant);
     } catch (err) {
       console.error('[backlog-photo] Re-verification failed, proceeding on last-known-good:', err.message);
+    }
+  }
+
+  // The person's own order for the project list: kept on the tenant record, so
+  // every device that syncs gets the same one (see get-notion-logs.js, which
+  // returns it). The whole order is replaced each time; what is stored is only
+  // what is fit to (see _lib/projectOrder.js).
+  if (action === 'setProjectOrder') {
+    try {
+      tenant.projectOrder = sanitizeProjectOrder(order);
+      await saveTenant(tenantId, tenant);
+      return res.status(200).json({ success: true, order: tenant.projectOrder });
+    } catch (err) {
+      console.error('[backlog-photo] setProjectOrder failed:', err.message);
+      return res.status(500).json({ error: 'Could not save the order right now.' });
     }
   }
 
@@ -213,6 +252,54 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true });
     } catch (err) {
       console.error(`[backlog-photo] ${action} failed:`, err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // Moving an entry to another project: its project (and, where the database
+  // keeps it on the entry, its type) is copied from an entry of that project --
+  // see _lib/entryProject.js. Answers with what it replaced, which undoing the
+  // move sends back as `restore`. Only a page in one of THIS tenant's own
+  // databases can be changed, and the project has to come from the same one.
+  if (action === 'recategorizeEntry') {
+    try {
+      const normalizeId = (id) => String(id || '').replace(/-/g, '').toLowerCase();
+      const readPage = async (id, what) => {
+        const pageRes = await notionFetch(`https://api.notion.com/v1/pages/${id}`, { method: 'GET', headers });
+        if (!pageRes.ok) {
+          const errData = await pageRes.json().catch(() => ({}));
+          throw new ProjectChangeError(errData.message || `Could not read ${what}.`);
+        }
+        return pageRes.json();
+      };
+
+      const entry = await readPage(pageId, 'this entry');
+      const entryDatabase = normalizeId(entry.parent?.database_id);
+      const source = entryDatabase ? (tenant.sources || []).find((s) => normalizeId(s.databaseId) === entryDatabase) : null;
+      if (!source) return res.status(403).json({ error: 'That page is not an entry in your calendar.' });
+
+      let assignment;
+      if (restore !== undefined) {
+        assignment = restore;
+      } else {
+        const reference = await readPage(referenceLogId, 'that project');
+        if (normalizeId(reference.parent?.database_id) !== entryDatabase) {
+          return res.status(400).json({ error: 'That project is in a different database than this entry.' });
+        }
+        assignment = assignmentFrom(reference.properties || {}, source);
+      }
+
+      const patch = patchFromAssignment(entry.properties || {}, assignment);
+      const previous = currentValues(entry.properties || {}, assignment);
+      if (sameValues(previous, assignment)) return res.status(200).json({ success: true, changed: false, previous });
+
+      const patchRes = await notionFetch(`https://api.notion.com/v1/pages/${pageId}`, { method: 'PATCH', headers, body: JSON.stringify({ properties: patch }) });
+      const patchData = await patchRes.json().catch(() => ({}));
+      if (patchData.object === 'error') return res.status(400).json({ error: patchData.message || 'Notion would not change this entry.' });
+      return res.status(200).json({ success: true, changed: true, previous });
+    } catch (err) {
+      if (err instanceof ProjectChangeError) return res.status(400).json({ error: err.message });
+      console.error('[backlog-photo] recategorizeEntry failed:', err.message);
       return res.status(500).json({ error: err.message });
     }
   }
@@ -560,10 +647,12 @@ export default async function handler(req, res) {
     }
 
     const properties = {};
+    const dateProperties = []; // the database's date properties, which get the photo's date
     for (const [propName, propVal] of Object.entries(refPage.properties || {})) {
       if (propVal.type === 'title') {
         properties[propName] = { title: [{ text: { content: String(title || 'Backlogged Photo') } }] };
       } else if (propVal.type === 'date') {
+        dateProperties.push(propName);
         // dateTaken is already a bare YYYY-MM-DD (straight from the review
         // screen's <input type="date">) -- send it through as-is rather
         // than round-tripping it via new Date(...).toISOString(), which
@@ -608,7 +697,16 @@ export default async function handler(req, res) {
     const createData = await createRes.json();
     if (createData.object === 'error') return res.status(400).json({ error: createData.message });
 
-    return res.status(200).json({ success: true, pageId: createData.id });
+    // What date Notion actually kept. A database with no date property can't be
+    // given one -- the calendar then dates the entry by when it was created
+    // (today) -- so the answer says whether one was set, and which date stuck,
+    // for the import to tell the person rather than leave them to find out.
+    const storedDates = dateProperties
+      .map((name) => createData.properties?.[name]?.date?.start)
+      .filter((start) => typeof start === 'string');
+    console.log(`[backlog-photo] created an entry: asked for ${dateTaken}, date properties ${JSON.stringify(dateProperties)}, stored ${JSON.stringify(storedDates)}`);
+
+    return res.status(200).json({ success: true, pageId: createData.id, dated: dateProperties.length > 0, storedDate: storedDates[0] || null });
   } catch (err) {
     console.error('[backlog-photo] Failed:', err.message);
     return res.status(500).json({ error: err.message });

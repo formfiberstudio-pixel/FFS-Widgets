@@ -125,6 +125,8 @@ export default async function handler(req, res) {
         ? specialDaysDatabaseId.trim()
         : (existingTenant?.specialDaysDatabaseId || ''),
       savedViews: cleanSavedViews,
+      // Re-saving the setup must not undo the person's own project order.
+      projectOrder: existingTenant?.projectOrder || {},
       lastVerifiedAt: Date.now(),
     });
   } catch (err) {
