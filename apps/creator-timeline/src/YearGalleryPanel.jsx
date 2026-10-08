@@ -29,7 +29,7 @@ export default function YearGalleryPanel({
   onClearFilter,
   newestFirst,
   onToggleOrder,
-  onOpenDay,
+  onOpenWeek,
   thumbSize,
   minThumbSize,
   maxThumbSize,
@@ -180,8 +180,8 @@ export default function YearGalleryPanel({
                   {group.photos.map(({ log, dateObj }) => (
                     <button
                       key={log.id}
-                      onClick={() => onOpenDay(dateObj)}
-                      title={`${log.title || 'Untitled'} -- open this day`}
+                      onClick={() => onOpenWeek(dateObj)}
+                      title={`${log.title || 'Untitled'} -- open its week`}
                       className="group flex flex-col text-left cursor-pointer min-w-0"
                     >
                       <span

@@ -3025,8 +3025,13 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, isMobile]);
 
-  const handleDayClick = (dateObj, logs) => {
-    if (dateObj) setSelectedLogModal({ dateObj, logs });
+  // The Year view only goes in as far as a month or a week -- never to a single
+  // day -- so a day picked there (a dot on the phone, a photo in the gallery)
+  // opens the week it falls in.
+  const openWeekOf = (dateObj) => {
+    if (!dateObj) return;
+    setCurrentDate(dateObj);
+    setViewMode('week');
   };
 
   // Mobile Month view's day-cell tap is two-step rather than opening the
@@ -5143,7 +5148,7 @@ function App() {
                       const isDimmedByHighlight = hoveredProjectTitle && !isHighlightedProject;
 
                       return (
-                        <div key={`${mIdx}-${dayNum}`} className="flex items-center justify-center" style={{ height: '10px' }} onClick={() => handleDayClick(dateObj, logs)}>
+                        <div key={`${mIdx}-${dayNum}`} className="flex items-center justify-center" style={{ height: '10px' }} onClick={() => openWeekOf(dateObj)}>
                           <div
                             // opacity is set inline below (not via an
                             // opacity-* class) specifically so the
@@ -5214,7 +5219,7 @@ function App() {
                               const isWeekendOrHoliday = dateObj.getDay() === 0 || dateObj.getDay() === 6 || !!specialDay || !!getOntarioStatHolidayName(dateObj);
                               const isOutline = !hasLog && isWeekendOrHoliday;
                               return (
-                                <div key={i} className="flex items-center justify-center" style={{ aspectRatio: '1' }} onClick={() => handleDayClick(dateObj, logs)}>
+                                <div key={i} className="flex items-center justify-center" style={{ aspectRatio: '1' }} onClick={() => openWeekOf(dateObj)}>
                                   <div
                                     // Smaller than the cell (not w-full/h-full)
                                     // -- filling the whole cell read as one
@@ -5380,8 +5385,10 @@ function App() {
                                 isLast: rowIndex % 7 === 6 || targetDayNum === daysInMonth || rowIndex === 36,
                               })}
                               <div
-                                onClick={(e) => { e.stopPropagation(); setSelectedLogModal({ dateObj: targetDate, logs }); }}  
-                                style={{ 
+                                // No click of its own: the Year view goes in as far as
+                                // a month or a week, so a click on a day reaches the
+                                // cell around it (pin the week, click again to open it).
+                                style={{
                                   width: `${yearDotPx}px`,
                                   height: `${yearDotPx}px`,
                                   fontSize: `${yearDotFontPx}px`,
@@ -5438,7 +5445,7 @@ function App() {
               onClearFilter={() => setPinnedYearFilter(null)}
               newestFirst={yearGalleryNewestFirst}
               onToggleOrder={() => setYearGalleryNewestFirst((prev) => !prev)}
-              onOpenDay={(dateObj) => setSelectedLogModal({ dateObj, logs: getLogsForDate(dateObj) })}
+              onOpenWeek={openWeekOf}
               thumbSize={yearGalleryThumbSize}
               minThumbSize={YEAR_GALLERY_THUMB_MIN}
               maxThumbSize={YEAR_GALLERY_THUMB_MAX}
