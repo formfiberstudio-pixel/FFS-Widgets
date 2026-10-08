@@ -8,6 +8,7 @@ import { buildSessionNoteText, buildSessionTitle, formatMinutes, projectTimeSumm
 import { copyToClipboard } from './clipboard.js';
 import {
   isFacetedSource,
+  isTaggedLog as logIsTagged,
   filterTreeLogs,
   resolveColorFacetKey,
   facetValueExcluded,
@@ -2255,9 +2256,20 @@ function App() {
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
 
+  // Whether a log is a TAGGED entry (coloured, labelled and chipped by its tags)
+  // rather than an entry of a project. The server attaches `facets` to every log
+  // of a source that is not a relation + rollup pair -- even one with only a
+  // property or two -- but the project list and every filter (isFacetedSource)
+  // read a source as tagged only from three tags up, and show anything smaller
+  // as projects under a category. Colours, labels and chips follow the same
+  // reading, so an entry looks the same in the calendar as its project does in
+  // the list (otherwise it came out in its tag's grey, or the fallback gold when
+  // it had no tag, whatever colour its project was given).
+  const isTaggedLog = (log) => logIsTagged(log, facetSchemas);
+
   const getDotColor = (log) => {
     if (!log) return currentThemeColors.border;
-    if (log.facets) {
+    if (isTaggedLog(log)) {
       const colorKey = resolveColorFacetKey(log.source, facetSchemas, colorFacetBySource);
       const values = (colorKey && log.facets[colorKey]) || [];
       if (values.length === 1) return NOTION_COLOR_MAP[values[0].color] || currentThemeColors.primary;
@@ -2301,7 +2313,7 @@ function App() {
   // the color used to pick it never disagree.
   const getPillBackground = (log, solidColor) => {
     if (solidColor !== null) return solidColor;
-    if (!log?.facets) return currentThemeColors.primary;
+    if (!isTaggedLog(log)) return currentThemeColors.primary;
     const colorKey = resolveColorFacetKey(log.source, facetSchemas, colorFacetBySource);
     const values = (colorKey && log.facets[colorKey]) || [];
     return getFacetDotBackground(values);
@@ -2312,6 +2324,9 @@ function App() {
   // instead, so a viewer sees all of an entry's tags at a glance rather
   // than needing to switch which facet is currently promoted.
   const getSecondaryFacetKeys = (source) => {
+    // A source with fewer than three tags reads as projects (see isTaggedLog):
+    // no tag dots.
+    if (!isFacetedSource(source, facetSchemas)) return [];
     const schema = facetSchemas[source] || [];
     const colorKey = resolveColorFacetKey(source, facetSchemas, colorFacetBySource);
     return schema.map(f => f.key).filter(k => k !== colorKey);
@@ -2322,7 +2337,7 @@ function App() {
   // rather than the synthesized legacy Projects field, which is always
   // facet #1 regardless of which facet the viewer chose to promote.
   const getPillLabel = (log) => {
-    if (log?.facets) {
+    if (isTaggedLog(log)) {
       const colorKey = resolveColorFacetKey(log.source, facetSchemas, colorFacetBySource);
       const values = (colorKey && log.facets[colorKey]) || [];
       if (values.length > 0) return values.map(v => v.name).join(' + ');
@@ -2336,7 +2351,7 @@ function App() {
   // tag's, not the project's, so a project's own entry is preferred.
   const findProjectLog = (logs, titles) => {
     const named = (l) => titles.includes(l.Projects || 'Untitled Project');
-    return logs.find((l) => !l.facets && named(l)) || logs.find(named);
+    return logs.find((l) => !isTaggedLog(l) && named(l)) || logs.find(named);
   };
 
   const getDisplayDotColor = (logs, dateObj) => {
@@ -2564,7 +2579,7 @@ function App() {
   const startProjectTimer = (source, title, meta) => {
     // Any existing entry of the project is a usable reference: it tells the
     // server which database to write to and which project to link.
-    const referenceLog = timelineLogs.find((l) => (l.source || 'Activity Log') === source && (l.Projects || 'Untitled Project') === title && !l.facets);
+    const referenceLog = timelineLogs.find((l) => (l.source || 'Activity Log') === source && (l.Projects || 'Untitled Project') === title && !isTaggedLog(l));
     if (!referenceLog) return;
     // meta is the sidebar row's own type group, so the finished session
     // lands under the same heading the user started it from.
@@ -3273,7 +3288,7 @@ function App() {
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 flex-wrap">
-                    {log.facets ? (
+                    {isTaggedLog(log) ? (
                       <div className="flex flex-wrap items-center gap-1 min-w-0">
                         {Object.values(log.facets).flat().map((v, i) => (
                           <span

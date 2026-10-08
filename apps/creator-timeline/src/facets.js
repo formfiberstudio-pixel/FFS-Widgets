@@ -12,6 +12,17 @@ export function isFacetedSource(source, facetSchemas) {
   return (facetSchemas?.[source]?.length || 0) >= 3;
 }
 
+// Whether a log is shown as a TAGGED entry (coloured, labelled and chipped by
+// its tags) rather than as an entry of a project. The server attaches `facets`
+// to every log of any source that is not a relation + rollup pair -- even one
+// with a single property -- but a source only reads as tagged here from three
+// tags up (isFacetedSource); smaller ones are the source -> type -> project
+// tree. A log with `facets` from a smaller source is a project entry, and is
+// coloured by its project like the project list shows it.
+export function isTaggedLog(log, facetSchemas) {
+  return Boolean(log?.facets) && isFacetedSource(log.source || 'Activity Log', facetSchemas);
+}
+
 // Drops logs from faceted sources so the existing source -> type -> project
 // tree (getYearProjects, groupedBySource/groupedProjects, the Palette tab,
 // generateProjectColorMap) never sees them -- those stay exactly as they
