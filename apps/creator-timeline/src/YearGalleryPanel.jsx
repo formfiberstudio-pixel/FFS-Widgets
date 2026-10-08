@@ -30,6 +30,7 @@ export default function YearGalleryPanel({
   newestFirst,
   onToggleOrder,
   onOpenWeek,
+  focusFor,
   thumbSize,
   minThumbSize,
   maxThumbSize,
@@ -188,7 +189,7 @@ export default function YearGalleryPanel({
                         className="block w-full overflow-hidden border lf-frame"
                         style={{ height: `${frameHeight}px`, borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)', borderRadius: `${radius}px` }}
                       >
-                        <img src={log.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
+                        <img src={log.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" style={{ objectPosition: focusFor?.(log) }} />
                       </span>
                       <span className="mt-1 text-[10px] font-bold opacity-60 tabular-nums">
                         {dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}

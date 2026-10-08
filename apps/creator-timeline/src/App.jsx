@@ -28,6 +28,7 @@ import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
 import RemoveEntryButton from './RemoveEntryButton.jsx';
 import ProjectPicker from './ProjectPicker.jsx';
+import { focusAfterDrag, focusCss, withFocus } from './thumbnailFocus.js';
 import { isLongBreak, shouldAutoSync } from './autoSync.js';
 import { filterFacetGroups, filterProjectTree, normalizeSearch } from './projectSearch.js';
 import { onSharedPhotosArrived, takeSharedPhotos } from './nativePhotoPicker.js';
@@ -802,6 +803,7 @@ function WeekDayColumn({
   weekCardHeight,
   cardRadius,
   hoveredProjectTitle,
+  thumbFocus,
   setSelectedLogModal,
   getDotColor,
   getPillBackground,
@@ -927,6 +929,7 @@ function WeekDayColumn({
                   <img
                     src={log.imageUrl}
                     className="absolute inset-0 w-full h-full object-cover z-0 transition-opacity duration-200"
+                    style={{ objectPosition: focusCss(thumbFocus?.[log.id]) }}
                     alt=""
                   />
                 ) : log.pageContent ? (
@@ -2011,6 +2014,7 @@ function App() {
           setFacetSchemas(cached.facetSchemas || {});
           setFacetCandidates(cached.facetCandidates || {});
           loadCachedProjectOrder(cached.projectOrder, urlTenantId);
+          loadCachedThumbFocus(cached.thumbnailFocus);
           generateProjectColorMap(filterTreeLogs(cached.data, cached.facetSchemas || {}));
           paintedFromCache = true;
           hasFreshCache = typeof cached.cachedAt === 'number' && (Date.now() - cached.cachedAt) < CACHE_TTL_MS;
@@ -2060,6 +2064,7 @@ function App() {
         setFacetSchemas(result.facetSchemas || {});
         setFacetCandidates(result.facetCandidates || {});
         adoptServerProjectOrder(result.projectOrder, tenant);
+        adoptServerThumbFocus(result.thumbnailFocus, tenant);
         generateProjectColorMap(filterTreeLogs(result.data || [], result.facetSchemas || {}));
         try {
           const cacheKey = `${NOTION_CACHE_KEY}:${tenant}:${sourcesFilterArg ? sourcesFilterArg.join(',') : 'all'}`;
@@ -2070,6 +2075,7 @@ function App() {
             facetSchemas: result.facetSchemas || {},
             facetCandidates: result.facetCandidates || {},
             projectOrder: projectOrderRef.current,
+            thumbnailFocus: thumbFocusRef.current,
             cachedAt: Date.now(),
           }));
         } catch (err) {
@@ -2313,6 +2319,86 @@ function App() {
     updateCachedFields({ projectOrder: clean });
     clearTimeout(projectOrderTimerRef.current);
     projectOrderTimerRef.current = setTimeout(() => saveProjectOrderNow(), 600);
+  };
+
+  // Which part of each photo shows when it is cropped to fit its frame -- chosen by
+  // dragging the photo on its Day card (see thumbnailFocus.js), applied wherever
+  // that photo is shown, and the same on every device: saved with the rest of the
+  // setup and returned with each sync, like the project order above.
+  const [thumbFocus, setThumbFocusState] = useState({});
+  const thumbFocusRef = useRef({});
+  const thumbFocusUnsavedRef = useRef(false); // set from a change until the server has it
+  const thumbFocusTimerRef = useRef(null);
+  const [repositionLogId, setRepositionLogId] = useState(null); // the Day card being moved
+
+  const loadCachedThumbFocus = (cachedMap) => {
+    const map = cachedMap && typeof cachedMap === 'object' && !Array.isArray(cachedMap) ? cachedMap : {};
+    thumbFocusRef.current = map;
+    setThumbFocusState(map);
+  };
+
+  const saveThumbFocusNow = async (tenant = tenantId) => {
+    if (!tenant || isDemoMode) return;
+    const sent = thumbFocusRef.current;
+    try {
+      const response = await fetch('/api/backlog-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId: tenant, action: 'setThumbnailFocus', focus: sent }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) throw new Error(result.error || 'The position was not saved.');
+      if (thumbFocusRef.current === sent) thumbFocusUnsavedRef.current = false;
+    } catch {
+      setEntryToast({ message: 'Couldn’t save the photo’s position — it is kept on this device for now.', isError: true });
+    }
+  };
+
+  // What a sync brings: adopted, unless a change here has not reached the server yet.
+  const adoptServerThumbFocus = (serverMap, tenant) => {
+    if (thumbFocusUnsavedRef.current) {
+      saveThumbFocusNow(tenant);
+      return;
+    }
+    loadCachedThumbFocus(serverMap);
+  };
+
+  // While dragging: shown at once, saved when the drag ends.
+  const previewThumbFocus = (logId, focus) => {
+    const next = withFocus(thumbFocusRef.current, logId, focus);
+    thumbFocusRef.current = next;
+    setThumbFocusState(next);
+  };
+  const commitThumbFocus = () => {
+    thumbFocusUnsavedRef.current = true;
+    updateCachedFields({ thumbnailFocus: thumbFocusRef.current });
+    clearTimeout(thumbFocusTimerRef.current);
+    thumbFocusTimerRef.current = setTimeout(() => saveThumbFocusNow(), 600);
+  };
+
+  // Dragging a Day card's photo inside its frame: the photo follows the pointer
+  // (the position it settles on is what shows wherever it is cropped).
+  const startFocusDrag = (e, log) => {
+    if (e.button > 0 || e.target.closest('[data-resize-handle], button')) return;
+    const frame = e.currentTarget;
+    const image = frame.querySelector('img');
+    if (!image || !image.naturalWidth) return;
+    e.preventDefault();
+    const box = frame.getBoundingClientRect();
+    const size = { frame: { width: box.width, height: box.height }, natural: { width: image.naturalWidth, height: image.naturalHeight } };
+    const start = thumbFocusRef.current[log.id] || { x: 50, y: 50 };
+    const origin = { x: e.clientX, y: e.clientY };
+    try { frame.setPointerCapture(e.pointerId); } catch { /* the window listeners below still follow it */ }
+    const move = (ev) => previewThumbFocus(log.id, focusAfterDrag({ start, dx: ev.clientX - origin.x, dy: ev.clientY - origin.y, ...size }));
+    const end = () => {
+      frame.removeEventListener('pointermove', move);
+      frame.removeEventListener('pointerup', end);
+      frame.removeEventListener('pointercancel', end);
+      commitThumbFocus();
+    };
+    frame.addEventListener('pointermove', move);
+    frame.addEventListener('pointerup', end);
+    frame.addEventListener('pointercancel', end);
   };
 
   // Moving an entry to another project from the Day page: the same Notion page,
@@ -3551,12 +3637,18 @@ function App() {
                     {tenantId && <RemoveEntryButton onRemove={() => handleRemoveEntry(log)} />}
                   </div>
 
-                  <div className="relative shrink-0" style={{ height: `${dayImageHeight}px` }}>
+                  <div
+                    className="relative shrink-0"
+                    style={{ height: `${dayImageHeight}px`, ...(repositionLogId === log.id ? { touchAction: 'none', cursor: 'grab' } : {}) }}
+                    onPointerDown={repositionLogId === log.id ? (e) => startFocusDrag(e, log) : undefined}
+                    onClick={repositionLogId === log.id ? (e) => e.stopPropagation() : undefined}
+                  >
                     {log.imageUrl ? (
                       <img
                         src={log.imageUrl}
-                        className="h-full w-full rounded-md lf-frame object-cover border"
-                        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)' }}
+                        draggable={false}
+                        className="h-full w-full rounded-md lf-frame object-cover border select-none"
+                        style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-card)', objectPosition: focusCss(thumbFocus[log.id]) }}
                         alt=""
                       />
                     ) : (
@@ -3570,7 +3662,37 @@ function App() {
                       />
                     )}
 
+                    {log.imageUrl && (
+                      // Choosing which part of the photo shows when it is cropped.
+                      <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => setRepositionLogId((current) => (current === log.id ? null : log.id))}
+                          title={repositionLogId === log.id ? 'Done moving the photo' : 'Move the photo inside its frame, to choose what shows'}
+                          className="rounded-full px-2.5 py-1 text-[10px] font-bold bg-black/60 text-white cursor-pointer hover:bg-black/80 transition-colors"
+                        >
+                          {repositionLogId === log.id ? 'Done' : '✥ Position'}
+                        </button>
+                        {repositionLogId === log.id && thumbFocus[log.id] && (
+                          <button
+                            type="button"
+                            onClick={() => { previewThumbFocus(log.id, null); commitThumbFocus(); }}
+                            title="Back to the middle of the photo"
+                            className="rounded-full px-2.5 py-1 text-[10px] font-bold bg-black/60 text-white cursor-pointer hover:bg-black/80 transition-colors"
+                          >
+                            Reset
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {repositionLogId === log.id && (
+                      <div className="absolute inset-x-0 bottom-8 z-10 flex justify-center pointer-events-none">
+                        <span className="rounded-full px-3 py-1 text-[10px] font-bold bg-black/60 text-white">Drag the photo to choose what shows</span>
+                      </div>
+                    )}
+
                     <div
+                      data-resize-handle
                       onMouseDown={(e) => handleMouseDownDayModalResize(e, dayImageScale)}
                       onClick={(e) => e.stopPropagation()}
                       className={`group/handle absolute left-0 right-0 bottom-0 translate-y-1/2 z-30 h-6 flex items-center justify-between cursor-ns-resize transition-opacity duration-150 ${
@@ -4616,7 +4738,7 @@ function App() {
                             >
                               <div className="aspect-square w-full overflow-hidden" style={{ backgroundColor: 'var(--theme-card)' }}>
                                 {log.imageUrl ? (
-                                  <img src={log.imageUrl} alt="" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
+                                  <img src={log.imageUrl} alt="" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" style={{ objectPosition: focusCss(thumbFocus[log.id]) }} />
                                 ) : (
                                   // A text entry: its note stands in for the photo.
                                   <p
@@ -4806,6 +4928,7 @@ function App() {
                               <img
                                 src={primaryLog.imageUrl}
                                 className={`absolute inset-0 w-full h-full object-cover z-0 transition-opacity ${isHalftoned ? 'opacity-40' : ''} ${isDimmedByHighlight ? 'opacity-30 grayscale' : ''}`}
+                                style={{ objectPosition: focusCss(thumbFocus[primaryLog.id]) }}
                                 alt=""
                                 decoding="async"
                                 loading="lazy"
@@ -4965,6 +5088,7 @@ function App() {
                               <img
                                 src={primaryLog.imageUrl}
                                 className={`absolute inset-0 w-full h-full object-cover z-0 transition-opacity duration-200 ${isHalftoned ? 'opacity-40' : ''}`}
+                                style={{ objectPosition: focusCss(thumbFocus[primaryLog.id]) }}
                                 alt=""
                                 decoding="async"
                                 loading="lazy"
@@ -5123,7 +5247,7 @@ function App() {
                             >
                               <div className="w-16 h-16 rounded-lg lf-frame overflow-hidden shrink-0 flex items-center justify-center font-bold text-lg" style={{ backgroundColor: 'var(--theme-card)' }}>
                                 {log.imageUrl ? (
-                                  <img src={log.imageUrl} className="w-full h-full object-cover" alt="" loading="lazy" />
+                                  <img src={log.imageUrl} className="w-full h-full object-cover" style={{ objectPosition: focusCss(thumbFocus[log.id]) }} alt="" loading="lazy" />
                                 ) : (
                                   <span style={{ color: 'var(--theme-primary)' }}>{day.dateObj.getDate()}</span>
                                 )}
@@ -5266,6 +5390,7 @@ function App() {
                       weekCardHeight={weekCardHeight}
                       cardRadius={cardRadius}
                       hoveredProjectTitle={hoveredProjectTitle}
+                      thumbFocus={thumbFocus}
                       setSelectedLogModal={setSelectedLogModal}
                       getDotColor={getDotColor}
                       getPillBackground={getPillBackground}
@@ -5361,7 +5486,7 @@ function App() {
                       return (
                         <div key={log.id} style={{ backgroundColor: 'var(--theme-bg)', borderColor: 'var(--theme-border)' }} className="rounded-xl lf-frame border overflow-hidden">
                           {log.imageUrl && (
-                            <img src={log.imageUrl} className="w-full max-h-64 object-cover" alt="" loading="lazy" />
+                            <img src={log.imageUrl} className="w-full max-h-64 object-cover" style={{ objectPosition: focusCss(thumbFocus[log.id]) }} alt="" loading="lazy" />
                           )}
                           <div className="p-3 space-y-2">
                             <div className="flex items-center justify-between gap-2">
@@ -5796,6 +5921,7 @@ function App() {
               newestFirst={yearGalleryNewestFirst}
               onToggleOrder={() => setYearGalleryNewestFirst((prev) => !prev)}
               onOpenWeek={openWeekOf}
+              focusFor={(log) => focusCss(thumbFocus[log.id])}
               thumbSize={yearGalleryThumbSize}
               minThumbSize={YEAR_GALLERY_THUMB_MIN}
               maxThumbSize={YEAR_GALLERY_THUMB_MAX}

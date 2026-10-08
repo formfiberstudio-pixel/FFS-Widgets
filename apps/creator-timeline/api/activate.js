@@ -127,6 +127,7 @@ export default async function handler(req, res) {
       savedViews: cleanSavedViews,
       // Re-saving the setup must not undo the person's own project order.
       projectOrder: existingTenant?.projectOrder || {},
+      thumbnailFocus: existingTenant?.thumbnailFocus || {},
       lastVerifiedAt: Date.now(),
     });
   } catch (err) {

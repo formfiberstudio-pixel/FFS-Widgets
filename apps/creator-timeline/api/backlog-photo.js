@@ -19,6 +19,7 @@ import {
 import { findProjectTypePropName, projectTypeValue, resolveSourceTaxonomy, taxonomyProperties, valueForProperty } from './_lib/entryTaxonomy.js';
 import { assignmentFrom, currentValues, patchFromAssignment, ProjectChangeError, sameValues } from './_lib/entryProject.js';
 import { sanitizeProjectOrder } from './_lib/projectOrder.js';
+import { sanitizeThumbnailFocus } from './_lib/thumbnailFocus.js';
 import { buildSessionChildren, buildSessionNote, buildSessionProperties, buildSessionTitle, sanitizeSessionNotes, validPhotoUploadIds } from './_lib/timeTracking.js';
 
 // Needs the newer version for file_uploads (see notionUpload.js) -- used
@@ -69,6 +70,10 @@ const NOTION_VERSION = '2026-03-11';
 // (`order`: name lists, see src/projectOrder.js), saved on the tenant record so
 // every device shows the same one; get-notion-logs.js returns it with each sync.
 //
+// And action: 'setThumbnailFocus' -- which part of each photo shows when it is
+// cropped (`focus`: { entry id: { x, y } } in percent), saved on the tenant
+// record so every device crops the same way; returned with each sync.
+//
 // And action: 'recategorizeEntry' -- moving an entry to another project (of the
 // same database): `pageId` is the entry, `referenceLogId` any entry of the
 // project it goes to (its project, and type where the entry carries one, are
@@ -107,7 +112,7 @@ const findSource = (tenant, label) =>
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds, op, timerPhotoId, sessionStartedAt, sourceLabel, topicName, typeName, projectType, restore, order } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds, op, timerPhotoId, sessionStartedAt, sourceLabel, topicName, typeName, projectType, restore, order, focus } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
 
@@ -143,6 +148,8 @@ export default async function handler(req, res) {
     if (typeof pageId !== 'string' || !/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(pageId)) {
       return res.status(400).json({ error: 'Missing or invalid pageId' });
     }
+  } else if (action === 'setThumbnailFocus') {
+    if (!focus || typeof focus !== 'object' || Array.isArray(focus)) return res.status(400).json({ error: 'Invalid focus' });
   } else if (action === 'setProjectOrder') {
     if (!order || typeof order !== 'object' || Array.isArray(order)) return res.status(400).json({ error: 'Invalid order' });
   } else if (action === 'recategorizeEntry') {
@@ -197,6 +204,20 @@ export default async function handler(req, res) {
   // every device that syncs gets the same one (see get-notion-logs.js, which
   // returns it). The whole order is replaced each time; what is stored is only
   // what is fit to (see _lib/projectOrder.js).
+  // Which part of each photo shows when it is cropped (see _lib/thumbnailFocus.js),
+  // kept on the tenant record like the project order so every device crops the
+  // same way; the whole map is replaced each time.
+  if (action === 'setThumbnailFocus') {
+    try {
+      tenant.thumbnailFocus = sanitizeThumbnailFocus(focus);
+      await saveTenant(tenantId, tenant);
+      return res.status(200).json({ success: true, focus: tenant.thumbnailFocus });
+    } catch (err) {
+      console.error('[backlog-photo] setThumbnailFocus failed:', err.message);
+      return res.status(500).json({ error: 'Could not save that right now.' });
+    }
+  }
+
   if (action === 'setProjectOrder') {
     try {
       tenant.projectOrder = sanitizeProjectOrder(order);
