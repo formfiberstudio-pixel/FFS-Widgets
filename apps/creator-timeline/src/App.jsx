@@ -5023,6 +5023,7 @@ function App() {
               sharedNativePhotos={pendingSharedNativePhotos}
               onConsumedSharedNativePhotos={() => setPendingSharedNativePhotos(null)}
               fixedDateRange={importDateRange}
+              knownEntryIds={new Set(timelineLogs.map((l) => l.id))}
               onStepChange={setImportPanelStep}
             />
           )}

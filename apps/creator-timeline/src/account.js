@@ -82,6 +82,7 @@ const ACCOUNT_KEY_PREFIXES = [
   'notionWidgetProjectOrderUnsaved:',
   'notionWidgetColorsUnsaved:',
   'notionWidgetColorsSeen:',
+  'notionWidgetLoggedPhotos:',
 ];
 
 // Forgets the account and everything this device kept of it, so the next account

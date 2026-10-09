@@ -5,6 +5,7 @@ import { isNativePhotoPickerSupported, queryPhotosByDateRange, getPhotoThumbnail
 import { canReadClipboardImages, imageFilesFromClipboardData, readClipboardImageFiles } from './clipboardImages.js';
 import { edgeScrollSpeed, idsBetween, idsInBox, shiftRange } from './dragSelect.js';
 import { freshSharedRecords, sharedPhotoFromRecord } from './sharedPhotos.js';
+import { loadLoggedPhotos, saveLoggedPhotos, withLoggedPhoto, loggedInfo, countLogged } from './loggedPhotos.js';
 
 function toDateInputValue(date) {
   const d = new Date(date);
@@ -241,7 +242,7 @@ function useTouchReviewLayout() {
   return touch;
 }
 
-export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, sharedNativePhotos, onConsumedSharedNativePhotos, fixedDateRange, projectColorMap, onStepChange }) {
+export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, sharedNativePhotos, onConsumedSharedNativePhotos, fixedDateRange, projectColorMap, knownEntryIds, onStepChange }) {
   // The phone's review layout (a strip of the current date block's photos over
   // the project list) is used on a narrow window AND on a touch-first device
   // such as a tablet, whatever its width -- an iPad opens the web version, but
@@ -430,6 +431,10 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   const [nativePickSelected, setNativePickSelected] = useState(() => new Set());
   const [nativePickLoading, setNativePickLoading] = useState(false);
   const [nativePickError, setNativePickError] = useState(null);
+  // Which of the phone's photos were already logged from here (see loggedPhotos.js):
+  // the picker marks them, and can hide them.
+  const [loggedPhotos, setLoggedPhotos] = useState(() => loadLoggedPhotos(localStorage, tenantId));
+  const [hideLogged, setHideLogged] = useState(false);
 
   // Per-date-block results cache (uri+thumbnail included), keyed by
   // "start::end" -- swiping to a block that's already in here shows
@@ -1089,6 +1094,8 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     const filed = new Map(); // project + date -> { title, date, count }
     const datingProblems = [];
     let doneCount = 0;
+    // The phone's photos uploaded in this go are added to the record of what has been logged.
+    let loggedNow = loggedPhotos;
 
     // Photos backlogged for the same PROJECT and DATE land on ONE page
     // (multiple image blocks) instead of one page each -- group by both,
@@ -1181,12 +1188,18 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           succeededByProject.set(groupProject.title, (succeededByProject.get(groupProject.title) || 0) + 1);
           const filedKey = `${groupProject.title}\u0000${date}`;
           filed.set(filedKey, { title: groupProject.title, date, count: (filed.get(filedKey)?.count || 0) + 1 });
+          if (photo.nativeUri) loggedNow = withLoggedPhoto(loggedNow, photo.nativeUri, { pageId, title: groupProject.title, date });
         } catch (err) {
           failed.push({ name: photo.file?.name || photo.displayName || 'photo', error: err.message });
         }
         doneCount++;
         setUploadProgress({ done: doneCount, total: photos.length });
       }
+    }
+
+    if (loggedNow !== loggedPhotos) {
+      saveLoggedPhotos(localStorage, tenantId, loggedNow);
+      setLoggedPhotos(loggedNow);
     }
 
     setUploadResults({
@@ -1222,6 +1235,9 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         ? 'this day'
         : 'this range'
       : '';
+    // Photos already logged from here are marked, and can be hidden.
+    const loggedCount = countLogged(loggedPhotos, nativePickPhotos, knownEntryIds);
+    const shownPhotos = hideLogged ? nativePickPhotos.filter((p) => !loggedInfo(loggedPhotos, p.uri, knownEntryIds)) : nativePickPhotos;
     return (
       <div className="flex flex-col h-full w-full min-h-0">
         <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
@@ -1242,6 +1258,24 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
           </button>
         </div>
 
+        {!nativePickLoading && !nativePickError && nativePickPhotos.length > 0 && (
+          <div className="flex items-center justify-between gap-2 mb-2 shrink-0 text-xs">
+            <span className="opacity-70">
+              {nativePickPhotos.length} photo{nativePickPhotos.length === 1 ? '' : 's'}
+              {loggedCount > 0 ? ` · ${loggedCount} already logged` : ''}
+            </span>
+            {loggedCount > 0 && (
+              <button
+                onClick={() => setHideLogged((v) => !v)}
+                className="font-bold cursor-pointer hover:opacity-70"
+                style={{ color: 'var(--theme-primary)' }}
+              >
+                {hideLogged ? 'Show logged' : 'Hide logged'}
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto min-h-0">
           {nativePickLoading ? (
             <div className="h-full flex items-center justify-center text-sm italic opacity-50">Scanning your photos…</div>
@@ -1253,10 +1287,15 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
             <div className="h-full flex items-center justify-center text-sm italic opacity-50 text-center px-4">
               No photos found on your phone for {dateRangeLabel}.
             </div>
+          ) : shownPhotos.length === 0 ? (
+            <div className="h-full flex items-center justify-center text-sm italic opacity-50 text-center px-4">
+              Every photo for {dateRangeLabel} is already logged.
+            </div>
           ) : (
             <div className="grid gap-1.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))' }}>
-              {nativePickPhotos.map((p) => {
+              {shownPhotos.map((p) => {
                 const isSelected = nativePickSelected.has(p.uri);
+                const logged = loggedInfo(loggedPhotos, p.uri, knownEntryIds);
                 return (
                   <div
                     key={p.uri}
@@ -1269,9 +1308,19 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                     }}
                   >
                     {p.thumbnail ? (
-                      <img src={p.thumbnail} alt="" className="w-full h-full object-cover" />
+                      <img src={p.thumbnail} alt="" className="w-full h-full object-cover" style={logged ? { opacity: 0.5 } : undefined} />
                     ) : (
                       <div className={`w-full h-full flex items-center justify-center text-xs opacity-40 ${p.thumbnailFailed ? '' : 'animate-pulse'}`}>{p.thumbnailFailed ? '?' : ''}</div>
+                    )}
+                    {logged && (
+                      <div
+                        className="absolute bottom-1 left-1 right-1 flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold text-white pointer-events-none"
+                        style={{ backgroundColor: 'rgba(0, 0, 0, 0.68)' }}
+                        title={`Already logged${logged.title ? ` to ${logged.title}` : ''}${logged.date ? ` on ${logged.date}` : ''}`}
+                      >
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: projectColorMap?.[logged.title] || 'var(--theme-primary)' }} />
+                        <span className="truncate">✓ {logged.title || 'Logged'}</span>
+                      </div>
                     )}
                     {isSelected && (
                       <div

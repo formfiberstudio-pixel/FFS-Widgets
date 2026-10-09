@@ -71,6 +71,7 @@ test('signing out forgets the account and what the device kept of it, and leaves
     'notionWidgetProjectOrderUnsaved:a1': '1',
     'notionWidgetColorsUnsaved:a1': '1',
     'notionWidgetColorsSeen:a1': '1',
+    'notionWidgetLoggedPhotos:a1': '{}',
     // belong to the device, not the account
     notionWidgetActiveThemeId: 'default-rose',
     notionWidgetViewScale: '110',
@@ -79,7 +80,7 @@ test('signing out forgets the account and what the device kept of it, and leaves
     somethingElse: 'x',
   });
   const removed = clearAccountData(storage);
-  assert.equal(removed.length, 12);
+  assert.equal(removed.length, 13);
   assert.deepEqual(storage.keys().sort(), [
     'notionWidgetActiveThemeId', 'notionWidgetSidebarWidth', 'notionWidgetViewScale', 'notionWidgetYearLayout',
     SIGNED_OUT_KEY, 'somethingElse',
