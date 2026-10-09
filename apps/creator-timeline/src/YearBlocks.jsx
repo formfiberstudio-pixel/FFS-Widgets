@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
 import { weekStartFor } from './yearGallery.js';
-import { COLUMNS, GAP, MIN_BLOCK_HEIGHT, WEEK_ROWS, dotSizeFor } from './yearBlocksSize.js';
+import { COLUMNS, GAP, WEEK_ROWS, minBlockHeightFor } from './yearBlocksSize.js';
 
 // The desktop Year view's "blocks" layout: twelve small month calendars (three
 // across, four down) instead of the dot grid's twelve columns. It does what the
@@ -29,32 +28,13 @@ export default function YearBlocks({
   onDayLeave,
   onWeekClick,
   radius,
-  maxDot = 22,
+  dotSize, // the day dots' size, which sets how short a block can be
 }) {
-  // How tall the room for the blocks is, to size the dots by.
-  const roomRef = useRef(null);
-  const [roomHeight, setRoomHeight] = useState(0);
-  useEffect(() => {
-    const el = roomRef.current;
-    if (!el) return undefined;
-    const measure = () => setRoomHeight(el.clientHeight);
-    measure();
-    // Either can be missing or slow to report (a hidden tab), so both are listened to.
-    window.addEventListener('resize', measure);
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
-    observer?.observe(el);
-    return () => {
-      window.removeEventListener('resize', measure);
-      observer?.disconnect();
-    };
-  }, []);
-  const dotSize = dotSizeFor(roomHeight || 600, maxDot);
-
   return (
-    <div ref={roomRef} className="h-full w-full min-h-0 min-w-0 overflow-y-auto">
+    <div className="h-full w-full min-h-0 min-w-0 overflow-y-auto">
       <div
         className="grid h-full"
-        style={{ gridTemplateColumns: `repeat(${COLUMNS}, minmax(0, 1fr))`, gridAutoRows: `minmax(${MIN_BLOCK_HEIGHT}px, 1fr)`, gap: `${GAP}px` }}
+        style={{ gridTemplateColumns: `repeat(${COLUMNS}, minmax(0, 1fr))`, gridAutoRows: `minmax(${minBlockHeightFor(dotSize)}px, 1fr)`, gap: `${GAP}px` }}
       >
         {monthNames.map((monthLabel, mIdx) => {
           const startOffset = new Date(year, mIdx, 1).getDay();
@@ -130,7 +110,7 @@ export default function YearBlocks({
                             onMouseLeave={onDayLeave}
                             className="relative h-full flex items-center justify-center cursor-pointer"
                           >
-                            {renderDay(dateObj, dayNum, dotSize)}
+                            {renderDay(dateObj, dayNum)}
                           </div>
                         );
                       })}
