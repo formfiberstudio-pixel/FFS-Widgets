@@ -792,6 +792,15 @@ const getDayDotStyling = (dateObj, hasLog, logDotHex, specialDay) => {
   return { bg: 'var(--theme-card)', text: 'var(--theme-text)', border: 'var(--theme-border)' };
 };
 
+// A day with entries from more than one project is drawn with a second outline
+// inside the dot: outer border, a hair of the dot's own colour, then this ring.
+// It sits inside the dot (inset from the padding edge), so the dot is exactly
+// the size of any other. The dot has to be position: relative or absolute. The
+// ring is a little softer than the border so a two-digit day still has room.
+function MultiProjectRing({ color }) {
+  return <span aria-hidden="true" className="absolute rounded-full border pointer-events-none" style={{ inset: '1px', borderColor: color, opacity: 0.7 }} />;
+}
+
 // -------------------------------------------------------------
 // SUB-COMPONENT: WEEK DAY COLUMN
 // -------------------------------------------------------------
@@ -4960,9 +4969,7 @@ function App() {
                               }}
                             >
                               {dateObj.getDate()}
-                              {hasMultipleProjects && (
-                                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-[6px] font-black flex items-center justify-center leading-none border border-white shadow-xs" style={{ backgroundColor: 'var(--theme-secondary)', color: 'var(--theme-on-secondary)' }}>+</span>
-                              )}
+                              {hasMultipleProjects && <MultiProjectRing color={dotStyle.border} />}
                             </div>
                           </div>
                         );
@@ -5126,11 +5133,7 @@ function App() {
                                 }}
                               >
                                 {dateObj.getDate()}
-                                {hasMultipleProjects && (
-                                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full text-[7px] font-black flex items-center justify-center leading-none p-0 border border-white shadow-sm select-none" style={{ backgroundColor: 'var(--theme-secondary)', color: 'var(--theme-on-secondary)' }}>
-                                    +
-                                  </span>
-                                )}
+                                {hasMultipleProjects && <MultiProjectRing color={dotStyle.border} />}
                               </div>
                               {hasLog && primaryLog && (
                                 <span
@@ -5891,11 +5894,7 @@ function App() {
                                 } ${hasLog ? 'scale-110' : ''} ${isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1 font-bold z-30' : isToday(targetDate) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 font-bold' : ''} ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
                               >
                                 {targetDayNum}
-                                {hasMultipleProjects && (
-                                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full text-[6px] font-black flex items-center justify-center leading-none p-0 border border-white/80 shadow-xs select-none" style={{ backgroundColor: 'var(--theme-secondary)', color: 'var(--theme-on-secondary)' }}>
-                                    +
-                                  </span>
-                                )}
+                                {hasMultipleProjects && <MultiProjectRing color={dotStyle.border} />}
                               </div>
                             </div>
                           );
