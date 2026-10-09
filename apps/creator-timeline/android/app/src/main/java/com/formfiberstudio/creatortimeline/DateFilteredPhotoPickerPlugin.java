@@ -12,6 +12,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.util.Size;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -26,6 +27,8 @@ import com.getcapacitor.annotation.PermissionCallback;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 // The whole reason this widget is being wrapped as a native app instead of
 // staying a plain PWA: a website has no API to query or pre-filter the
@@ -62,6 +65,19 @@ public class DateFilteredPhotoPickerPlugin extends Plugin {
     // tell photos apart.
     private static final int THUMB_MAX_DIM = 240;
     private static final int THUMB_QUALITY = 60;
+
+    // Thumbnails are made a few at a time. Capacitor runs every plugin method one
+    // after another on a single thread, so a grid of sixty photos used to be sixty
+    // thumbnails made in a queue; the work is handed to these threads instead and each
+    // call is answered from whichever finishes it (a call may be resolved from any thread).
+    private static final int THUMBNAIL_THREADS = 4;
+    private final ExecutorService thumbnailPool = Executors.newFixedThreadPool(THUMBNAIL_THREADS);
+
+    @Override
+    protected void handleOnDestroy() {
+        thumbnailPool.shutdownNow();
+        super.handleOnDestroy();
+    }
 
     private String activeAlias() {
         return Build.VERSION.SDK_INT >= 33 ? "photosModern" : "photosLegacy";
@@ -154,6 +170,31 @@ public class DateFilteredPhotoPickerPlugin extends Plugin {
 
     @PluginMethod
     public void getThumbnail(PluginCall call) {
+        thumbnailPool.execute(() -> resolveThumbnail(call));
+    }
+
+    // On Android 10+ the system keeps a small thumbnail of every photo it has indexed
+    // and hands it over in a few milliseconds -- no need to open and decode the
+    // original (a 12MP photo, three times over for its size, its pixels and its EXIF
+    // rotation) just to shrink it again. The thumbnail comes back already upright.
+    // Anything it can't give (older Android, a photo not yet indexed) falls back to
+    // the decode below.
+    private void resolveThumbnail(PluginCall call) {
+        String uriStr = call.getString("uri");
+        if (uriStr != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                Bitmap thumb = getContext().getContentResolver()
+                    .loadThumbnail(Uri.parse(uriStr), new Size(THUMB_MAX_DIM, THUMB_MAX_DIM), null);
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                thumb.compress(Bitmap.CompressFormat.JPEG, THUMB_QUALITY, out);
+                JSObject ret = new JSObject();
+                ret.put("base64", "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP));
+                call.resolve(ret);
+                return;
+            } catch (Exception ignored) {
+                // fall through to the decode
+            }
+        }
         // Static preview only -- a still frame is the normal, expected
         // thumbnail for a GIF (same as Notion's or any gallery app's own
         // grid), so this always goes through the regular Bitmap decode

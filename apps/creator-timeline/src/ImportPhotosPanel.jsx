@@ -460,42 +460,78 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     return { start: toDateInputValue(newStart), end: toDateInputValue(newEnd) };
   };
 
+  // A date block's photos arrive in two steps, so the grid is there straight away:
+  // MediaStore says WHICH photos fall in the range (one quick query), and the
+  // thumbnails then come in a few at a time, filling in the tiles as they do. They
+  // used to be waited for all together, so a week of sixty photos showed
+  // "Scanning your photos…" until the sixtieth had been decoded.
   const fetchRangePhotos = async (range) => {
     const results = await queryPhotosByDateRange(range.start, range.end);
-    return Promise.all(results.map(async (p) => {
-      try {
-        const thumbnail = await getPhotoThumbnail(p.uri);
-        return { ...p, thumbnail };
-      } catch {
-        return { ...p, thumbnail: null };
-      }
-    }));
+    return results.map((p) => ({ ...p, thumbnail: null }));
   };
 
-  // Fetches (or serves from cache) fixedDateRange's photos into the
-  // visible grid, then silently warms the cache for the immediately
-  // adjacent blocks in the background. By the time a swipe actually
-  // lands on one of those, its data is normally already cached, so the
-  // grid updates instantly instead of showing another loading spinner --
-  // the same instant feel as Mandalart's own date-block swiping.
+  const THUMBNAIL_WORKERS = 4;
+  // Which block is on screen, so a loader whose block has been swiped away stops.
+  const activeScanKeyRef = useRef('');
+  const thumbRenderTimerRef = useRef(null);
+  useEffect(() => () => clearTimeout(thumbRenderTimerRef.current), []);
+  // Redraws the grid once for a burst of arriving thumbnails, not once each.
+  const scheduleThumbRender = () => {
+    if (thumbRenderTimerRef.current) return;
+    thumbRenderTimerRef.current = setTimeout(() => {
+      thumbRenderTimerRef.current = null;
+      setNativePickPhotos((prev) => [...prev]);
+    }, 60);
+  };
+
+  // Loads the thumbnails `photos` (the block `key`) still lack, a few at a time,
+  // onto the photo objects themselves -- they are what the per-block cache holds, so
+  // coming back to a block finds what was loaded. Stops once `ownerKey` (the block
+  // being looked at; a neighbour being warmed up belongs to the one beside it) is
+  // no longer the one on screen.
+  const loadThumbnails = async (photos, key, ownerKey = key) => {
+    const queue = photos.filter((p) => !p.thumbnail && !p.thumbnailFailed && !p.thumbnailLoading);
+    let next = 0;
+    const worker = async () => {
+      while (next < queue.length && activeScanKeyRef.current === ownerKey) {
+        const p = queue[next++];
+        p.thumbnailLoading = true;
+        try {
+          p.thumbnail = await getPhotoThumbnail(p.uri);
+        } catch {
+          p.thumbnailFailed = true; // keeps the "?" tile
+        }
+        p.thumbnailLoading = false;
+        if (activeScanKeyRef.current === key) scheduleThumbRender();
+      }
+    };
+    await Promise.all(Array.from({ length: THUMBNAIL_WORKERS }, worker));
+  };
+
+  // Shows fixedDateRange's photos in the visible grid (from the cache if the block
+  // has been seen), loads their thumbnails, then quietly warms up the blocks on
+  // either side, so by the time a swipe lands on one its photos are normally
+  // already there -- the same instant feel as Mandalart's own date-block swiping.
   const runNativeScan = async () => {
     const requestId = ++scanRequestIdRef.current;
     const range = fixedDateRange;
     const key = rangeKey(range);
+    activeScanKeyRef.current = key;
     const cached = nativeScanCacheRef.current.get(key);
 
     setNativePickSelected(new Set());
     setNativePickError(null);
 
+    let rangePhotos = cached;
     if (cached) {
       setNativePickPhotos(cached);
       setNativePickLoading(false);
     } else {
       setNativePickLoading(true);
       try {
-        const withThumbs = await fetchRangePhotos(range);
-        nativeScanCacheRef.current.set(key, withThumbs);
-        if (scanRequestIdRef.current === requestId) setNativePickPhotos(withThumbs);
+        rangePhotos = await fetchRangePhotos(range);
+        nativeScanCacheRef.current.set(key, rangePhotos);
+        if (scanRequestIdRef.current === requestId) setNativePickPhotos(rangePhotos);
       } catch (err) {
         if (scanRequestIdRef.current === requestId) {
           setNativePickError(err.message || 'Could not load photos from your device.');
@@ -504,18 +540,28 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         if (scanRequestIdRef.current === requestId) setNativePickLoading(false);
       }
     }
+    if (!rangePhotos || scanRequestIdRef.current !== requestId) return;
 
-    // Fire-and-forget: errors here just mean that neighbor falls back to
-    // the normal (visible) loading path if the user actually swipes
-    // there before it finishes.
-    [1, -1].forEach((direction) => {
+    // What is on screen first...
+    await loadThumbnails(rangePhotos, key);
+
+    // ...then the neighbours. Errors here just mean that neighbour loads in the
+    // normal (visible) way if the user actually swipes there.
+    for (const direction of [1, -1]) {
+      if (scanRequestIdRef.current !== requestId) return;
       const neighbor = adjacentRange(range, direction);
       const neighborKey = rangeKey(neighbor);
-      if (nativeScanCacheRef.current.has(neighborKey)) return;
-      fetchRangePhotos(neighbor)
-        .then((photos) => { nativeScanCacheRef.current.set(neighborKey, photos); })
-        .catch(() => {});
-    });
+      try {
+        let neighborPhotos = nativeScanCacheRef.current.get(neighborKey);
+        if (!neighborPhotos) {
+          neighborPhotos = await fetchRangePhotos(neighbor);
+          nativeScanCacheRef.current.set(neighborKey, neighborPhotos);
+        }
+        await loadThumbnails(neighborPhotos, neighborKey, key);
+      } catch {
+        // see above
+      }
+    }
   };
 
   const openNativePicker = () => {
@@ -543,8 +589,16 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
     });
   };
 
-  const confirmNativePick = () => {
+  const confirmingNativePickRef = useRef(false);
+  const confirmNativePick = async () => {
+    if (confirmingNativePickRef.current) return;
+    confirmingNativePickRef.current = true;
     const chosen = nativePickPhotos.filter((p) => nativePickSelected.has(p.uri));
+    // The next step shows each photo's thumbnail: any still on its way is fetched now.
+    await Promise.all(chosen.filter((p) => !p.thumbnail).map(async (p) => {
+      try { p.thumbnail = await getPhotoThumbnail(p.uri); } catch { /* the review step copes without one */ }
+    }));
+    confirmingNativePickRef.current = false;
     const newPhotos = chosen.map((p) => ({
       id: `native-${p.uri}`,
       file: null,
@@ -1217,7 +1271,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
                     {p.thumbnail ? (
                       <img src={p.thumbnail} alt="" className="w-full h-full object-cover" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center text-xs opacity-40">?</div>
+                      <div className={`w-full h-full flex items-center justify-center text-xs opacity-40 ${p.thumbnailFailed ? '' : 'animate-pulse'}`}>{p.thumbnailFailed ? '?' : ''}</div>
                     )}
                     {isSelected && (
                       <div

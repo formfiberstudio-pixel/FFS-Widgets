@@ -3491,20 +3491,39 @@ function App() {
   // scroll container so the header can label whichever month is actually
   // in view -- separate from currentDate (see mobileVisibleMonthDate above)
   // so scrolling this list never moves the date other views show.
+  //
+  // This runs on every scroll event, so it has to be nearly free: the list is
+  // about a thousand week rows, and a React render of all of them takes tens of
+  // milliseconds on a computer and several times that on a phone. A render per
+  // row passed during a flick keeps the page busy for the whole flick, which is
+  // what made the scroll stop dead. So:
+  //  - the row at the top is worked out from the scroll position (every row is
+  //    the same height), not by measuring a thousand rows;
+  //  - the header's two lines are written straight into the page as the list
+  //    moves, with no render at all;
+  //  - the state the rest of the screen reads (the "logged in the visible weeks"
+  //    panel, the jump arrows) is brought up to date once the list has settled.
+  const monthHeaderYearRef = useRef(null);
+  const monthHeaderLabelRef = useRef(null);
+  const monthSettleTimerRef = useRef(null);
+  const writeHeaderText = (el, text) => {
+    if (!el) return;
+    // The text node React itself holds, so a later render finds what it expects.
+    if (el.firstChild && el.firstChild.nodeType === 3) el.firstChild.nodeValue = text;
+    else el.textContent = text;
+  };
   const handleMonthScroll = () => {
     const container = monthScrollContainerRef.current;
-    if (!container) return;
-    const containerTop = container.getBoundingClientRect().top;
-    let closestEl = null;
-    let closestIdx = -1;
-    let closestDist = Infinity;
-    monthWeekRowRefs.current.forEach((el, idx) => {
-      if (!el) return;
-      const dist = Math.abs(el.getBoundingClientRect().top - containerTop);
-      if (dist < closestDist) { closestDist = dist; closestEl = el; closestIdx = idx; }
-    });
-    if (closestIdx >= 0) setMobileMonthVisibleStartIdx(closestIdx);
+    if (!container || mobileMonthWeeks.length === 0) return;
+    const pitch = MOBILE_MONTH_ROW_HEIGHT + MOBILE_MONTH_ROW_GAP;
+    const idx = Math.max(0, Math.min(mobileMonthWeeks.length - 1, Math.round(container.scrollTop / pitch)));
+    const { year, label } = getMobileMonthHeaderLabel(idx);
+    writeHeaderText(monthHeaderYearRef.current, year);
+    writeHeaderText(monthHeaderLabelRef.current, label || '\u00A0');
+    clearTimeout(monthSettleTimerRef.current);
+    monthSettleTimerRef.current = setTimeout(() => setMobileMonthVisibleStartIdx(idx), 140);
   };
+  useEffect(() => () => clearTimeout(monthSettleTimerRef.current), []);
 
   // Lands row idx at the TOP of the scroll container -- used by the
   // cluster-jump arrows (unlike scrollMobileMonthToDate below, which
@@ -4187,6 +4206,7 @@ function App() {
                 return (
                   <>
                     <button
+                      ref={monthHeaderYearRef}
                       onClick={() => setViewMode('year')}
                       title="Jump to Year view"
                       className="block whitespace-nowrap font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
@@ -4196,7 +4216,7 @@ function App() {
                     </button>
                     {/* A non-breaking space keeps the row its height while the
                         list has no label to show. */}
-                    <div className={`whitespace-nowrap font-black uppercase tracking-wide${titleSubGap}`} style={{ fontSize: titleSubSize, ...serifSubFace }}>
+                    <div ref={monthHeaderLabelRef} className={`whitespace-nowrap font-black uppercase tracking-wide${titleSubGap}`} style={{ fontSize: titleSubSize, ...serifSubFace }}>
                       {mLabel || '\u00A0'}
                     </div>
                   </>
