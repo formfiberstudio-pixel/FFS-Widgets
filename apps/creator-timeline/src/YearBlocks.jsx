@@ -1,7 +1,9 @@
+import { useEffect, useRef, useState } from 'react';
 import { weekStartFor } from './yearGallery.js';
+import { COLUMNS, GAP, MIN_BLOCK_HEIGHT, WEEK_ROWS, dotSizeFor } from './yearBlocksSize.js';
 
-// The desktop Year view's "blocks" layout: twelve small month calendars (four
-// across, three down) instead of the dot grid's twelve columns. It does what the
+// The desktop Year view's "blocks" layout: twelve small month calendars (three
+// across, four down) instead of the dot grid's twelve columns. It does what the
 // dot grid does -- pointing at a month name or a day gives the gallery and the
 // project list a quick look at that month or week, a click pins it, a click on
 // the pinned one opens it -- but the weeks run along rows, as on a wall
@@ -13,7 +15,6 @@ import { weekStartFor } from './yearGallery.js';
 // cells) is empty space, and pressing it lets go of the pin (see yearPin.js).
 
 const WEEKDAY_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-const WEEK_ROWS = 6; // the most a month ever spans, so every block is the same height
 
 export default function YearBlocks({
   year,
@@ -28,12 +29,32 @@ export default function YearBlocks({
   onDayLeave,
   onWeekClick,
   radius,
+  maxDot = 22,
 }) {
+  // How tall the room for the blocks is, to size the dots by.
+  const roomRef = useRef(null);
+  const [roomHeight, setRoomHeight] = useState(0);
+  useEffect(() => {
+    const el = roomRef.current;
+    if (!el) return undefined;
+    const measure = () => setRoomHeight(el.clientHeight);
+    measure();
+    // Either can be missing or slow to report (a hidden tab), so both are listened to.
+    window.addEventListener('resize', measure);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    return () => {
+      window.removeEventListener('resize', measure);
+      observer?.disconnect();
+    };
+  }, []);
+  const dotSize = dotSizeFor(roomHeight || 600, maxDot);
+
   return (
-    <div className="h-full w-full min-h-0 min-w-0 overflow-y-auto">
+    <div ref={roomRef} className="h-full w-full min-h-0 min-w-0 overflow-y-auto">
       <div
         className="grid h-full"
-        style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gridAutoRows: 'minmax(176px, 1fr)', gap: '10px' }}
+        style={{ gridTemplateColumns: `repeat(${COLUMNS}, minmax(0, 1fr))`, gridAutoRows: `minmax(${MIN_BLOCK_HEIGHT}px, 1fr)`, gap: `${GAP}px` }}
       >
         {monthNames.map((monthLabel, mIdx) => {
           const startOffset = new Date(year, mIdx, 1).getDay();
@@ -109,7 +130,7 @@ export default function YearBlocks({
                             onMouseLeave={onDayLeave}
                             className="relative h-full flex items-center justify-center cursor-pointer"
                           >
-                            {renderDay(dateObj, dayNum)}
+                            {renderDay(dateObj, dayNum, dotSize)}
                           </div>
                         );
                       })}

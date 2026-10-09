@@ -6102,7 +6102,8 @@ function App() {
             <YearBlocks
               year={year}
               monthNames={MONTH_NAMES}
-              renderDay={(dateObj, dayNum) => renderYearDayDot(dateObj, dayNum, getLogsForDate(dateObj), Math.round(20 * scaleFactor), Math.round(9 * scaleFactor))}
+              renderDay={(dateObj, dayNum, size) => renderYearDayDot(dateObj, dayNum, getLogsForDate(dateObj), size, Math.max(7, Math.round(size * 0.45)))}
+              maxDot={Math.round(22 * scaleFactor)}
               litMonths={new Set([hoveredMonthButtonIndex, pinnedYearFilter?.kind === 'month' ? pinnedYearFilter.mIdx : null].filter((m) => m !== null && m !== undefined))}
               highlightedWeekStarts={highlightedWeekStarts}
               onMonthEnter={setHoveredMonthButtonIndex}
