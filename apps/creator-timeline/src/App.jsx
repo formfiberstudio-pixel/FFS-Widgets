@@ -3,6 +3,8 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 // Relative imports matching your folder structure
 import themeTokens from '../tokens.json';
 import ActivationPanel from './ActivationPanel.jsx';
+import SignInPanel from './SignInPanel.jsx';
+import { resolveAccount, rememberAccount, clearAccountData, isInstalledApp, shortAccountId } from './account.js';
 import { useProjectTimer, TimerChip, ActiveTimerCard, ProjectTimeSummary } from './ProjectTimer.jsx';
 import { buildSessionNoteText, buildSessionTitle, formatMinutes, projectTimeSummary, projectTimerKey, summarizeWeekProjects, sumProjectMinutes } from './timeFormat.js';
 import { copyToClipboard } from './clipboard.js';
@@ -299,6 +301,13 @@ const IconYearBlocks = () => (
     <rect x="13" y="3" width="8" height="8" rx="1.5" />
     <rect x="3" y="13" width="8" height="8" rx="1.5" />
     <rect x="13" y="13" width="8" height="8" rx="1.5" />
+  </svg>
+);
+
+const IconAccount = () => (
+  <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="8" r="4" />
+    <path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1" />
   </svg>
 );
 
@@ -1899,6 +1908,10 @@ function App() {
   // device) a guaranteed-blank activation link instead of it picking up
   // their own saved setup.
   const forceBlankSetup = new URLSearchParams(window.location.search).get('blank') === '1';
+  // The signed-out screen shows the sign-in form; this shows the setup form for a
+  // brand-new calendar instead.
+  const [showSetupForm, setShowSetupForm] = useState(forceBlankSetup);
+  const [signOutStep, setSignOutStep] = useState('idle'); // idle | confirm | working
 
   // --- PROJECT GRADIENT SHADE MAP ---
   const [projectColorMap, setProjectColorMap] = useState({});
@@ -2080,12 +2093,20 @@ function App() {
     }
 
     const params = new URLSearchParams(window.location.search);
-    const urlTenantId = params.get('tenant');
+    // The address, or the account this device remembers (see account.js): an
+    // installed app starts from the same address every time, so there the
+    // device's own account wins and signing out sticks.
+    const installed = isInstalledApp(window);
+    const account = resolveAccount({ urlTenant: params.get('tenant'), storage: localStorage, installed });
+    const urlTenantId = account.tenantId;
 
     if (!urlTenantId) {
       setNeedsSetup(true);
       return;
     }
+    // An installed app that has not chosen an account yet takes the one its start
+    // address names -- and keeps it from then on.
+    if (installed && account.from === 'link') rememberAccount(localStorage, urlTenantId);
 
     const sourcesParam = params.get('sources');
     const parsedSourceFilter = sourcesParam
@@ -2563,6 +2584,24 @@ function App() {
       return;
     }
     if (!sameColors(local, server)) setColors(server.project, server.category);
+  };
+
+  // Signing out of this device: whatever was changed here and has not reached the
+  // server yet is sent first, then the device forgets the account and everything it
+  // kept of it (see clearAccountData -- its colours, cached calendar and photo
+  // copies), and goes back to the plain address, which shows the sign-in screen.
+  // The calendar itself stays in Notion; signing back in brings it all back.
+  const handleSignOut = async () => {
+    setSignOutStep('working');
+    const pending = [];
+    if (colorsUnsavedRef.current) pending.push(saveColorsNow());
+    if (projectOrderUnsavedRef.current) pending.push(saveProjectOrderNow());
+    if (thumbFocusUnsavedRef.current) pending.push(saveThumbFocusNow());
+    await Promise.race([Promise.allSettled(pending), new Promise((resolve) => setTimeout(resolve, 4000))]);
+    clearAccountData(localStorage);
+    try { await window.caches?.delete('thumbnails-v1'); } catch { /* optional */ }
+    try { window.indexedDB?.deleteDatabase('notionWidgetTimerPhotos'); } catch { /* optional */ }
+    window.location.replace(`${window.location.origin}/`);
   };
 
   // Dragging a Day card's photo inside its frame: the photo follows the pointer
@@ -3627,7 +3666,20 @@ function App() {
       const params = new URLSearchParams(window.location.search);
       const newTenantId = params.get('tenant');
       if (!newTenantId) return;
+      rememberAccount(localStorage, newTenantId);
       setTenantId(newTenantId);
+      setNeedsSetup(false);
+      fetchLogsFromNotion(newTenantId, null);
+    };
+    // Signing in with a license key that already has a calendar: straight in.
+    const handleSignedIn = (newTenantId) => {
+      rememberAccount(localStorage, newTenantId);
+      const params = new URLSearchParams(window.location.search);
+      params.set('tenant', newTenantId);
+      params.delete('blank');
+      window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
+      setTenantId(newTenantId);
+      setSourceFilter(null);
       setNeedsSetup(false);
       fetchLogsFromNotion(newTenantId, null);
     };
@@ -3640,17 +3692,34 @@ function App() {
       >
         <div className="w-full max-w-xl space-y-4 py-8">
           <div className="text-center">
-            <h1 className="text-xl font-bold">This calendar hasn't been set up yet</h1>
-            <p className="text-sm opacity-70 mt-1">Connect your Notion workspace below to activate this embed.</p>
+            <h1 className="text-xl font-bold">{showSetupForm ? 'Set up a new calendar' : 'Sign in'}</h1>
+            <p className="text-sm opacity-70 mt-1">
+              {showSetupForm
+                ? 'Connect your Notion workspace below to activate your calendar.'
+                : 'Enter the license key your calendar was activated with. Signing out of another account first? You are in the right place.'}
+            </p>
           </div>
           <div className="p-4 rounded-xl lf-frame border" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
-            <ActivationPanel
-              embedded
-              skipAutoLoad={forceBlankSetup}
-              onActivated={handleActivatedFromEmpty}
-              onContinue={handleContinueToCalendar}
-              continueLabel="Go to Calendar"
-            />
+            {showSetupForm ? (
+              <>
+                <button
+                  onClick={() => setShowSetupForm(false)}
+                  className="text-xs font-bold mb-3 cursor-pointer hover:opacity-70"
+                  style={{ color: 'var(--theme-primary)' }}
+                >
+                  ‹ Back to sign in
+                </button>
+                <ActivationPanel
+                  embedded
+                  skipAutoLoad={forceBlankSetup}
+                  onActivated={handleActivatedFromEmpty}
+                  onContinue={handleContinueToCalendar}
+                  continueLabel="Go to Calendar"
+                />
+              </>
+            ) : (
+              <SignInPanel onSignedIn={handleSignedIn} onSetUp={() => setShowSetupForm(true)} />
+            )}
           </div>
         </div>
       </div>
@@ -4312,6 +4381,19 @@ function App() {
                     <IconSettings />
                     <span>Settings</span>
                   </button>
+                  {!isDemoMode && tenantId && (
+                    <button
+                      onClick={() => { setShowMobileMenu(false); setSettingsTab('account'); setShowSettings(true); }}
+                      style={{ borderColor: 'var(--theme-border)' }}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-3 text-sm font-semibold text-left border-b cursor-pointer"
+                    >
+                      <IconAccount />
+                      <span className="flex flex-col leading-tight">
+                        <span>Account</span>
+                        <span className="text-[10px] font-normal opacity-60">Signed in {shortAccountId(tenantId)} · Sign out</span>
+                      </span>
+                    </button>
+                  )}
                   {isMobile && (
                     <button
                       onClick={() => { setShowMobileMenu(false); setIsSidebarOpen(!isSidebarOpen); }}
@@ -6230,6 +6312,16 @@ function App() {
             {/* Tab Header - Vector Icons */}
             <div className="flex items-center justify-between border-b pb-3 shrink-0" style={{ borderColor: 'var(--theme-border)' }}>
               <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  onClick={() => setSettingsTab('account')}
+                  className={`text-xs font-bold px-3 py-1.5 rounded-md cursor-pointer transition-all flex items-center gap-1.5 ${
+                    settingsTab === 'account' ? 'bg-black/20 font-bold' : 'opacity-60 hover:opacity-100'
+                  }`}
+                >
+                  <IconAccount />
+                  <span>Account</span>
+                </button>
+
                 <button 
                   onClick={() => setSettingsTab('notion')} 
                   className={`text-xs font-bold px-3 py-1.5 rounded-md cursor-pointer transition-all flex items-center gap-1.5 ${
@@ -6274,6 +6366,75 @@ function App() {
                 <IconClose />
               </button>
             </div>
+
+            {/* ACCOUNT -- who this device is signed in as, and how to leave. */}
+            {settingsTab === 'account' && (
+              <div className="flex-1 overflow-y-auto pr-1 space-y-4 min-h-0">
+                {isDemoMode || !tenantId ? (
+                  <div className="p-4 rounded-lg lf-frame border text-sm leading-relaxed" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                    You're viewing a demo filled with sample data, so there's no account to sign in to or out of here.
+                  </div>
+                ) : (
+                  <>
+                    <div className="p-4 rounded-lg lf-frame border space-y-3" style={{ borderColor: 'var(--theme-border)', backgroundColor: 'var(--theme-bg)' }}>
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                        <span className="text-sm font-bold">Signed in on this device</span>
+                      </div>
+                      <div className="text-xs space-y-1.5">
+                        <div className="flex justify-between gap-3">
+                          <span className="opacity-60">Account</span>
+                          <span className="font-mono">{shortAccountId(tenantId)}</span>
+                        </div>
+                        <div className="flex justify-between gap-3">
+                          <span className="opacity-60 shrink-0">Databases</span>
+                          <span className="text-right min-w-0 break-words">{[...new Set(timelineLogs.map((l) => l.source).filter(Boolean))].join(', ') || '—'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <p className="text-xs leading-relaxed opacity-80">
+                      To use a different account on this device, sign out here, then sign in with that account's license key.
+                      Signing out only removes the account from this device. Your calendar stays in Notion, and signing back in brings it all back.
+                    </p>
+
+                    {signOutStep === 'idle' ? (
+                      <button
+                        onClick={() => setSignOutStep('confirm')}
+                        style={{ borderColor: 'var(--theme-border)' }}
+                        className="w-full py-2.5 rounded-lg border text-sm font-bold cursor-pointer hover:text-rose-500"
+                      >
+                        Sign out
+                      </button>
+                    ) : (
+                      <div className="p-3 rounded-lg border space-y-2.5" style={{ borderColor: 'rgba(244, 63, 94, 0.5)', backgroundColor: 'rgba(244, 63, 94, 0.08)' }}>
+                        <div className="text-sm font-bold">Sign out of this device?</div>
+                        <div className="text-xs opacity-80 leading-relaxed">
+                          The photos and calendar kept on this device are cleared, and you'll need a license key to sign in again.
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={handleSignOut}
+                            disabled={signOutStep === 'working'}
+                            className="flex-1 py-2 rounded-lg text-sm font-bold text-white bg-rose-600 cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                          >
+                            {signOutStep === 'working' ? 'Signing out…' : 'Sign out'}
+                          </button>
+                          <button
+                            onClick={() => setSignOutStep('idle')}
+                            disabled={signOutStep === 'working'}
+                            style={{ borderColor: 'var(--theme-border)' }}
+                            className="flex-1 py-2 rounded-lg border text-sm font-bold cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
 
             {/* TAB 1: CONNECTION -- reconfiguring here still needs your license key
                 (proves ownership before anything can change), but never leaving

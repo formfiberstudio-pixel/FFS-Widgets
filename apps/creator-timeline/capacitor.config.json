@@ -3,7 +3,7 @@
   "appName": "Creator Timeline",
   "webDir": "dist",
   "server": {
-    "url": "https://ffs-widgets-creator-timeline.vercel.app/?demo=1",
+    "url": "https://ffs-widgets-creator-timeline.vercel.app/",
     "androidScheme": "https"
   }
 }
