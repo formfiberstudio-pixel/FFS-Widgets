@@ -20,6 +20,7 @@ import { findProjectTypePropName, projectTypeValue, resolveSourceTaxonomy, taxon
 import { assignmentFrom, currentValues, patchFromAssignment, ProjectChangeError, sameValues } from './_lib/entryProject.js';
 import { sanitizeProjectOrder } from './_lib/projectOrder.js';
 import { sanitizeThumbnailFocus } from './_lib/thumbnailFocus.js';
+import { sanitizeCustomColors } from './_lib/customColors.js';
 import { buildSessionChildren, buildSessionNote, buildSessionProperties, buildSessionTitle, sanitizeSessionNotes, validPhotoUploadIds } from './_lib/timeTracking.js';
 
 // Needs the newer version for file_uploads (see notionUpload.js) -- used
@@ -74,6 +75,11 @@ const NOTION_VERSION = '2026-03-11';
 // cropped (`focus`: { entry id: { x, y } } in percent), saved on the tenant
 // record so every device crops the same way; returned with each sync.
 //
+// And action: 'setCustomColors' -- the colours the person has chosen for their
+// projects and types (`colors`: { project: { title: '#hex' }, category: { type:
+// '#hex' } }), saved on the tenant record so every device shows the same ones;
+// returned with each sync.
+//
 // And action: 'recategorizeEntry' -- moving an entry to another project (of the
 // same database): `pageId` is the entry, `referenceLogId` any entry of the
 // project it goes to (its project, and type where the entry carries one, are
@@ -112,7 +118,7 @@ const findSource = (tenant, label) =>
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds, op, timerPhotoId, sessionStartedAt, sourceLabel, topicName, typeName, projectType, restore, order, focus } = req.body || {};
+  const { tenantId, action, referenceLogId, pageId, blockId, blockType, title, newTitle, dateTaken, text, imageBase64, newProjectTitle, projectPageId, minutes, startLabel, endLabel, notes, projectTitle, photoUploadIds, op, timerPhotoId, sessionStartedAt, sourceLabel, topicName, typeName, projectType, restore, order, focus, colors } = req.body || {};
 
   if (!tenantId || typeof tenantId !== 'string') return res.status(400).json({ error: 'Missing tenantId' });
 
@@ -150,6 +156,8 @@ export default async function handler(req, res) {
     }
   } else if (action === 'setThumbnailFocus') {
     if (!focus || typeof focus !== 'object' || Array.isArray(focus)) return res.status(400).json({ error: 'Invalid focus' });
+  } else if (action === 'setCustomColors') {
+    if (!colors || typeof colors !== 'object' || Array.isArray(colors)) return res.status(400).json({ error: 'Invalid colors' });
   } else if (action === 'setProjectOrder') {
     if (!order || typeof order !== 'object' || Array.isArray(order)) return res.status(400).json({ error: 'Invalid order' });
   } else if (action === 'recategorizeEntry') {
@@ -214,6 +222,19 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, focus: tenant.thumbnailFocus });
     } catch (err) {
       console.error('[backlog-photo] setThumbnailFocus failed:', err.message);
+      return res.status(500).json({ error: 'Could not save that right now.' });
+    }
+  }
+
+  // The colours chosen for projects and types (see _lib/customColors.js), kept on
+  // the tenant record like the project order; the whole set is replaced each time.
+  if (action === 'setCustomColors') {
+    try {
+      tenant.customColors = sanitizeCustomColors(colors);
+      await saveTenant(tenantId, tenant);
+      return res.status(200).json({ success: true, colors: tenant.customColors });
+    } catch (err) {
+      console.error('[backlog-photo] setCustomColors failed:', err.message);
       return res.status(500).json({ error: 'Could not save that right now.' });
     }
   }

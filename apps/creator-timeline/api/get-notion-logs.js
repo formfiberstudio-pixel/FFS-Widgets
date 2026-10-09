@@ -653,7 +653,7 @@ export default async function handler(req, res) {
     // projectOrder: the person's own order for the project list, kept on the
     // tenant record (see backlog-photo.js's setProjectOrder) so it is the same on
     // every device.
-    return res.status(200).json({ success: true, data: validLogs, savedViews: tenant.savedViews || [], facetSchemas, facetCandidates, projectOrder: tenant.projectOrder || {}, thumbnailFocus: tenant.thumbnailFocus || {} });
+    return res.status(200).json({ success: true, data: validLogs, savedViews: tenant.savedViews || [], facetSchemas, facetCandidates, projectOrder: tenant.projectOrder || {}, thumbnailFocus: tenant.thumbnailFocus || {}, customColors: tenant.customColors || null });
 
   } catch (error) {
     console.error('[Diagnostic] Fatal API Error:', error.message);

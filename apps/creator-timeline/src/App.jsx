@@ -23,6 +23,8 @@ import GalleryMiniCalendar from './GalleryMiniCalendar.jsx';
 import WeekSummary from './WeekSummary.jsx';
 import YearGalleryPanel from './YearGalleryPanel.jsx';
 import { collectYearPhotos, groupYearPhotos, weekStartFor, yearGalleryRange } from './yearGallery.js';
+import { releasesYearPin } from './yearPin.js';
+import { cleanColors, hasColors, sameColors, mergeColors } from './customColors.js';
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
@@ -794,11 +796,18 @@ const getDayDotStyling = (dateObj, hasLog, logDotHex, specialDay) => {
 
 // A day with entries from more than one project is drawn with a second outline
 // inside the dot: outer border, a hair of the dot's own colour, then this ring.
-// It sits inside the dot (inset from the padding edge), so the dot is exactly
-// the size of any other. The dot has to be position: relative or absolute. The
-// ring is a little softer than the border so a two-digit day still has room.
+// It sits inside the dot, so the dot is exactly the size of any other, and the
+// dot has to be position: relative or absolute. The ring is a little softer than
+// the border so a two-digit day still has room.
+//
+// It is painted as a gradient from the dot's own centre rather than as a border
+// on an inset box: a box's four edges are each rounded to a whole device pixel,
+// and on a screen scaled by a fraction (125%, 150%) they round differently, which
+// leaves a ring that looks pushed to one side. A gradient measured from the
+// centre is the same distance from the edge all the way round.
 function MultiProjectRing({ color }) {
-  return <span aria-hidden="true" className="absolute rounded-full border pointer-events-none" style={{ inset: '1px', borderColor: color, opacity: 0.7 }} />;
+  const ring = `radial-gradient(closest-side, transparent calc(100% - 2.3px), ${color} calc(100% - 2px), ${color} calc(100% - 1px), transparent calc(100% - 0.7px))`;
+  return <span aria-hidden="true" className="absolute inset-0 rounded-full pointer-events-none" style={{ background: ring, opacity: 0.7 }} />;
 }
 
 // -------------------------------------------------------------
@@ -1864,33 +1873,28 @@ function App() {
   // -------------------------------------------------------------
   // PROJECT DOT COLOR CUSTOMIZATION ACTIONS
   // -------------------------------------------------------------
-  const handleResetDotColors = () => {
-    setCustomCategoryColors({});
-    setCustomProjectColors({});
-  };
+  // Every change goes through editColors (see the colour sync block further down),
+  // which shows it at once and saves it for the person's other devices.
+  const handleResetDotColors = () => editColors({}, {});
 
   const handleUpdateCategoryColor = (type, hexValue) => {
-    setCustomCategoryColors(prev => ({ ...prev, [type]: hexValue }));
+    editColors(colorsRef.current.project, { ...colorsRef.current.category, [type]: hexValue });
   };
 
   const handleUpdateProjectColor = (projTitle, hexValue) => {
-    setCustomProjectColors(prev => ({ ...prev, [projTitle]: hexValue }));
+    editColors({ ...colorsRef.current.project, [projTitle]: hexValue }, colorsRef.current.category);
   };
 
   const handleResetCategoryColor = (type) => {
-    setCustomCategoryColors(prev => {
-      const next = { ...prev };
-      delete next[type];
-      return next;
-    });
+    const next = { ...colorsRef.current.category };
+    delete next[type];
+    editColors(colorsRef.current.project, next);
   };
 
   const handleResetProjectColor = (projTitle) => {
-    setCustomProjectColors(prev => {
-      const next = { ...prev };
-      delete next[projTitle];
-      return next;
-    });
+    const next = { ...colorsRef.current.project };
+    delete next[projTitle];
+    editColors(next, colorsRef.current.category);
   };
 
   // -------------------------------------------------------------
@@ -2074,6 +2078,7 @@ function App() {
         setFacetCandidates(result.facetCandidates || {});
         adoptServerProjectOrder(result.projectOrder, tenant);
         adoptServerThumbFocus(result.thumbnailFocus, tenant);
+        adoptServerColors(result.customColors, tenant);
         generateProjectColorMap(filterTreeLogs(result.data || [], result.facetSchemas || {}));
         try {
           const cacheKey = `${NOTION_CACHE_KEY}:${tenant}:${sourcesFilterArg ? sourcesFilterArg.join(',') : 'all'}`;
@@ -2383,6 +2388,92 @@ function App() {
     updateCachedFields({ thumbnailFocus: thumbFocusRef.current });
     clearTimeout(thumbFocusTimerRef.current);
     thumbFocusTimerRef.current = setTimeout(() => saveThumbFocusNow(), 600);
+  };
+
+  // The colours chosen for projects and types are the same on every device: kept
+  // on the server with the rest of the setup (see api/_lib/customColors.js) and
+  // returned with each sync, like the order and the photo positions above. The
+  // state (customProjectColors / customCategoryColors, also kept in this
+  // browser's storage) is what the calendar reads; colorsRef is the same pair,
+  // readable by the handlers and timers.
+  const colorsRef = useRef({ project: customProjectColors, category: customCategoryColors });
+  // True from a change until the server has it, so a sync that lands in between
+  // cannot put the older colours back. Also kept in localStorage: a save that
+  // failed (offline) is still sent the next time, even after a reload.
+  const colorsUnsavedRef = useRef(false);
+  const colorsTimerRef = useRef(null);
+  const unsavedColorsKey = (tenant) => `notionWidgetColorsUnsaved:${tenant}`;
+  // Set once this device has compared notes with the server's colours (see
+  // adoptServerColors), so it only ever merges the first time.
+  const seenColorsKey = (tenant) => `notionWidgetColorsSeen:${tenant}`;
+  const readFlag = (key) => { try { return localStorage.getItem(key) === '1'; } catch { return false; } };
+  const writeFlag = (key, on) => {
+    try { if (on) localStorage.setItem(key, '1'); else localStorage.removeItem(key); } catch { /* optional */ }
+  };
+
+  const setColors = (project, category) => {
+    colorsRef.current = { project, category };
+    setCustomProjectColors(project);
+    setCustomCategoryColors(category);
+  };
+
+  const saveColorsNow = async (tenant = tenantId) => {
+    if (!tenant || isDemoMode) return;
+    const sent = colorsRef.current;
+    try {
+      const response = await fetch('/api/backlog-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId: tenant, action: 'setCustomColors', colors: sent }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) throw new Error(result.error || 'The colours were not saved.');
+      writeFlag(seenColorsKey(tenant), true);
+      if (colorsRef.current === sent) {
+        colorsUnsavedRef.current = false;
+        writeFlag(unsavedColorsKey(tenant), false);
+      }
+    } catch {
+      setEntryToast({ message: 'Couldn’t save your colours — they are kept on this device for now.', isError: true });
+    }
+  };
+
+  // A change made here: shown at once, saved a moment later.
+  const editColors = (project, category) => {
+    setColors(project, category);
+    if (!tenantId || isDemoMode) return;
+    colorsUnsavedRef.current = true;
+    writeFlag(unsavedColorsKey(tenantId), true);
+    clearTimeout(colorsTimerRef.current);
+    colorsTimerRef.current = setTimeout(() => saveColorsNow(), 600);
+  };
+
+  // What a sync brings. A change here that has not reached the server wins (and
+  // is sent again). A server that has never held any takes this device's. The
+  // first time this device meets the server's, the two are merged -- each device
+  // was set up on its own until now, and nothing should be lost -- and after that
+  // the server's are simply adopted.
+  const adoptServerColors = (serverColors, tenant) => {
+    if (!tenant || isDemoMode) return;
+    if (colorsUnsavedRef.current || readFlag(unsavedColorsKey(tenant))) {
+      colorsUnsavedRef.current = true;
+      saveColorsNow(tenant);
+      return;
+    }
+    const local = colorsRef.current;
+    if (!serverColors) {
+      if (hasColors(local)) saveColorsNow(tenant);
+      return;
+    }
+    const server = cleanColors(serverColors);
+    if (!readFlag(seenColorsKey(tenant))) {
+      writeFlag(seenColorsKey(tenant), true);
+      const merged = mergeColors(local, server);
+      if (!sameColors(merged, local)) setColors(merged.project, merged.category);
+      if (!sameColors(merged, server)) saveColorsNow(tenant);
+      return;
+    }
+    if (!sameColors(local, server)) setColors(server.project, server.category);
   };
 
   // Dragging a Day card's photo inside its frame: the photo follows the pointer
@@ -3059,14 +3150,18 @@ function App() {
     if (isSameYearFilter(pinnedYearFilter, filter)) handleWeekClick(mIdx, weekIndex);
     else setPinnedYearFilter(filter);
   };
-  // A click anywhere else in the Year view's calendar -- the empty space around
-  // the days, the blank cells, the gaps between months -- lets go of the pinned
-  // month or week and goes back to the whole year. The month names and the
-  // days are marked data-year-target: those are what a click pins or opens.
-  const handleYearBackgroundClick = (e) => {
-    if (!pinnedYearFilter || e.target.closest('[data-year-target]')) return;
-    setPinnedYearFilter(null);
-  };
+  // Pressing on empty space anywhere -- the calendar around the days, the header,
+  // the gallery tab, the project list -- lets go of the pinned month or week and
+  // goes back to the whole year. What counts as empty space (not a day, a button,
+  // a project row, a photo, a scrollbar...) is decided in yearPin.js. It is the
+  // press, not the click, so dragging a panel's edge or a slider that ends
+  // elsewhere doesn't count.
+  useEffect(() => {
+    if (!pinnedYearFilter || viewMode !== 'year' || isMobile) return undefined;
+    const onPress = (e) => { if (releasesYearPin(e)) setPinnedYearFilter(null); };
+    document.addEventListener('pointerdown', onPress);
+    return () => document.removeEventListener('pointerdown', onPress);
+  }, [pinnedYearFilter, viewMode, isMobile]);
 
   const handleWeekClick = (mIdx, weekIndex) => {
     const firstDayOfMonthObj = new Date(year, mIdx, 1);
@@ -4640,7 +4735,6 @@ function App() {
           ref={calendarRef}
           onTouchStart={handleCalendarTouchStart}
           onTouchEnd={handleCalendarTouchEnd}
-          onClick={viewMode === 'year' && !isMobile ? handleYearBackgroundClick : undefined}
           style={{
             borderRadius: isMobile ? 0 : `${panelRadius}px`,
             backgroundColor: isMobile ? 'transparent' : 'var(--theme-card)',

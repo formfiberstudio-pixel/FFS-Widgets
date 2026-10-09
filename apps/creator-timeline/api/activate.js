@@ -128,6 +128,7 @@ export default async function handler(req, res) {
       // Re-saving the setup must not undo the person's own project order.
       projectOrder: existingTenant?.projectOrder || {},
       thumbnailFocus: existingTenant?.thumbnailFocus || {},
+      ...(existingTenant?.customColors ? { customColors: existingTenant.customColors } : {}),
       lastVerifiedAt: Date.now(),
     });
   } catch (err) {
