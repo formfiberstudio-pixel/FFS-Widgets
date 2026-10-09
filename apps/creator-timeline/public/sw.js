@@ -14,6 +14,16 @@
 importScripts('/vendor/exifr.js');
 
 const SHARE_TARGET_PATH = '/api/share-target';
+
+// Thumbnails are asked for by page + edit (see api/image-thumb.js): the same
+// address is the same picture for good. They are kept here, on the device, the
+// first time they are fetched, and shown from here ever after -- not fetched
+// again by a later sync, a reload or the next day's visit, and still there with
+// no connection. Unlike the browser's own cache, which may drop them whenever
+// it likes, these stay until the cap below pushes the oldest out.
+const THUMBNAIL_PATH = '/api/image-thumb';
+const THUMBNAIL_CACHE = 'thumbnails-v1';
+const MAX_KEPT_THUMBNAILS = 3000;
 const MAX_DIMENSION = 1800;
 const JPEG_QUALITY = 0.82;
 
@@ -32,17 +42,66 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  if (req.method !== 'POST' || req.headers.has('X-SW-Relay')) return;
-  let pathname;
+  let url;
   try {
-    pathname = new URL(req.url).pathname;
+    url = new URL(req.url);
   } catch (err) {
     return;
   }
-  if (pathname === SHARE_TARGET_PATH) {
+  // Only the by-page addresses (they carry `p`); the older ones, addressed by a
+  // Notion link that lapses within the hour, are not worth keeping.
+  if (req.method === 'GET' && url.pathname === THUMBNAIL_PATH && url.searchParams.has('p')) {
+    event.respondWith(keptThumbnail(event));
+    return;
+  }
+  if (req.method !== 'POST' || req.headers.has('X-SW-Relay')) return;
+  if (url.pathname === SHARE_TARGET_PATH) {
     event.respondWith(handleShareTarget(req));
   }
 });
+
+let thumbnailsStored = 0;
+let trimmingThumbnails = false;
+
+// Oldest first: a cache lists its entries in the order they were added.
+async function trimThumbnails(cache) {
+  if (trimmingThumbnails) return;
+  trimmingThumbnails = true;
+  try {
+    const keys = await cache.keys();
+    const extra = keys.length - MAX_KEPT_THUMBNAILS;
+    if (extra > 0) await Promise.all(keys.slice(0, extra).map((key) => cache.delete(key)));
+  } catch (err) {
+    // Nothing to clean up if the cache can't be read.
+  } finally {
+    trimmingThumbnails = false;
+  }
+}
+
+async function keptThumbnail(event) {
+  const req = event.request;
+  let cache;
+  try {
+    cache = await caches.open(THUMBNAIL_CACHE);
+    const kept = await cache.match(req);
+    if (kept) return kept;
+  } catch (err) {
+    return fetch(req); // storage unavailable (private window, blocked site data): behave as if there were no worker
+  }
+  const res = await fetch(req);
+  // Only a made thumbnail -- never an error, which the server marks no-store.
+  if (res.ok && res.status === 200) {
+    event.waitUntil((async () => {
+      try {
+        await cache.put(req, res.clone());
+        if (++thumbnailsStored % 25 === 0) await trimThumbnails(cache);
+      } catch (err) {
+        // Out of room, or the cache vanished -- the picture was still shown.
+      }
+    })());
+  }
+  return res;
+}
 
 async function resizeImage(file) {
   const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });

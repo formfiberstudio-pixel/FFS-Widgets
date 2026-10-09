@@ -1,4 +1,4 @@
-import { isThumbnailableUrl } from './_lib/notionImageHosts.js';
+import { findImageAndTextInBlocks, extractPagePropertyImage, getPageCoverUrl, thumbnailUrlFor, IMAGE_SOURCE_BODY, IMAGE_SOURCE_PAGE } from './_lib/notionImages.js';
 import { decryptSecret } from './_lib/tokenCrypto.js';
 import { getTenant, saveTenant, LICENSE_REVERIFY_MS } from './_lib/tenantStore.js';
 import { verifyGumroadLicense } from './_lib/gumroad.js';
@@ -13,114 +13,6 @@ import { extractMinutes } from './_lib/timeTracking.js';
 const ROW_FETCH_CONCURRENCY = 3;
 
 // force-rebuild marker: Vercel's change-detection skipped an earlier deploy
-
-// Route Notion's images (often multi-MB originals straight from a phone)
-// through our own resize proxy so the calendar grid decodes/paints small
-// thumbnails instead of full-resolution photos. Only rewrite hosts the
-// proxy actually accepts (see notionImageHosts.js) -- anything else
-// (e.g. an externally-hosted image someone pasted into Notion) is passed
-// through unchanged rather than pointed at a proxy that would reject it.
-function toThumbnailUrl(rawUrl) {
-  if (!rawUrl || !isThumbnailableUrl(rawUrl)) return rawUrl;
-  return `/api/image-thumb?url=${encodeURIComponent(rawUrl)}&w=640`;
-}
-
-// A photo can reach a Notion page two ways that never touch the page BODY
-// (and so are invisible to the blocks/children fetch below): attached via
-// a "Files & media" property on the row itself, or set as the page's
-// cover. Both are already present in the database-query response we have
-// in hand -- no extra Notion request -- so they're checked as a free
-// fallback for sources (e.g. a project tracker) that attach photos this
-// way instead of pasting an inline image into the body.
-function extractPagePropertyImage(props) {
-  const filesProp = Object.values(props).find(p => p.type === 'files' && p.files?.length > 0);
-  if (!filesProp) return null;
-  const file = filesProp.files[0];
-  return file.file?.url || file.external?.url || null;
-}
-
-function getPageCoverUrl(page) {
-  if (!page.cover) return null;
-  return page.cover.file?.url || page.cover.external?.url || null;
-}
-
-// Block types that can hold their own children where a photo commonly
-// ends up tucked away (a "Photos" toggle, a two-column layout, a callout)
-// -- worth descending into. Left out: things like paragraphs/headings,
-// which can technically have children (a sub-bullet) but are never where
-// someone drops an image.
-const CONTAINER_BLOCK_TYPES = new Set([
-  'toggle', 'column_list', 'column', 'synced_block', 'callout', 'quote',
-  'bulleted_list_item', 'numbered_list_item', 'to_do', 'template',
-]);
-
-// Most journal-style entries put a photo at most a level or two deep --
-// bounding recursion keeps a pathological page from costing one Notion
-// request per nested block for no benefit.
-const MAX_BLOCK_SEARCH_DEPTH = 3;
-
-// The Notion blocks endpoint only ever returns a block's DIRECT children,
-// capped at one page of results -- a photo pasted inside a toggle, column,
-// or callout (all common ways to keep a log entry tidy) is invisible to a
-// single flat page_size=25 call. This walks every page of a block's
-// children (following has_more/next_cursor) and recurses into any child
-// that can itself hold content, stopping as soon as both an image and a
-// text excerpt have been found.
-async function findImageAndTextInBlocks(blockId, headers, depth = 0) {
-  let rawImageUrl = null;
-  let pageContent = '';
-  let pageContentBlockId = null;
-  let pageContentBlockType = null;
-  const childIdsToDescend = [];
-
-  let cursor;
-  let hasMore = true;
-  while (hasMore) {
-    const res = await notionFetch(
-      `https://api.notion.com/v1/blocks/${blockId}/children?page_size=100${cursor ? `&start_cursor=${cursor}` : ''}`,
-      { method: 'GET', headers }
-    );
-    if (!res.ok) return { rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType, ok: false, status: res.status };
-    const data = await res.json();
-
-    for (const b of data.results) {
-      if (!rawImageUrl && b.type === 'image') {
-        rawImageUrl = b.image.type === 'external' ? b.image.external.url : b.image.file.url;
-      }
-      if (!pageContent) {
-        const blockTypeData = b[b.type];
-        if (blockTypeData?.rich_text?.length) {
-          pageContent = blockTypeData.rich_text.map(t => t.plain_text).join('');
-          // The id/type are what let an edit be written back to this exact
-          // block later (see api/backlog-photo.js's updateNote action) --
-          // captured here since this is the only place that ever resolves
-          // which block a log's note text actually lives in.
-          pageContentBlockId = b.id;
-          pageContentBlockType = b.type;
-        }
-      }
-      if (b.has_children && depth < MAX_BLOCK_SEARCH_DEPTH && CONTAINER_BLOCK_TYPES.has(b.type)) {
-        childIdsToDescend.push(b.id);
-      }
-    }
-    hasMore = data.has_more;
-    cursor = data.next_cursor;
-  }
-
-  for (const childId of childIdsToDescend) {
-    if (rawImageUrl && pageContent) break;
-    const nested = await findImageAndTextInBlocks(childId, headers, depth + 1);
-    if (!nested.ok) return { rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType, ok: false, status: nested.status };
-    if (!rawImageUrl) rawImageUrl = nested.rawImageUrl;
-    if (!pageContent) {
-      pageContent = nested.pageContent;
-      pageContentBlockId = nested.pageContentBlockId;
-      pageContentBlockType = nested.pageContentBlockType;
-    }
-  }
-
-  return { rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType, ok: true };
-}
 
 // Auto-detects which Notion property types on a page could serve as a
 // "facet" (an independent tag dimension) -- relation, rollup, select, and
@@ -389,7 +281,7 @@ export async function buildLogFields(props, facetSchema, isFaceted, getRelationT
 // shape, tagged with which configured source (database) they came from so
 // the frontend can group entries from different databases (e.g. a project
 // tracker and a plant care journal) into their own sidebar sections.
-async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZone, facetOverride = null) {
+async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZone, facetOverride = null, tenantId = '') {
   console.log(`[Diagnostic] Attempting to fetch Database ID: ${databaseId} (source: ${sourceLabel})`);
 
   // Notion caps a single query at 100 rows — without following has_more/
@@ -573,16 +465,17 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
       // Cached first, keyed by this exact page's last_edited_time (already
       // in hand from the database query, no extra cost) -- most historical
       // rows are never edited again after creation, so a repeat sync skips
-      // this Notion request for all of them. toThumbnailUrl is applied
-      // fresh either way rather than cached, since the underlying Notion
-      // file URL is signed and short-lived (see getCachedBlockData/
-      // notionCache.js for the freshness bound this relies on).
+      // this Notion request for all of them. A cached entry is used however
+      // old its photo link has got (ignoreImageAge): the link itself is never
+      // handed out -- the thumbnail is addressed by page + edit, and a fresh
+      // link is found when the thumbnail is asked for (see notionImages.js) --
+      // so all the sync needs is whether the page has a body photo.
       let rawImageUrl = null;
       let pageContent = '';
       let pageContentBlockId = null;
       let pageContentBlockType = null;
 
-      const cachedBlockData = await getCachedBlockData(page.id, page.last_edited_time);
+      const cachedBlockData = await getCachedBlockData(page.id, page.last_edited_time, { ignoreImageAge: true });
       if (cachedBlockData) {
         cacheStats.blockHits++;
         rawImageUrl = cachedBlockData.rawImageUrl;
@@ -615,11 +508,13 @@ async function fetchDatabaseLogs(databaseId, sourceLabel, headers, targetTimeZon
 
       // Falls back to a Files & media property or the page cover only when
       // the body itself had no image -- see extractPagePropertyImage above.
+      let imageSource = IMAGE_SOURCE_BODY;
       if (!rawImageUrl) {
         rawImageUrl = extractPagePropertyImage(props) || getPageCoverUrl(page);
+        imageSource = IMAGE_SOURCE_PAGE;
       }
 
-      const imageUrl = toThumbnailUrl(rawImageUrl);
+      const imageUrl = thumbnailUrlFor({ rawUrl: rawImageUrl, source: imageSource, page, tenantId });
 
       // Tracked time (see _lib/timeTracking.js) -- only attached to rows
       // that actually have some, so the many ordinary entries stay as light
@@ -738,7 +633,7 @@ export default async function handler(req, res) {
       sources.map(s => fetchDatabaseLogs(s.databaseId, s.label || 'Activity Log', headers, targetTimeZone, {
         topicFacetKey: s.topicFacetKey || null,
         typeFacetKey: s.typeFacetKey || null,
-      }))
+      }, tenantId))
     );
     const validLogs = perSourceResults.flatMap(r => r.logs);
 

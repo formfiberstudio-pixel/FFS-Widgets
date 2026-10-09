@@ -81,14 +81,21 @@ export async function setCachedRelationTitle(pageId, title) {
 }
 
 // Returns { rawImageUrl, pageContent, pageContentBlockId, pageContentBlockType}
-// only if the page hasn't been edited since this was cached AND (there was
-// no image to begin with, or the cached image's signed URL is still within
-// its safety window) -- otherwise null, meaning "fetch the blocks fresh."
-export async function getCachedBlockData(pageId, lastEditedTime) {
+// only if the page hasn't been edited since this was cached -- otherwise null,
+// meaning "fetch the blocks fresh."
+//
+// By default a cached image whose signed URL has aged past its safety window
+// also counts as a miss, because the caller is going to hand that URL out. The
+// sync doesn't (its thumbnails are addressed by page + edit, see
+// notionImages.js, and a fresh link is found when one is actually asked for) --
+// it only needs to know WHETHER the page has a body photo, which an old entry
+// answers just as well, so it passes ignoreImageAge and skips re-reading every
+// photo entry's page on every sync.
+export async function getCachedBlockData(pageId, lastEditedTime, { ignoreImageAge = false } = {}) {
   try {
     const cached = await redis.get(blockDataKey(pageId));
     if (!cached || cached.lastEditedTime !== lastEditedTime) return null;
-    if (cached.rawImageUrl && (Date.now() - cached.imageCachedAt) >= IMAGE_URL_FRESH_MS) return null;
+    if (!ignoreImageAge && cached.rawImageUrl && (Date.now() - cached.imageCachedAt) >= IMAGE_URL_FRESH_MS) return null;
     return {
       rawImageUrl: cached.rawImageUrl,
       pageContent: cached.pageContent,
@@ -97,6 +104,24 @@ export async function getCachedBlockData(pageId, lastEditedTime) {
     };
   } catch (err) {
     console.warn('[notionCache] block data read failed, fetching fresh:', err.message);
+    return null;
+  }
+}
+
+// The body photo's Notion link cached for exactly this edit of the page
+// (`editMs`, the page's last_edited_time as epoch milliseconds), if the link is
+// still within its safety window; null otherwise, meaning "read the page."
+// This is what lets the thumbnail proxy skip a Notion request for a photo the
+// sync has only just seen.
+export async function getCachedImageUrl(pageId, editMs) {
+  try {
+    const cached = await redis.get(blockDataKey(pageId));
+    if (!cached?.rawImageUrl) return null;
+    if (Date.parse(cached.lastEditedTime) !== editMs) return null;
+    if ((Date.now() - cached.imageCachedAt) >= IMAGE_URL_FRESH_MS) return null;
+    return cached.rawImageUrl;
+  } catch (err) {
+    console.warn('[notionCache] image url read failed, reading the page:', err.message);
     return null;
   }
 }
