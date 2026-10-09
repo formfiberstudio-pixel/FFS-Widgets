@@ -24,6 +24,7 @@ import WeekSummary from './WeekSummary.jsx';
 import YearGalleryPanel from './YearGalleryPanel.jsx';
 import { collectYearPhotos, groupYearPhotos, weekStartFor, yearGalleryRange } from './yearGallery.js';
 import { releasesYearPin } from './yearPin.js';
+import YearBlocks from './YearBlocks.jsx';
 import { cleanColors, hasColors, sameColors, mergeColors } from './customColors.js';
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
@@ -283,6 +284,21 @@ const IconGallery = () => (
     <rect x="3" y="3" width="18" height="18" rx="2"/>
     <circle cx="8.5" cy="8.5" r="1.5"/>
     <path d="M21 15l-5-5L5 21"/>
+  </svg>
+);
+
+const IconYearDots = () => (
+  <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24" aria-hidden="true">
+    {[5, 12, 19].flatMap((y) => [5, 12, 19].map((x) => <circle key={`${x}-${y}`} cx={x} cy={y} r="2" />))}
+  </svg>
+);
+
+const IconYearBlocks = () => (
+  <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="3" width="8" height="8" rx="1.5" />
+    <rect x="13" y="3" width="8" height="8" rx="1.5" />
+    <rect x="3" y="13" width="8" height="8" rx="1.5" />
+    <rect x="13" y="13" width="8" height="8" rx="1.5" />
   </svg>
 );
 
@@ -1174,10 +1190,13 @@ function App() {
   // the gallery view's mini-calendar but with project-colored dots instead
   // of plain day numbers). Persisted since it's a standing preference, not
   // a one-off state.
-  const [mobileYearLayout, setMobileYearLayout] = useState(() => localStorage.getItem('notionWidgetMobileYearLayout') || 'dots');
+  // Dots or blocks: one choice for the Year view on the phone and on the desktop.
+  // (The phone's choice used to be kept under its own name -- still read, so
+  // nobody's setting is lost.)
+  const [yearLayout, setYearLayout] = useState(() => localStorage.getItem('notionWidgetYearLayout') || localStorage.getItem('notionWidgetMobileYearLayout') || 'dots');
   useEffect(() => {
-    localStorage.setItem('notionWidgetMobileYearLayout', mobileYearLayout);
-  }, [mobileYearLayout]);
+    localStorage.setItem('notionWidgetYearLayout', yearLayout);
+  }, [yearLayout]);
   // Shared by mobile Month and Year: collapsing the "visible projects"
   // panel gives the calendar grid the space back. Year gets there by
   // swiping (its grid has no scroll gesture of its own to conflict with);
@@ -3419,13 +3438,20 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, isMobile]);
 
-  // The Year view only goes in as far as a month or a week -- never to a single
-  // day -- so a day picked there (a dot on the phone, a photo in the gallery)
-  // opens the week it falls in.
+  // The desktop Year view only goes in as far as a month or a week -- never to a
+  // single day -- so a photo picked in its gallery opens the week it falls in.
   const openWeekOf = (dateObj) => {
     if (!dateObj) return;
     setCurrentDate(dateObj);
     setViewMode('week');
+  };
+  // The phone's Year view goes in only as far as a month: a day dot opens the
+  // month it falls in, the same place its month name goes (the first of the
+  // month, which the continuous month list scrolls to).
+  const openMonthOf = (dateObj) => {
+    if (!dateObj) return;
+    setCurrentDate(new Date(dateObj.getFullYear(), dateObj.getMonth(), 1));
+    setViewMode('month');
   };
 
   // Mobile Month view's day-cell tap is two-step rather than opening the
@@ -3578,6 +3604,43 @@ function App() {
       borderBottomLeftRadius: isLast ? radius : 0, borderBottomRightRadius: isLast ? radius : 0,
     };
     return <span aria-hidden="true" className="absolute pointer-events-none border-amber-500 bg-amber-500/20" style={{ borderStyle: 'solid', ...style }} />;
+  };
+
+  // One day's dot in the desktop Year view, the same in both layouts (the dot
+  // grid and the blocks). It has no click of its own: the Year view goes in as
+  // far as a month or a week, so a click on a day reaches the cell around it
+  // (pin the week, click again to open it). `logs` are the day's entries.
+  const renderYearDayDot = (targetDate, targetDayNum, logs, size, fontSize) => {
+    const hasLog = logs.length > 0;
+    const hasMultipleProjects = new Set(logs.map(l => l.Projects || 'Untitled Project')).size > 1;
+    const displayDotHex = getDisplayDotColor(logs, targetDate);
+    const specialDay = getSpecialDayForDate(targetDate, specialDays);
+    const dotStyle = getDayDotStyling(targetDate, hasLog, displayDotHex, specialDay);
+    const isSpecialDay = !!(getOntarioStatHolidayName(targetDate) || targetDate.getDay() === 0 || targetDate.getDay() === 6 || specialDay);
+    const isHoveredProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
+    const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
+    return (
+      <div
+        style={{
+          width: `${size}px`,
+          height: `${size}px`,
+          fontSize: `${fontSize}px`,
+          backgroundColor: dotStyle.bg,
+          color: dotStyle.text,
+          borderColor: dotStyle.border,
+        }}
+        className={`rounded-full flex items-center justify-center transition-all duration-200 relative z-20 border bg-[var(--theme-card)] ${
+          hasLog || isSpecialDay ? 'font-bold shadow-xs' : ''
+        // scale-125 on highlight (used to sit alongside the ring below)
+        // pushed dots at the grid's own edge past the container's
+        // overflow-hidden boundary -- dropped, the ring alone still reads
+        // as highlighted.
+        } ${hasLog ? 'scale-110' : ''} ${isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1 font-bold z-30' : isToday(targetDate) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 font-bold' : ''} ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
+      >
+        {targetDayNum}
+        {hasMultipleProjects && <MultiProjectRing color={dotStyle.border} />}
+      </div>
+    );
   };
 
   // The day's detail -- its date and holidays, then one card per entry
@@ -4101,6 +4164,28 @@ function App() {
             )}
 
             <div className="flex items-center gap-1.5 shrink-0">
+              {!isMobile && viewMode === 'year' && (
+                <div className="flex items-center p-0.5 rounded-lg border shrink-0" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
+                  <button
+                    onClick={() => setYearLayout('dots')}
+                    title="Dots layout"
+                    aria-label="Dots layout"
+                    aria-pressed={yearLayout !== 'blocks'}
+                    className={`h-6 w-7 flex items-center justify-center rounded-md transition-all cursor-pointer ${yearLayout !== 'blocks' ? 'bg-black/20' : 'opacity-60'}`}
+                  >
+                    <IconYearDots />
+                  </button>
+                  <button
+                    onClick={() => setYearLayout('blocks')}
+                    title="Blocks layout"
+                    aria-label="Blocks layout"
+                    aria-pressed={yearLayout === 'blocks'}
+                    className={`h-6 w-7 flex items-center justify-center rounded-md transition-all cursor-pointer ${yearLayout === 'blocks' ? 'bg-black/20' : 'opacity-60'}`}
+                  >
+                    <IconYearBlocks />
+                  </button>
+                </div>
+              )}
               {!isMobile && viewMode !== 'gallery' && viewMode !== 'import' && (
                 <>
                   <button onClick={handlePrev} style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }} className="h-7 px-3 text-[11px] font-semibold border rounded-md cursor-pointer transition-colors">← Prev</button>
@@ -5675,20 +5760,20 @@ function App() {
                     than something tucked in Settings. */}
                 <div className="flex items-center gap-1 mb-2 shrink-0 self-end p-0.5 rounded-lg border" style={{ backgroundColor: 'var(--theme-card)', borderColor: 'var(--theme-border)' }}>
                   <button
-                    onClick={() => setMobileYearLayout('dots')}
-                    className={`px-2 py-1 text-[10px] font-semibold rounded-md transition-all cursor-pointer ${mobileYearLayout === 'dots' ? 'bg-black/20 font-bold' : 'opacity-60'}`}
+                    onClick={() => setYearLayout('dots')}
+                    className={`px-2 py-1 text-[10px] font-semibold rounded-md transition-all cursor-pointer ${yearLayout === 'dots' ? 'bg-black/20 font-bold' : 'opacity-60'}`}
                   >
                     Dots
                   </button>
                   <button
-                    onClick={() => setMobileYearLayout('blocks')}
-                    className={`px-2 py-1 text-[10px] font-semibold rounded-md transition-all cursor-pointer ${mobileYearLayout === 'blocks' ? 'bg-black/20 font-bold' : 'opacity-60'}`}
+                    onClick={() => setYearLayout('blocks')}
+                    className={`px-2 py-1 text-[10px] font-semibold rounded-md transition-all cursor-pointer ${yearLayout === 'blocks' ? 'bg-black/20 font-bold' : 'opacity-60'}`}
                   >
                     Blocks
                   </button>
                 </div>
 
-                {mobileYearLayout === 'dots' ? (
+                {yearLayout === 'dots' ? (
                 // One column per month (day 1 at the top running down to
                 // 31) instead of one row per month -- reads tall/narrow
                 // like the Blocks layout below rather than a single wide
@@ -5729,7 +5814,7 @@ function App() {
                       const isDimmedByHighlight = hoveredProjectTitle && !isHighlightedProject;
 
                       return (
-                        <div key={`${mIdx}-${dayNum}`} className="flex items-center justify-center" style={{ height: '10px' }} onClick={() => openWeekOf(dateObj)}>
+                        <div key={`${mIdx}-${dayNum}`} className="flex items-center justify-center" style={{ height: '10px' }} onClick={() => openMonthOf(dateObj)}>
                           <div
                             // opacity is set inline below (not via an
                             // opacity-* class) specifically so the
@@ -5800,7 +5885,7 @@ function App() {
                               const isWeekendOrHoliday = dateObj.getDay() === 0 || dateObj.getDay() === 6 || !!specialDay || !!getOntarioStatHolidayName(dateObj);
                               const isOutline = !hasLog && isWeekendOrHoliday;
                               return (
-                                <div key={i} className="flex items-center justify-center" style={{ aspectRatio: '1' }} onClick={() => openWeekOf(dateObj)}>
+                                <div key={i} className="flex items-center justify-center" style={{ aspectRatio: '1' }} onClick={() => openMonthOf(dateObj)}>
                                   <div
                                     // Smaller than the cell (not w-full/h-full)
                                     // -- filling the whole cell read as one
@@ -5859,7 +5944,28 @@ function App() {
             );
           })()}
 
-          {viewMode === 'year' && !isMobile && (
+          {viewMode === 'year' && !isMobile && yearLayout === 'blocks' && (
+            <YearBlocks
+              year={year}
+              monthNames={MONTH_NAMES}
+              renderDay={(dateObj, dayNum) => renderYearDayDot(dateObj, dayNum, getLogsForDate(dateObj), Math.round(20 * scaleFactor), Math.round(9 * scaleFactor))}
+              litMonths={new Set([hoveredMonthButtonIndex, pinnedYearFilter?.kind === 'month' ? pinnedYearFilter.mIdx : null].filter((m) => m !== null && m !== undefined))}
+              highlightedWeekStarts={highlightedWeekStarts}
+              onMonthEnter={setHoveredMonthButtonIndex}
+              onMonthLeave={() => setHoveredMonthButtonIndex(null)}
+              onMonthClick={handleYearMonthClick}
+              onDayEnter={(mIdx, weekIndex, dateObj) => {
+                setHoveredWeek({ mIdx, weekIndex });
+                const first = getLogsForDate(dateObj)[0];
+                if (first) setHoveredProjectTitle(first.Projects || 'Untitled Project');
+              }}
+              onDayLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }}
+              onWeekClick={handleYearWeekClick}
+              radius={tileRadius}
+            />
+          )}
+
+          {viewMode === 'year' && !isMobile && yearLayout !== 'blocks' && (
             <div className="flex flex-col h-full w-full min-w-0 min-h-0 relative">
               {/* The Year grid: months are columns, weekdays run down the side.
                   (There used to be a second, landscape layout with months as
@@ -5948,48 +6054,15 @@ function App() {
 
                           const targetDate = new Date(year, mIdx, targetDayNum);
                           const logs = getLogsForDate(targetDate);
-                          const hasLog = logs.length > 0;
-                          const uniqueProjects = new Set(logs.map(l => l.Projects || 'Untitled Project'));
-                          const hasMultipleProjects = uniqueProjects.size > 1;
-                          const primaryLog = hasLog ? logs[0] : null;
-                          const displayDotHex = getDisplayDotColor(logs, targetDate);
-                          const specialDay = getSpecialDayForDate(targetDate, specialDays);
-                          const dotStyle = getDayDotStyling(targetDate, hasLog, displayDotHex, specialDay);
-                          const isSpecialDay = !!(getOntarioStatHolidayName(targetDate) || targetDate.getDay() === 0 || targetDate.getDay() === 6 || specialDay);
-                          
-                          const isHoveredProject = hasLog && logs.some(l => (l.Projects || 'Untitled Project') === hoveredProjectTitle);
-                          const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
+                          const primaryLog = logs.length > 0 ? logs[0] : null;
 
                           return (
-                            <div key={mIdx} data-year-target onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className="h-full w-full flex items-center justify-center relative cursor-pointer group/node transition-colors px-0.5">
+                            <div key={mIdx} data-year-target onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className="h-full w-full flex items-center justify-center relative cursor-pointer group/node transition-colors px-0.5">
                               {isHoveredWeekCell && renderWeekBand({
                                 isFirst: rowIndex % 7 === 0 || targetDayNum === 1,
                                 isLast: rowIndex % 7 === 6 || targetDayNum === daysInMonth || rowIndex === 36,
                               })}
-                              <div
-                                // No click of its own: the Year view goes in as far as
-                                // a month or a week, so a click on a day reaches the
-                                // cell around it (pin the week, click again to open it).
-                                style={{
-                                  width: `${yearDotPx}px`,
-                                  height: `${yearDotPx}px`,
-                                  fontSize: `${yearDotFontPx}px`,
-                                  backgroundColor: dotStyle.bg,
-                                  color: dotStyle.text,
-                                  borderColor: dotStyle.border 
-                                }}
-                                className={`rounded-full flex items-center justify-center transition-all duration-200 relative z-20 border bg-[var(--theme-card)] ${
-                                  hasLog || isSpecialDay ? 'font-bold shadow-xs' : ''
-                                // scale-125 on highlight (used to sit
-                                // alongside the ring below) pushed dots at
-                                // the grid's own edge past the container's
-                                // overflow-hidden boundary -- dropped, the
-                                // ring alone still reads as highlighted.
-                                } ${hasLog ? 'scale-110' : ''} ${isHoveredProject ? 'ring-2 ring-[var(--theme-secondary)] ring-offset-1 font-bold z-30' : isToday(targetDate) ? 'ring-2 ring-[var(--theme-primary)] ring-offset-1 font-bold' : ''} ${isUnrelatedHover ? 'opacity-40 grayscale-[50%]' : ''}`}
-                              >
-                                {targetDayNum}
-                                {hasMultipleProjects && <MultiProjectRing color={dotStyle.border} />}
-                              </div>
+                              {renderYearDayDot(targetDate, targetDayNum, logs, yearDotPx, yearDotFontPx)}
                             </div>
                           );
                         })}
