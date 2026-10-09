@@ -46,8 +46,11 @@ export default function YearBlocks({
               className="flex flex-col min-h-0 border px-2 pt-1.5 pb-1 transition-colors"
               style={{
                 borderRadius: `${radius}px`,
-                borderColor: lit ? 'rgb(245 158 11)' : 'var(--theme-border)',
-                backgroundColor: lit ? 'rgb(245 158 11 / 0.1)' : 'var(--theme-bg)',
+                // No frame of its own at rest -- the month sits straight on the
+                // calendar. The border is kept (transparent) so lighting a month
+                // up doesn't nudge anything.
+                borderColor: lit ? 'rgb(245 158 11)' : 'transparent',
+                backgroundColor: lit ? 'rgb(245 158 11 / 0.1)' : 'transparent',
               }}
             >
               <div className="flex items-center justify-between shrink-0 mb-0.5">
