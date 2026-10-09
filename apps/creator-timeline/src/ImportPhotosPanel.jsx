@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import exifr from 'exifr';
 import { resizeImageForUpload } from './imageResize.js';
 import { isNativePhotoPickerSupported, queryPhotosByDateRange, getPhotoThumbnail, getPhotoData } from './nativePhotoPicker.js';
 import { canReadClipboardImages, imageFilesFromClipboardData, readClipboardImageFiles } from './clipboardImages.js';
 import { edgeScrollSpeed, idsBetween, idsInBox, shiftRange } from './dragSelect.js';
 import { freshSharedRecords, sharedPhotoFromRecord } from './sharedPhotos.js';
-import { loadLoggedPhotos, saveLoggedPhotos, withLoggedPhoto, loggedInfo, countLogged } from './loggedPhotos.js';
+import { loadLoggedPhotos, saveLoggedPhotos, withLoggedPhoto, markSeen, loggedInfo, countLogged } from './loggedPhotos.js';
 
 function toDateInputValue(date) {
   const d = new Date(date);
@@ -242,7 +242,7 @@ function useTouchReviewLayout() {
   return touch;
 }
 
-export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, sharedNativePhotos, onConsumedSharedNativePhotos, fixedDateRange, projectColorMap, knownEntryIds, onStepChange }) {
+export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUploaded, sharedPhotos, onConsumedSharedPhotos, sharedNativePhotos, onConsumedSharedNativePhotos, fixedDateRange, projectColorMap, knownEntries, onStepChange }) {
   // The phone's review layout (a strip of the current date block's photos over
   // the project list) is used on a narrow window AND on a touch-first device
   // such as a tablet, whatever its width -- an iPad opens the web version, but
@@ -435,6 +435,9 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
   // the picker marks them, and can hide them.
   const [loggedPhotos, setLoggedPhotos] = useState(() => loadLoggedPhotos(localStorage, tenantId));
   const [hideLogged, setHideLogged] = useState(false);
+  // The record, with the entries the calendar has shown noted as seen (App.jsx saves
+  // that; this keeps what is on screen current while the picker is open).
+  const effectiveLogged = useMemo(() => markSeen(loggedPhotos, knownEntries?.ids), [loggedPhotos, knownEntries]);
 
   // Per-date-block results cache (uri+thumbnail included), keyed by
   // "start::end" -- swiping to a block that's already in here shows
@@ -1236,8 +1239,8 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
         : 'this range'
       : '';
     // Photos already logged from here are marked, and can be hidden.
-    const loggedCount = countLogged(loggedPhotos, nativePickPhotos, knownEntryIds);
-    const shownPhotos = hideLogged ? nativePickPhotos.filter((p) => !loggedInfo(loggedPhotos, p.uri, knownEntryIds)) : nativePickPhotos;
+    const loggedCount = countLogged(effectiveLogged, nativePickPhotos, knownEntries);
+    const shownPhotos = hideLogged ? nativePickPhotos.filter((p) => !loggedInfo(effectiveLogged, p.uri, knownEntries)) : nativePickPhotos;
     return (
       <div className="flex flex-col h-full w-full min-h-0">
         <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
@@ -1295,7 +1298,7 @@ export default function ImportPhotosPanel({ allProjects, tenantId, onClose, onUp
             <div className="grid gap-1.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))' }}>
               {shownPhotos.map((p) => {
                 const isSelected = nativePickSelected.has(p.uri);
-                const logged = loggedInfo(loggedPhotos, p.uri, knownEntryIds);
+                const logged = loggedInfo(effectiveLogged, p.uri, knownEntries);
                 return (
                   <div
                     key={p.uri}

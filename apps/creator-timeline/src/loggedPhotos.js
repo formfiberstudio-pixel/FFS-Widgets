@@ -8,6 +8,12 @@
 // which of a day's photos it has already brought in. Kept on this device, per
 // account (a camera roll belongs to one phone). Pure -- the storage is passed in.
 //
+// A photo stops being marked when its entry is gone from the calendar. The record
+// notes when it has SEEN the entry in the calendar (`seen`): after that, the entry
+// being absent means it was deleted, and the mark goes at once. Before that -- an
+// upload the calendar has not caught up with yet -- it is kept until a sync has
+// finished since the upload (or, failing that, a few minutes).
+//
 // Photos logged before this existed, or by another route (the website, a share
 // from Google Photos with a different kind of address), are not in the record and
 // show as new.
@@ -18,8 +24,8 @@ const storageKey = (tenantId) => `notionWidgetLoggedPhotos:${tenantId}`;
 // day; this is years of logging, and the oldest go first.
 export const MAX_KEPT = 5000;
 
-// An entry only appears in the calendar after the next sync, which follows an
-// upload within moments; until then a photo is taken as logged without that check.
+// How long an upload the calendar has not shown yet is still taken as logged when no
+// sync has finished since to say otherwise.
 export const SYNC_GRACE_MS = 15 * 60 * 1000;
 
 export function loadLoggedPhotos(storage, tenantId) {
@@ -48,19 +54,42 @@ export function withLoggedPhoto(map, uri, { pageId, title, date }, now = Date.no
   return next;
 }
 
+// Notes every record whose entry is in the calendar (`entryIds`, a Set of the
+// calendar's entry ids) as seen there. The same object comes back if nothing was
+// newly seen, so a caller can tell whether there is anything to save.
+export function markSeen(map, entryIds) {
+  if (!entryIds || entryIds.size === 0) return map;
+  let next = map;
+  for (const [uri, record] of Object.entries(map)) {
+    if (!record.seen && record.pageId && entryIds.has(record.pageId)) {
+      if (next === map) next = { ...map };
+      next[uri] = { ...record, seen: true };
+    }
+  }
+  return next;
+}
+
 // What is known of `uri`'s logging, or null if it is not logged -- including when
-// the entry it went into has since been deleted. `knownEntryIds` is the set of the
-// calendar's entry ids (null: no way to check, take the record as it stands).
-export function loggedInfo(map, uri, knownEntryIds, now = Date.now()) {
+// the entry it went into has since been deleted. `known` is what the calendar shows:
+// { ids: Set of entry ids, syncedAt: when it was last brought up to date }, or null
+// when there is no way to check (the record is then taken as it stands).
+export function loggedInfo(map, uri, known, now = Date.now()) {
   const record = map[uri];
   if (!record) return null;
-  if (knownEntryIds && record.pageId && !knownEntryIds.has(record.pageId) && now - (record.at || 0) > SYNC_GRACE_MS) return null;
+  if (!known || !record.pageId) return record;
+  if (known.ids.has(record.pageId)) return record;
+  // The calendar does not have it. If it once did, it was deleted.
+  if (record.seen) return null;
+  // Never seen: an upload the calendar may not have caught up with. A sync that has
+  // finished since the upload would have shown it; so would the passing of time.
+  if (known.syncedAt && known.syncedAt > (record.at || 0)) return null;
+  if (now - (record.at || 0) > SYNC_GRACE_MS) return null;
   return record;
 }
 
 // How many of `photos` (each with a uri) are logged.
-export function countLogged(map, photos, knownEntryIds, now = Date.now()) {
+export function countLogged(map, photos, known, now = Date.now()) {
   let count = 0;
-  for (const photo of photos) if (loggedInfo(map, photo.uri, knownEntryIds, now)) count++;
+  for (const photo of photos) if (loggedInfo(map, photo.uri, known, now)) count++;
   return count;
 }

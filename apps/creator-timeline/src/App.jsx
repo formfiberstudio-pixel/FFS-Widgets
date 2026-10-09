@@ -28,6 +28,7 @@ import { collectYearPhotos, groupYearPhotos, weekStartFor, yearGalleryRange } fr
 import { releasesYearPin } from './yearPin.js';
 import YearBlocks from './YearBlocks.jsx';
 import { cleanColors, hasColors, sameColors, mergeColors } from './customColors.js';
+import { loadLoggedPhotos, saveLoggedPhotos, markSeen } from './loggedPhotos.js';
 import ImportPhotosPanel from './ImportPhotosPanel.jsx';
 import LogNoteEditor from './LogNoteEditor.jsx';
 import LogTitleEditor from './LogTitleEditor.jsx';
@@ -1846,6 +1847,14 @@ function App() {
   // is running now. lastSyncedAtRef moves whenever a sync succeeds, which is how
   // an attempt is known to have worked.
   const lastSyncedAtRef = useRef(0);
+  // What the calendar shows, for the Import picker to tell which of the phone's photos
+  // are still logged (see loggedPhotos.js): its entries, and when it was last synced.
+  // Entries it has shown are noted in the record here, whether or not the picker is
+  // open, so one that is later deleted is known to have been -- and un-marks at once.
+  const knownEntries = useMemo(
+    () => ({ ids: new Set(timelineLogs.map((l) => l.id)), syncedAt: lastSyncedAtRef.current || 0 }),
+    [timelineLogs]
+  );
   const lastActiveAtRef = useRef(Date.now());
   const autoSyncOwedRef = useRef(false);
   const lastAutoSyncAttemptRef = useRef(0);
@@ -1862,6 +1871,12 @@ function App() {
   // (and optionally which subset of their databases) this particular
   // embed shows.
   const [tenantId, setTenantId] = useState(null);
+  useEffect(() => {
+    if (!tenantId) return;
+    const record = loadLoggedPhotos(localStorage, tenantId);
+    const seen = markSeen(record, knownEntries.ids);
+    if (seen !== record) saveLoggedPhotos(localStorage, tenantId, seen);
+  }, [knownEntries, tenantId]);
   const [sourceFilter, setSourceFilter] = useState(null); // null = show all of the tenant's configured databases
   const [needsSetup, setNeedsSetup] = useState(false);
   const [savedViews, setSavedViews] = useState([]); // named embed-URL presets from setup.html, shown in Settings for quick copying
@@ -5023,7 +5038,7 @@ function App() {
               sharedNativePhotos={pendingSharedNativePhotos}
               onConsumedSharedNativePhotos={() => setPendingSharedNativePhotos(null)}
               fixedDateRange={importDateRange}
-              knownEntryIds={new Set(timelineLogs.map((l) => l.id))}
+              knownEntries={knownEntries}
               onStepChange={setImportPanelStep}
             />
           )}
