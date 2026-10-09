@@ -3050,6 +3050,14 @@ function App() {
     if (isSameYearFilter(pinnedYearFilter, filter)) handleWeekClick(mIdx, weekIndex);
     else setPinnedYearFilter(filter);
   };
+  // A click anywhere else in the Year view's calendar -- the empty space around
+  // the days, the blank cells, the gaps between months -- lets go of the pinned
+  // month or week and goes back to the whole year. The month names and the
+  // days are marked data-year-target: those are what a click pins or opens.
+  const handleYearBackgroundClick = (e) => {
+    if (!pinnedYearFilter || e.target.closest('[data-year-target]')) return;
+    setPinnedYearFilter(null);
+  };
 
   const handleWeekClick = (mIdx, weekIndex) => {
     const firstDayOfMonthObj = new Date(year, mIdx, 1);
@@ -4623,6 +4631,7 @@ function App() {
           ref={calendarRef}
           onTouchStart={handleCalendarTouchStart}
           onTouchEnd={handleCalendarTouchEnd}
+          onClick={viewMode === 'year' && !isMobile ? handleYearBackgroundClick : undefined}
           style={{
             borderRadius: isMobile ? 0 : `${panelRadius}px`,
             backgroundColor: isMobile ? 'transparent' : 'var(--theme-card)',
@@ -5769,6 +5778,7 @@ function App() {
                   {MONTH_NAMES.map((monthLabel, mIdx) => (
                     <div
                       key={monthLabel}
+                      data-year-target
                       onClick={() => handleYearMonthClick(mIdx)}
                       onMouseEnter={() => setHoveredMonthButtonIndex(mIdx)}
                       onMouseLeave={() => setHoveredMonthButtonIndex(null)}
@@ -5836,7 +5846,7 @@ function App() {
                           const isHoveredWeekCell = highlightedWeekStarts.has(new Date(year, mIdx, rowIndex - startOffsetColumn + 1 - (rowIndex % 7)).getTime());
 
                           if (!isValidCalendarDay) {
-                            return <div key={mIdx} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => setHoveredWeek({ mIdx, weekIndex })} onMouseLeave={() => setHoveredWeek(null)} className="h-full w-full flex items-center justify-center transition-colors cursor-pointer px-0.5" />;
+                            return <div key={mIdx} onMouseEnter={() => setHoveredWeek({ mIdx, weekIndex })} onMouseLeave={() => setHoveredWeek(null)} className="h-full w-full flex items-center justify-center transition-colors px-0.5" />;
                           }
 
                           const targetDate = new Date(year, mIdx, targetDayNum);
@@ -5854,7 +5864,7 @@ function App() {
                           const isUnrelatedHover = hoveredProjectTitle && !isHoveredProject;
 
                           return (
-                            <div key={mIdx} onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className="h-full w-full flex items-center justify-center relative cursor-pointer group/node transition-colors px-0.5">
+                            <div key={mIdx} data-year-target onClick={() => handleYearWeekClick(mIdx, weekIndex)} onMouseEnter={() => { setHoveredWeek({ mIdx, weekIndex }); if (hasLog && primaryLog) setHoveredProjectTitle(primaryLog.Projects || 'Untitled Project'); }} onMouseLeave={() => { setHoveredWeek(null); setHoveredProjectTitle(null); }} className="h-full w-full flex items-center justify-center relative cursor-pointer group/node transition-colors px-0.5">
                               {isHoveredWeekCell && renderWeekBand({
                                 isFirst: rowIndex % 7 === 0 || targetDayNum === 1,
                                 isLast: rowIndex % 7 === 6 || targetDayNum === daysInMonth || rowIndex === 36,
