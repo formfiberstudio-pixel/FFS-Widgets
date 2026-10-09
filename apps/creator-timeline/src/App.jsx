@@ -1110,7 +1110,7 @@ function ClusterJumpButtons({ hasPrev, hasNext, onPrev, onNext }) {
 function App() {
   const today = new Date();
   const [currentDate, setCurrentDate] = useState(today);
-  const [viewMode, setViewMode] = useState('year');
+  const [viewMode, setViewModeRaw] = useState('year'); // the app uses setViewMode, below -- it also records the screen being left
   // The sidebar sits beside the calendar on desktop, but on a phone there
   // isn't room for both -- it opens as a full-screen overlay instead (see
   // the <aside> below), so it starts closed there rather than eating half
@@ -1152,27 +1152,26 @@ function App() {
   // window is always [this index, this index + rows). Drives the
   // "projects logged in the visible weeks" panel below the grid.
   const [mobileMonthVisibleStartIdx, setMobileMonthVisibleStartIdx] = useState(0);
-  // Header label for the visible window -- e.g. "June" when all 4 visible
-  // rows fall in one month, "June, July" when they straddle two (28 days
-  // can span at most two calendar months, since every month is at least
-  // that long). Derived straight from mobileMonthVisibleStartIdx rather
-  // than tracked as its own state, so it's always exactly in sync with
-  // what's actually on screen.
+  // Header label for the visible window, in two short rows that never change
+  // how many lines they take (the header stays one height as the list scrolls):
+  // the year -- "2026", or "26–27" when the visible weeks straddle New Year --
+  // and the month -- "Oct", or "Sep–Oct" when they straddle two (28 days can
+  // span at most two calendar months, since every month is at least that long).
+  // Derived straight from mobileMonthVisibleStartIdx rather than tracked as its
+  // own state, so it's always exactly in sync with what's actually on screen.
   const getMobileMonthHeaderLabel = (startIdx) => {
     const firstDay = mobileMonthWeeks[startIdx]?.[0];
     const lastRow = mobileMonthWeeks[startIdx + MOBILE_MONTH_VISIBLE_ROWS - 1];
     const lastDay = lastRow ? lastRow[6] : firstDay;
     if (!firstDay || !lastDay) return { year: String(new Date().getFullYear()), label: '' };
+    const shortMonth = (d) => d.toLocaleDateString('en-US', { month: 'short' });
+    const shortYear = (d) => String(d.getFullYear()).slice(-2);
     const sameMonth = firstDay.getFullYear() === lastDay.getFullYear() && firstDay.getMonth() === lastDay.getMonth();
-    if (sameMonth) {
-      return { year: String(firstDay.getFullYear()), label: firstDay.toLocaleDateString('en-US', { month: 'long' }) };
-    }
+    if (sameMonth) return { year: String(firstDay.getFullYear()), label: shortMonth(firstDay) };
     const sameYear = firstDay.getFullYear() === lastDay.getFullYear();
-    const startLabel = firstDay.toLocaleDateString('en-US', { month: 'long' });
-    const endLabel = lastDay.toLocaleDateString('en-US', { month: 'long' });
     return {
-      year: sameYear ? String(firstDay.getFullYear()) : `${firstDay.getFullYear()}–${lastDay.getFullYear()}`,
-      label: `${startLabel}, ${endLabel}`,
+      year: sameYear ? String(firstDay.getFullYear()) : `${shortYear(firstDay)}–${shortYear(lastDay)}`,
+      label: `${shortMonth(firstDay)}–${shortMonth(lastDay)}`,
     };
   };
   // Collapse state for the visible-projects panel's per-database groups --
@@ -1275,10 +1274,34 @@ function App() {
   // between the Year/Month/Week/Day tabs) deliberately don't push anything
   // here, matching how tab bars usually behave elsewhere -- only actual
   // drill-downs are back-navigable.
+  //
+  // On a phone EVERY change of screen is back-navigable -- the Year / Month /
+  // Week / Day tabs too, and a tap that goes in (a month's name, a week) -- so the
+  // back gesture always returns to the screen before. That happens in
+  // setViewMode below: it records the screen being left, unless a drill-down
+  // already did (pushBackEntry) a moment ago. The full-screen layers (settings,
+  // the day takeover, the project drawer, the menu) are back entries too: the
+  // gesture closes the layer first (see useBackLayer). At the first screen
+  // there is nothing left, and the gesture leaves the app. (In the Android app
+  // MainActivity hands the gesture to the web page's history; see there.)
   const backStackRef = useRef([]);
+  // Held for the rest of the tick in which a back entry was pushed or given up
+  // on purpose, so that the setViewMode call that goes with it adds no second one.
+  const skipAutoBackRef = useRef(false);
+  const holdAutoBack = () => {
+    skipAutoBackRef.current = true;
+    queueMicrotask(() => { skipAutoBackRef.current = false; });
+  };
   const pushBackEntry = (snapshot) => {
+    holdAutoBack();
     backStackRef.current.push(snapshot);
     window.history.pushState({ __calendarBack: true }, '');
+  };
+  const setViewMode = (next) => {
+    if (isMobile && next !== viewMode && !skipAutoBackRef.current) {
+      pushBackEntry({ viewMode, currentDate, galleryTarget });
+    }
+    setViewModeRaw(next);
   };
   // Called by the explicit on-screen "Back to Calendar" buttons (Gallery,
   // Import), which already know how to restore the right view themselves
@@ -1289,10 +1312,45 @@ function App() {
   // already left through this button (one harmless-looking but confusing
   // extra "back" press before the app actually exits). A no-op when
   // there's nothing tracked, e.g. Import opened via the Android
-  // share-target landing rather than a drill-down.
+  // share-target landing rather than a drill-down. Call it BEFORE the
+  // setViewMode that leaves the screen: it makes that call add no entry.
   const dismissBackEntry = () => {
+    holdAutoBack();
     if (backStackRef.current.length > 0) window.history.back();
   };
+
+  // A screen laid over the page -- settings, the day takeover, the project
+  // drawer, the menu -- is a back entry while it is open: the back gesture
+  // closes it. `open` should be false off a phone, where the browser's own back
+  // button is enough. A layer's entry is { close, state }; a screen's is its
+  // snapshot. When a layer is closed by its own button its entry cannot be taken
+  // back out of the history (a page cannot delete history), so it is marked
+  // dead and stepped over, without a pause, when the gesture reaches it.
+  const useBackLayer = (open, close) => {
+    const closeRef = useRef(close);
+    closeRef.current = close;
+    const entryRef = useRef(null);
+    useEffect(() => {
+      if (open && !entryRef.current) {
+        const entry = { close: () => closeRef.current(), state: 'open' };
+        entryRef.current = entry;
+        backStackRef.current.push(entry);
+        window.history.pushState({ __calendarBack: true }, '');
+      } else if (!open && entryRef.current) {
+        entryRef.current.state = 'dead';
+        entryRef.current = null;
+      }
+    }, [open]);
+  };
+
+  // How many back entries are still worth going back to (the dead ones are not).
+  // The Android app asks this before handing the gesture to the page's history,
+  // so a trail of dead slots never costs a press that does nothing: with none
+  // live, the gesture simply leaves the app. (See MainActivity.)
+  useEffect(() => {
+    window.__calendarLiveBack = () => backStackRef.current.filter((entry) => entry.state !== 'dead').length;
+    return () => { delete window.__calendarLiveBack; };
+  }, []);
 
   // Every "open this day" tap in the calendar goes through here. On desktop
   // the day opens as a PAGE (Day view) in the calendar's own canvas rather
@@ -1312,11 +1370,16 @@ function App() {
   useEffect(() => {
     const onPopState = () => {
       const prev = backStackRef.current.pop();
-      if (!prev) return; // Nothing tracked (or the tab was reloaded/restored
-      // mid-session and lost the in-memory stack) -- let the back gesture
-      // fall through to its normal browser/OS behavior instead of doing
-      // nothing silently.
-      setViewMode(prev.viewMode);
+      if (!prev) {
+        // Nothing tracked: the tab was reloaded/restored mid-session and lost the
+        // in-memory stack, so this slot belongs to nobody. If it is one of ours,
+        // step past it instead of leaving the gesture to do nothing visible.
+        if (window.history.state?.__calendarBack) window.history.back();
+        return;
+      }
+      if (prev.state === 'dead') { window.history.back(); return; } // a layer already closed: on to the screen under it
+      if (prev.close) { prev.close(); return; }
+      setViewModeRaw(prev.viewMode);
       if (prev.currentDate) setCurrentDate(prev.currentDate);
       if ('galleryTarget' in prev) setGalleryTarget(prev.galleryTarget);
       if ('preGalleryViewMode' in prev) setPreGalleryViewMode(prev.preGalleryViewMode);
@@ -1795,6 +1858,13 @@ function App() {
   const [savedViews, setSavedViews] = useState([]); // named embed-URL presets from setup.html, shown in Settings for quick copying
   const [copiedViewId, setCopiedViewId] = useState('');
   const [showReconfigure, setShowReconfigure] = useState(false);
+
+  // The phone's back gesture closes whichever of these is open before it goes
+  // back a screen (see useBackLayer).
+  useBackLayer(isMobile && showSettings, () => setShowSettings(false));
+  useBackLayer(isMobile && !!selectedLogModal, () => setMobileLogModal(null));
+  useBackLayer(isMobile && isSidebarOpen && viewMode !== 'import', () => setIsSidebarOpen(false));
+  useBackLayer(isMobile && showMobileMenu, () => setShowMobileMenu(false));
   const isDemoMode = new URLSearchParams(window.location.search).get('demo') === '1';
 
   // Project timer (see ProjectTimer.jsx). A stopped session is already
@@ -3975,7 +4045,7 @@ function App() {
           {viewMode === 'gallery' ? (
             <div className="leading-none">
               <button
-                onClick={() => { setViewMode(preGalleryViewMode); dismissBackEntry(); }}
+                onClick={() => { dismissBackEntry(); setViewMode(preGalleryViewMode); }}
                 title="Back to calendar"
                 className="flex items-center gap-1.5 font-bold cursor-pointer hover:opacity-80 transition-opacity mb-1"
                 style={{ fontSize: '0.9rem', color: 'var(--theme-primary)' }}
@@ -3990,7 +4060,7 @@ function App() {
           ) : viewMode === 'import' ? (
             <div className="leading-none">
               <button
-                onClick={() => { setViewMode(preGalleryViewMode); setImportDateRange(null); dismissBackEntry(); }}
+                onClick={() => { dismissBackEntry(); setViewMode(preGalleryViewMode); setImportDateRange(null); }}
                 title="Back to calendar"
                 className="flex items-center gap-1.5 font-bold cursor-pointer hover:opacity-80 transition-opacity mb-1"
                 style={{ fontSize: '0.9rem', color: 'var(--theme-primary)' }}
@@ -4050,13 +4120,15 @@ function App() {
                     <button
                       onClick={() => setViewMode('year')}
                       title="Jump to Year view"
-                      className="block font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
+                      className="block whitespace-nowrap font-light tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
                       style={{ fontSize: titleBigSize, color: 'var(--theme-primary)', ...serifTitleFace }}
                     >
                       {mYear}
                     </button>
-                    <div className={`font-black uppercase tracking-wide${titleSubGap}`} style={{ fontSize: titleSubSize, ...serifSubFace }}>
-                      {mLabel}
+                    {/* A non-breaking space keeps the row its height while the
+                        list has no label to show. */}
+                    <div className={`whitespace-nowrap font-black uppercase tracking-wide${titleSubGap}`} style={{ fontSize: titleSubSize, ...serifSubFace }}>
+                      {mLabel || '\u00A0'}
                     </div>
                   </>
                 );
@@ -4842,7 +4914,7 @@ function App() {
               allProjects={orderProjectList(getAllTreeProjects(), projectOrder)}
               projectColorMap={projectColorMap}
               tenantId={tenantId}
-              onClose={() => { setViewMode(preGalleryViewMode); setImportDateRange(null); dismissBackEntry(); }}
+              onClose={() => { dismissBackEntry(); setViewMode(preGalleryViewMode); setImportDateRange(null); }}
               onUploaded={() => fetchLogsFromNotion(tenantId, sourceFilter)}
               sharedPhotos={pendingSharedPhotos}
               onConsumedSharedPhotos={() => setPendingSharedPhotos(null)}
